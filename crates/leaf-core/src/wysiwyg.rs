@@ -21,7 +21,7 @@
 //! render — and map — identically.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -244,6 +244,32 @@ pub struct VRow {
     /// The map's [`math`](VisualMap::math) side-table is derived from these
     /// once the rows are final.
     pub math: Vec<MathMark>,
+    /// Set on the placeholder row of a block the frontend edits itself — see
+    /// [`RegionMark`] — and `None` on every other row. The map's
+    /// [`regions`](VisualMap::regions) side-table is derived from it, and from
+    /// the owned [`math`](Self::math) marks, once the rows are final.
+    pub region: Option<RegionMark>,
+    /// The inline regions the frontend edits itself whose atoms stand on
+    /// this row — a text directive (`:date[…]`) of a name it named — each
+    /// with the index of its atom glyph. Empty on every other row.
+    pub inline_regions: Vec<InlineRegionMark>,
+}
+
+/// An inline region the frontend edits itself, standing as one atom glyph in
+/// its line — a text directive (`:name[label]{attrs}`) of a name it named in
+/// [`Surface::owned_regions`], on a surface that paints pictures in a line.
+/// Relative, like [`MathMark`], so a reused block's mark needs no shifting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InlineRegionMark {
+    /// The region's kind: `directive:date`.
+    pub kind: String,
+    /// The index into [`VRow::glyphs`] of its atom.
+    pub glyph: usize,
+    /// The node's length in bytes, the whole directive — which is also its
+    /// content, as a leaf directive's is.
+    pub len: usize,
+    /// Its name, attributes and label.
+    pub directive: DirectiveMark,
 }
 
 /// One formula a row stands in for — what a picture-capable frontend typesets
@@ -269,6 +295,33 @@ pub struct MathMark {
     /// reports its height through [`crate::Doc::set_math_rows`]. `1` for an
     /// inline atom, which reserves nothing.
     pub rows: usize,
+    /// The node's length in bytes, delimiters included — relative, like
+    /// everything here, so a reused block's mark needs no shifting.
+    pub len: usize,
+    /// Where `tex` starts, as an offset from the node's start: past `$`, `$$`
+    /// or `` $` ``, and whatever newline a display block opens with.
+    pub tex_at: usize,
+    /// The frontend edits formulas itself ([`Surface::owned_regions`] holds
+    /// `"math"`), so this one is also published as a [`RegionInfo`].
+    pub owned: bool,
+}
+
+/// A block the frontend edits itself, standing as one placeholder row — the
+/// fence of a language, or the leaf directive of a name, it named in
+/// [`Surface::owned_regions`]. Relative, like [`MathMark`], so a reused block's
+/// mark needs no shifting. Math does not use this: its regions come from its
+/// [`MathMark`]s, which every formula has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegionMark {
+    /// The region's kind, as the frontend named it: `fence:mermaid`,
+    /// `directive:embed`.
+    pub kind: String,
+    /// The node's length in bytes, fences included.
+    pub len: usize,
+    /// Where the content starts, as an offset from the node's start.
+    pub content_at: usize,
+    /// The content's length in bytes.
+    pub content_len: usize,
 }
 
 /// What a drawn block boundary separates: the kinds of the blocks it falls
@@ -643,6 +696,10 @@ pub struct VisualMap {
     /// A formula on the revealed line is not here: there it is its own TeX,
     /// drawn as code, and nothing stands in for it.
     pub math: Vec<MathInfo>,
+    /// Every region the frontend edits itself, in row order — each owned
+    /// formula, and each owned fence's placeholder row. Derived from the rows
+    /// once they are final, as [`math`](VisualMap::math) is.
+    pub regions: Vec<RegionInfo>,
     /// Every named font family this map's glyphs are set in, by the
     /// [`FaceId`] they carry — the side table that lets [`Style`] stay `Copy`
     /// while a family name stays a `String`.
@@ -1538,6 +1595,14 @@ fn directive_spans(rows: &[VRow]) -> Vec<DirectiveInfo> {
         .collect()
 }
 
+/// Where `tex` sits inside the node at `span`, as an offset from its start.
+/// twig hands a formula's text and not its range, so the text is found in the
+/// node's bytes; the delimiters before it are never TeX, so the first match is
+/// the text. `0` if it is somehow not there, which only misplaces an edit.
+fn tex_offset(source: &str, span: Range<usize>, tex: &str) -> usize {
+    source.get(span).and_then(|s| s.find(tex)).unwrap_or(0)
+}
+
 /// Collect one [`MathInfo`] per [`VRow::math`] mark — the peer of
 /// [`media_spans`] and [`directive_spans`], derived from the final rows for the
 /// same reason. A block mark spans its fillers; an atom spans its own row.
@@ -1546,14 +1611,7 @@ fn math_spans(rows: &[VRow]) -> Vec<MathInfo> {
         .enumerate()
         .flat_map(|(i, row)| {
             row.math.iter().map(move |m| {
-                let src = match m.glyph {
-                    Some(g) => row.glyphs.get(g).map_or(row.end_src, |g| g.src),
-                    None => row
-                        .glyphs
-                        .iter()
-                        .find(|g| g.style.role == Role::Math)
-                        .map_or(row.end_src, |g| g.src),
-                };
+                let src = math_src(row, m);
                 MathInfo {
                     rows_span: i..i + m.rows.max(1),
                     row: i,
@@ -1565,6 +1623,19 @@ fn math_spans(rows: &[VRow]) -> Vec<MathInfo> {
             })
         })
         .collect()
+}
+
+/// Where formula `m` on `row` starts: its atom's offset, or a block's
+/// placeholder glyphs'.
+fn math_src(row: &VRow, m: &MathMark) -> usize {
+    match m.glyph {
+        Some(g) => row.glyphs.get(g).map_or(row.end_src, |g| g.src),
+        None => row
+            .glyphs
+            .iter()
+            .find(|g| g.style.role == Role::Math)
+            .map_or(row.end_src, |g| g.src),
+    }
 }
 
 /// The source range of a fenced code block's info string — everything on the
@@ -1715,6 +1786,44 @@ const UNWRAPPED_RULE_WIDTH: usize = 40;
 /// frontend that asked for atoms draws the picture as wide as it is.
 const MATH_ATOM: char = '∑';
 
+/// The label an owned fence's placeholder row starts with — see
+/// [`Builder::block_region`].
+const REGION_ATOM: char = '▤';
+
+/// The region kind every formula is: what a frontend names in
+/// [`crate::Doc::set_owned_regions`] to edit formulas itself.
+pub const MATH_REGION: &str = "math";
+
+/// The prefix of a fenced code block's region kind, before its language:
+/// `fence:mermaid`.
+pub const FENCE_REGION: &str = "fence:";
+
+/// The prefix of a leaf directive's region kind, before its name:
+/// `directive:embed`. `directive:page-break` is never a region: the name is
+/// leaf's, and a page break is a layout fact rather than a picture.
+pub const DIRECTIVE_REGION: &str = "directive:";
+
+/// The label a leaf directive's placeholder row starts with — see
+/// [`Builder::block_directive`].
+const DIRECTIVE_ATOM: char = '⧉';
+
+/// The content of fenced code block `span`: the lines between its opening
+/// fence and its closing one, each with its newline — empty for a fence with
+/// nothing in it, where it is the closing fence's start. An unclosed fence's
+/// content runs to the block's end. `None` for a block with no opening line.
+fn fence_content(source: &str, span: Range<usize>) -> Option<Range<usize>> {
+    let s = source.get(span.clone())?;
+    let fence = s.trim_start().chars().next()?;
+    let open = s.find('\n')? + 1;
+    let body = &s[open..];
+    let lines = body.strip_suffix('\n').unwrap_or(body);
+    let last_at = lines.rfind('\n').map_or(0, |i| i + 1);
+    let last = lines[last_at..].trim();
+    let closed = last.len() >= 3 && last.chars().all(|c| c == fence);
+    let len = if closed { last_at } else { body.len() };
+    Some(span.start + open..span.start + open + len)
+}
+
 /// What the surface a map is built for can paint, and how tall its pictures
 /// came out — the things about a frontend that change the rows core lays
 /// down, gathered from the frontend by [`crate::Doc`] and threaded into every
@@ -1744,6 +1853,19 @@ pub struct Surface {
     /// composite an image over one cell, and leaves this off to keep an inline
     /// formula as the code-styled TeX it always showed. Off by default.
     pub inline_pictures: bool,
+    /// The region kinds the frontend edits itself
+    /// ([`crate::Doc::set_owned_regions`]): [`MATH_REGION`], and
+    /// [`FENCE_REGION`] with a language. A formula of an owned kind keeps its
+    /// picture on the caret's line, and a fence of one is a placeholder row;
+    /// each is published in [`VisualMap::regions`].
+    pub owned_regions: BTreeSet<String>,
+}
+
+impl Surface {
+    /// Whether the frontend edits regions of `kind` itself.
+    pub fn owns(&self, kind: &str) -> bool {
+        self.owned_regions.contains(kind)
+    }
 }
 
 /// The one source line rendering its markup raw — the caret's, when the mode
@@ -1824,6 +1946,7 @@ pub fn build(
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
         pending_math: RefCell::new(Vec::new()),
+        pending_regions: RefCell::new(Vec::new()),
         saw_math: Cell::new(false),
         presentation: Presentation::default(),
         faces: RefCell::new(FaceTable::default()),
@@ -1846,6 +1969,7 @@ pub fn build(
     let media = media_spans(&b.rows);
     let directives = directive_spans(&b.rows);
     let math = math_spans(&b.rows);
+    let regions = region_spans(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
@@ -1856,6 +1980,7 @@ pub fn build(
         media,
         directives,
         math,
+        regions,
         faces: b.faces.into_inner(),
         spelling: OnceLock::new(),
     }
@@ -1919,6 +2044,7 @@ pub fn build_cached(
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
         pending_math: RefCell::new(Vec::new()),
+        pending_regions: RefCell::new(Vec::new()),
         saw_math: Cell::new(false),
         presentation: Presentation::default(),
         faces: RefCell::new(FaceTable::default()),
@@ -2003,6 +2129,7 @@ pub fn build_cached(
                     reveal: reveal.clone(),
                     pending_mark_ends: RefCell::new(Vec::new()),
                     pending_math: RefCell::new(Vec::new()),
+                    pending_regions: RefCell::new(Vec::new()),
                     saw_math: Cell::new(false),
                     presentation: Presentation::default(),
                     faces: RefCell::new(FaceTable::default()),
@@ -2117,6 +2244,7 @@ pub fn build_cached(
     let media = media_spans(&b.rows);
     let directives = directive_spans(&b.rows);
     let math = math_spans(&b.rows);
+    let regions = region_spans(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
@@ -2127,6 +2255,7 @@ pub fn build_cached(
         media,
         directives,
         math,
+        regions,
         faces,
         spelling: OnceLock::new(),
     }
@@ -2277,6 +2406,7 @@ pub fn build_spliced(
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
         pending_math: RefCell::new(Vec::new()),
+        pending_regions: RefCell::new(Vec::new()),
         saw_math: Cell::new(false),
         presentation: Presentation::default(),
         faces: RefCell::new(FaceTable::default()),
@@ -2369,6 +2499,7 @@ pub fn build_spliced(
     let media = media_spans(&rows);
     let directives = directive_spans(&rows);
     let math = math_spans(&rows);
+    let regions = region_spans(&rows);
     Some(VisualMap {
         rows,
         // The edit was inside one block, so no block moved its start and the
@@ -2381,6 +2512,7 @@ pub fn build_spliced(
         media,
         directives,
         math,
+        regions,
         faces,
         spelling: OnceLock::new(),
     })
@@ -2698,6 +2830,9 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         // Strings and a glyph index: the glyph moved, the index into the row
         // did not.
         math: row.math.clone(),
+        region: row.region.clone(),
+        // Relative, like `math`.
+        inline_regions: row.inline_regions.clone(),
     }
 }
 
@@ -3075,6 +3210,10 @@ struct Builder<'a> {
     /// how [`Builder::take_math`] pairs each with its glyph once the wrap has
     /// decided which row it landed on. Drained the way `pending_mark_ends` is.
     pending_math: RefCell<Vec<(usize, MathMark)>>,
+    /// The owned inline regions rendered since the last row was pushed, keyed
+    /// by start offset as `pending_math` is, and taken the same way
+    /// ([`Builder::take_inline_regions`]).
+    pending_regions: RefCell<Vec<(usize, InlineRegionMark)>>,
     /// Whether this walk met a formula at all, atom, block, or revealed — the
     /// fact [`BlockCache`] keeps per block so [`crate::Doc::reveal_line`] can
     /// tell whether the caret's line has anything to reveal without walking.
@@ -3194,6 +3333,28 @@ impl Builder<'_> {
         }
         out
     }
+    /// The pending inline regions whose atom is on the row `glyphs` is about
+    /// to become, each with its atom's index — [`take_math`](Self::take_math)'s
+    /// peer, for [`REGION_ATOM`] glyphs.
+    fn take_inline_regions(&self, glyphs: &[Glyph]) -> Vec<InlineRegionMark> {
+        let mut pending = self.pending_regions.borrow_mut();
+        if pending.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (i, g) in glyphs.iter().enumerate() {
+            if g.ch != REGION_ATOM || !g.stop {
+                continue;
+            }
+            if let Some(at) = pending.iter().position(|(src, _)| *src == g.src) {
+                let (_, mut mark) = pending.remove(at);
+                mark.glyph = i;
+                out.push(mark);
+            }
+        }
+        out
+    }
+
     /// Whether `span` belongs to the line that is showing its raw markup. True
     /// only when a reveal line is set *for markup* (`MarkupMode::Full`) and the
     /// two ranges actually meet — see [`Reveal::meets`] for what meeting is.
@@ -3532,6 +3693,8 @@ impl Builder<'_> {
                 boundary: drawn.then_some(boundary),
                 mark_ends: Vec::new(),
                 math: Vec::new(),
+                region: None,
+                inline_regions: Vec::new(),
             });
         }
     }
@@ -3590,6 +3753,8 @@ impl Builder<'_> {
                 }),
                 mark_ends: Vec::new(),
                 math: Vec::new(),
+                region: None,
+                inline_regions: Vec::new(),
             });
         }
     }
@@ -3676,6 +3841,8 @@ impl Builder<'_> {
                 }),
                 mark_ends: Vec::new(),
                 math: Vec::new(),
+                region: None,
+                inline_regions: Vec::new(),
             });
         }
     }
@@ -4010,6 +4177,11 @@ impl Builder<'_> {
             "table" => self.table(id, pf, pc),
             "line_block" => self.verse(id, pf, pc),
             "code_block" => {
+                // A fence the frontend edits itself is one placeholder row.
+                if let Some(mark) = self.owned_fence(id) {
+                    self.block_region(id, mark, pf);
+                    return;
+                }
                 let style = Style::default().role(Role::Code);
                 let text = node.text.clone().unwrap_or_default();
                 // Cut the block's *terminator*, not every trailing newline. A
@@ -4325,6 +4497,8 @@ impl Builder<'_> {
                 boundary: None,
                 mark_ends: Vec::new(),
                 math: Vec::new(),
+                region: None,
+                inline_regions: Vec::new(),
             });
             self.last_off = end_src;
         }
@@ -4561,6 +4735,8 @@ impl Builder<'_> {
             boundary: None,
             mark_ends: Vec::new(),
             math: Vec::new(),
+            region: None,
+            inline_regions: Vec::new(),
         });
     }
 
@@ -4644,6 +4820,7 @@ impl Builder<'_> {
                 .map_or(fallback, |g| g.src);
             let mark_ends = self.take_mark_ends(end_src);
             let math = self.take_math(&glyphs);
+            let inline_regions = self.take_inline_regions(&glyphs);
             self.rows.push(VRow {
                 glyphs,
                 end_src,
@@ -4662,6 +4839,8 @@ impl Builder<'_> {
                 boundary: None,
                 mark_ends,
                 math,
+                region: None,
+                inline_regions,
             });
         }
     }
@@ -4778,6 +4957,8 @@ impl Builder<'_> {
                 boundary: None,
                 mark_ends: Vec::new(),
                 math: Vec::new(),
+                region: None,
+                inline_regions: Vec::new(),
             });
         }
         self.last_off = end;
@@ -4982,7 +5163,10 @@ impl Builder<'_> {
         self.push_row_at(glyphs, end);
         if let Some(row) = self.rows.last_mut() {
             row.math = vec![MathMark {
+                len: end - start,
+                tex_at: tex_offset(self.source, start..end, &tex),
                 tex,
+                owned: self.surface.owns(MATH_REGION),
                 display: true,
                 glyph: None,
                 rows,
@@ -5007,7 +5191,71 @@ impl Builder<'_> {
                 boundary: None,
                 mark_ends: Vec::new(),
                 math: Vec::new(),
+                region: None,
+                inline_regions: Vec::new(),
             });
+        }
+        self.last_off = end;
+    }
+
+    /// The [`RegionMark`] for code block `id` when the frontend edits fences
+    /// of its language itself (`fence:<lang>` in [`Surface::owned_regions`],
+    /// the first word of the info string), or `None` to draw it as code.
+    ///
+    /// Also `None` where the content's bytes are not the code's text — a
+    /// fence in a blockquote or a list item, whose lines carry the
+    /// container's prefix — since a frontend that splices the content would
+    /// write over the prefixes. Under [`MarkupMode::Full`](crate::MarkupMode)
+    /// the fence on the caret's line is its source, as a formula is.
+    fn owned_fence(&self, id: usize) -> Option<RegionMark> {
+        if self.surface.owned_regions.is_empty() {
+            return None;
+        }
+        let node = &self.nodes[id];
+        let lang = code_language(self.source, node.span.start)?;
+        let kind = format!("{FENCE_REGION}{}", lang.split_whitespace().next()?);
+        if !self.surface.owns(&kind)
+            || self
+                .reveal
+                .as_ref()
+                .is_some_and(|r| r.markup && r.meets(&node.span))
+        {
+            return None;
+        }
+        let content = fence_content(self.source, node.span.clone())?;
+        if self.source.get(content.clone())? != node.text.as_deref().unwrap_or("") {
+            return None;
+        }
+        Some(RegionMark {
+            kind,
+            len: node.span.len(),
+            content_at: content.start - node.span.start,
+            content_len: content.len(),
+        })
+    }
+
+    /// A block the frontend edits itself as one placeholder row, on
+    /// [`block_directive`](Self::block_directive)'s recipe: a `▤ kind` label,
+    /// every glyph at the block's start with a caret stop there, and the row
+    /// ending past the block so the caret can rest after it too. The frontend
+    /// draws its own view of the block over the row.
+    fn block_region(&mut self, id: usize, mark: RegionMark, pf: &[Glyph]) {
+        let node = &self.nodes[id];
+        let (start, end) = (node.span.start, node.span.end);
+        let shown = mark.kind.strip_prefix(FENCE_REGION).unwrap_or(&mark.kind);
+        let style = Style::default().role(Role::Image);
+        let mut glyphs = pf.to_vec();
+        for ch in format!("{REGION_ATOM} {shown}").chars() {
+            glyphs.push(Glyph {
+                ch,
+                style,
+                src: start,
+                stop: true,
+            });
+        }
+        self.push_row_at(glyphs, end);
+        if let Some(row) = self.rows.last_mut() {
+            row.region = Some(mark);
         }
         self.last_off = end;
     }
@@ -5043,7 +5291,7 @@ impl Builder<'_> {
             .max(1);
         let style = Style::default().role(Role::Image);
         let mut glyphs = pf.to_vec();
-        for ch in format!("⧉ {shown}").chars() {
+        for ch in format!("{DIRECTIVE_ATOM} {shown}").chars() {
             glyphs.push(Glyph {
                 ch,
                 style,
@@ -5054,8 +5302,19 @@ impl Builder<'_> {
         // End past the directive so the caret has a stop after it — the same
         // reason `block_media` anchors its row at the image's end.
         self.push_row_at(glyphs, end);
+        // A directive of a name the frontend draws itself is a region too,
+        // its whole source its content — what its editor reads and splices.
+        let kind = format!("{DIRECTIVE_REGION}{name}");
+        let region =
+            (name != crate::doc::PAGE_BREAK && self.surface.owns(&kind)).then(|| RegionMark {
+                kind,
+                len: end - start,
+                content_at: 0,
+                content_len: end - start,
+            });
         if let Some(row) = self.rows.last_mut() {
             row.directive = true;
+            row.region = region;
             row.leaf_directive = Some(DirectiveMark {
                 name,
                 attrs,
@@ -5085,6 +5344,8 @@ impl Builder<'_> {
                 boundary: None,
                 mark_ends: Vec::new(),
                 math: Vec::new(),
+                region: None,
+                inline_regions: Vec::new(),
             });
         }
         self.last_off = end;
@@ -5281,7 +5542,10 @@ impl Builder<'_> {
                     self.pending_math.borrow_mut().push((
                         node.span.start,
                         MathMark {
+                            len: node.span.len(),
+                            tex_at: tex_offset(self.source, node.span.clone(), &tex),
                             tex,
+                            owned: self.surface.owns(MATH_REGION),
                             display: node.kind == Kind::DisplayMath,
                             glyph: None,
                             rows: 1,
@@ -5320,6 +5584,49 @@ impl Builder<'_> {
             // span's text is the author's words.
             "container" if is_run_span(node) && !self.children(id).is_empty() => {
                 self.recurse(id, run_style(node, base, &self.faces), out)
+            }
+            // A text directive of a name the frontend draws and edits itself
+            // (`directive:<name>` in its owned regions), on a surface that paints
+            // pictures in a line: one atom glyph standing for the whole
+            // directive, `stop: true` at its start — an inline formula's
+            // recipe — and an [`InlineRegionMark`] drained onto the row, so the
+            // frontend finds it in [`VisualMap::regions`]. Under
+            // [`MarkupMode::Full`](crate::MarkupMode) the caret's line shows it
+            // as its source, as a fence on it is. Every other frontend gets the
+            // arms below, unchanged.
+            "container"
+                if container_is_directive(node)
+                    && node.directive_form == Some(DirectiveForm::Text)
+                    && self.surface.inline_pictures
+                    && !self.revealed(&node.span)
+                    && self.surface.owns(&format!(
+                        "{DIRECTIVE_REGION}{}",
+                        node.name.as_deref().unwrap_or_default()
+                    )) =>
+            {
+                let name = node.name.clone().unwrap_or_default();
+                let label = self.image_alt(id);
+                let attrs = node.attrs.clone();
+                self.pending_regions.borrow_mut().push((
+                    node.span.start,
+                    InlineRegionMark {
+                        kind: format!("{DIRECTIVE_REGION}{name}"),
+                        glyph: 0,
+                        len: node.span.len(),
+                        directive: DirectiveMark {
+                            name,
+                            attrs,
+                            label,
+                            rows: 1,
+                        },
+                    },
+                ));
+                out.push(Glyph {
+                    ch: REGION_ATOM,
+                    style: base.role(Role::Image),
+                    src: node.span.start,
+                    stop: true,
+                });
             }
             // A text directive (`:name[label]{…}`) — the inline form of a generic
             // directive. Its `[label]` children are the visible text; the name and
@@ -5642,6 +5949,7 @@ impl Builder<'_> {
         self.last_off = end_src;
         let mark_ends = self.take_mark_ends(end_src);
         let math = self.take_math(&glyphs);
+        let inline_regions = self.take_inline_regions(&glyphs);
         self.rows.push(VRow {
             glyphs,
             end_src,
@@ -5660,6 +5968,8 @@ impl Builder<'_> {
             boundary: None,
             mark_ends,
             math,
+            region: None,
+            inline_regions,
         });
     }
 
@@ -5846,6 +6156,8 @@ impl Builder<'_> {
                 }),
                 mark_ends: Vec::new(),
                 math: Vec::new(),
+                region: None,
+                inline_regions: Vec::new(),
             });
         }
     }
@@ -6203,6 +6515,92 @@ pub struct MathInfo {
     /// The formula's source start: where a click on its picture lands the
     /// caret, and the same offset every placeholder glyph carries.
     pub src: usize,
+}
+
+/// A part of the document the frontend edits itself — a formula, or a fence of
+/// a language it named — as [`crate::Doc::set_owned_regions`] asked. Every
+/// owned region on the map is listed, in row order, whatever the frontend
+/// draws over it; edits come back through [`crate::Doc::edit`] on `content`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegionInfo {
+    /// [`MATH_REGION`], [`FENCE_REGION`] and a language (`fence:mermaid`), or
+    /// [`DIRECTIVE_REGION`] and a name (`directive:embed`).
+    pub kind: String,
+    /// An atom in a line of text — an inline formula's, or an inline
+    /// directive's — rather than a block on rows of its own.
+    pub inline: bool,
+    /// A formula set in display style rather than text style — see
+    /// [`MathMark::display`]. False for every other kind.
+    pub display: bool,
+    /// A leaf directive's name, attributes and label, as its
+    /// [`DirectiveInfo`] carries them; `None` for every other kind.
+    pub directive: Option<DirectiveMark>,
+    /// The rows it stands on: the atom's row, or a block's placeholder row and
+    /// any fillers under it.
+    pub rows_span: Range<usize>,
+    /// Its source start, where the caret rests in front of it.
+    pub src: usize,
+    /// Its source end, past its closing delimiter or fence, where the caret
+    /// rests behind it.
+    pub end: usize,
+    /// The bytes its editor reads and splices: a formula's TeX, a fence's
+    /// lines between the fences, each with its newline.
+    pub content: Range<usize>,
+}
+
+/// Collect one [`RegionInfo`] per owned formula and per [`VRow::region`]
+/// mark, in row order — the peer of [`math_spans`], from the final rows for the
+/// same reason.
+fn region_spans(rows: &[VRow]) -> Vec<RegionInfo> {
+    let mut all = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        for m in row.math.iter().filter(|m| m.owned) {
+            let src = math_src(row, m);
+            all.push(RegionInfo {
+                kind: MATH_REGION.to_string(),
+                inline: m.glyph.is_some(),
+                display: m.display,
+                directive: None,
+                rows_span: i..i + m.rows.max(1),
+                src,
+                end: src + m.len,
+                content: src + m.tex_at..src + m.tex_at + m.tex.len(),
+            });
+        }
+        for m in &row.inline_regions {
+            let src = row.glyphs.get(m.glyph).map_or(row.end_src, |g| g.src);
+            all.push(RegionInfo {
+                kind: m.kind.clone(),
+                inline: true,
+                display: false,
+                directive: Some(m.directive.clone()),
+                rows_span: i..i + 1,
+                src,
+                end: src + m.len,
+                content: src..src + m.len,
+            });
+        }
+        if let Some(mark) = &row.region {
+            let src = row
+                .glyphs
+                .iter()
+                .find(|g| g.ch == REGION_ATOM || g.ch == DIRECTIVE_ATOM)
+                .map_or(row.end_src, |g| g.src);
+            // A directive stands on as many rows as a terminal reserved for it.
+            let rows = row.leaf_directive.as_ref().map_or(1, |d| d.rows.max(1));
+            all.push(RegionInfo {
+                kind: mark.kind.clone(),
+                inline: false,
+                display: false,
+                directive: row.leaf_directive.clone(),
+                rows_span: i..i + rows,
+                src,
+                end: src + mark.len,
+                content: src + mark.content_at..src + mark.content_at + mark.content_len,
+            });
+        }
+    }
+    all
 }
 
 impl DirectiveInfo {

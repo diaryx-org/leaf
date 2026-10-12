@@ -1,0 +1,10 @@
+flowchart TB
+  subgraph Client
+    UI[Editor view] --> Proto[Region protocol]
+  end
+  subgraph Core
+    Doc[Doc] --> Map[VisualMap]
+    Map --> Regions[regions]
+  end
+  Proto -- splices --> Doc
+  Regions -- frame --> Proto

@@ -8,6 +8,8 @@
 # committed.
 /packages/leaf-web/pkg/
 /packages/leaf-web/pkg-math/
+# The demo page's Mermaid module, from crates/leaf-mermaid-wasm.
+/apps/leaf-web-demo/pkg-mermaid/
 
 # SwiftPM/Xcode build dirs for the Swift package, whose manifest lives at the
 # repo root. The UniFFI binding under packages/leaf-swift/uniffi-generated/ is

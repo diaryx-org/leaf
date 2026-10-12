@@ -1,0 +1,13 @@
+[package]
+name = "leaf-session"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "The editors leaf runs for a region of a document, chosen by kind: one session interface over each, for the bindings to export once."
+
+[dependencies]
+# The `math` kind's editor: a formula edited as structure.
+leaf-math-edit.workspace = true

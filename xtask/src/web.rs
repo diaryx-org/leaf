@@ -79,6 +79,13 @@ pub fn run_task(args: Args) -> Result<()> {
             root.join("packages/leaf-web/pkg-math"),
             "leaf_math_wasm.js",
         ),
+        // Mermaid, for the demo page's fence editor alone: next to the demo,
+        // not in the package, since leaf-web draws no diagrams.
+        (
+            "crates/leaf-mermaid-wasm",
+            root.join("apps/leaf-web-demo/pkg-mermaid"),
+            "leaf_mermaid_wasm.js",
+        ),
     ];
 
     check_js_syntax(&root)?;

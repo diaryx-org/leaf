@@ -22,6 +22,10 @@ options:
 packages:
   LeafFFI:
     path: ../..
+  # The app's Mermaid renderer: leaf-mermaid-ffi's Swift module, whose Rust
+  # rides in the same leaf-ffi archive under its `mermaid` feature (below).
+  LeafMermaid:
+    path: LeafMermaid
 
 targets:
   Leaf:
@@ -43,6 +47,8 @@ targets:
     dependencies:
       - package: LeafFFI
         product: LeafUI
+      - package: LeafMermaid
+        product: LeafMermaidFFI
     # The document types, which is what puts Leaf in Finder's Open With and the
     # Files app's share sheet, and lets the Open panel enable a `.md`. xcodegen
     # writes these into App/Info.plist (git-ignored, regenerated with the
@@ -168,9 +174,11 @@ targets:
           esac
           [ "${CONFIGURATION}" = "Release" ] && CARGO_FLAGS="--release" || CARGO_FLAGS=""
 
-          echo "leaf-ffi: cargo build -p leaf-ffi --target ${RUST_TARGET} ${CARGO_FLAGS}"
+          # With Mermaid: the app draws ```mermaid fences, and leaf's default
+          # build carries no diagram renderer (`LeafMermaid`, above).
+          echo "leaf-ffi: cargo build -p leaf-ffi --features mermaid --target ${RUST_TARGET} ${CARGO_FLAGS}"
           rustup target add "${RUST_TARGET}" 2>/dev/null || true
-          cargo build -p leaf-ffi --target "${RUST_TARGET}" ${CARGO_FLAGS}
+          cargo build -p leaf-ffi --features mermaid --target "${RUST_TARGET}" ${CARGO_FLAGS}
 
   # The iOS selection surface is the system's, not ours: `UITextInteraction`
   # drives the double-tap, the handles and the edit menu through the

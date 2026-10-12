@@ -107,6 +107,7 @@ const ISOLATED: &[&[&str]] = &[
     &["-p", "leaf-core"],
     &["-p", "leaf-core", "--no-default-features"],
     &["-p", "leaf-ffi"],
+    &["-p", "leaf-ffi", "--features", "mermaid"],
     &["-p", "leaf-raster"],
     &["-p", "leaf-math"],
     &["-p", "leaf-ratatui"],
@@ -120,6 +121,12 @@ const ISOLATED: &[&[&str]] = &[
     ],
     &["-p", "leaf-wasm"],
     &["-p", "leaf-math-wasm"],
+    &["-p", "leaf-math-edit"],
+    &["-p", "leaf-math-edit", "--features", "wasm"],
+    &["-p", "leaf-session"],
+    &["-p", "leaf-mermaid"],
+    &["-p", "leaf-mermaid-ffi"],
+    &["-p", "leaf-mermaid-wasm"],
     &["-p", "leaf-tui"],
     &["-p", "xtask"],
 ];
@@ -281,23 +288,40 @@ const BINDING_DIVERGENCE: &[(&str, &str)] = &[
     ),
 ];
 
-/// The method names a binding crate exports, read off its source: the `pub fn`s
-/// at one level of indentation, which is where an `impl` block's methods sit and
-/// where a free function does not.
+/// The method names a binding crate exports on `ty`, read off its source: the
+/// `pub fn`s at one level of indentation inside `impl ty` blocks, which is where
+/// an `impl` block's methods sit and where a free function does not.
 #[cfg(test)]
-fn exported_methods(path: &str) -> Result<Vec<String>> {
+fn exported_methods(path: &str, ty: &str) -> Result<Vec<String>> {
     let src = read(path)?;
-    let mut names: Vec<String> = src
-        .lines()
-        .filter_map(|line| line.strip_prefix("    pub fn "))
-        .filter_map(|rest| rest.split(['(', '<', ' ']).next())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .collect();
+    // Only the methods of `ty`'s own impl blocks: a binding file exports more
+    // than one type (`MathSession` sits beside `LeafDoc` in leaf-ffi), and
+    // each is compared with its own peer.
+    let mut current = "";
+    let mut names: Vec<String> = Vec::new();
+    for line in src.lines() {
+        if let Some(rest) = line.strip_prefix("impl ") {
+            current = if rest.contains(" for ") {
+                ""
+            } else {
+                rest.split([' ', '{', '<']).next().unwrap_or("")
+            };
+        }
+        if current != ty {
+            continue;
+        }
+        if let Some(name) = line
+            .strip_prefix("    pub fn ")
+            .and_then(|rest| rest.split(['(', '<', ' ']).next())
+            .filter(|name| !name.is_empty())
+        {
+            names.push(name.to_string());
+        }
+    }
     names.sort();
     names.dedup();
     if names.is_empty() {
-        bail!("no exported methods found in {path} — has the file moved?");
+        bail!("no exported methods of `{ty}` found in {path} — has the file moved?");
     }
     Ok(names)
 }
@@ -341,8 +365,8 @@ mod tests {
     /// one side and not the other.
     #[test]
     fn the_two_bindings_export_the_same_methods() {
-        let ffi = exported_methods("crates/leaf-ffi/src/lib.rs").unwrap();
-        let wasm = exported_methods("crates/leaf-wasm/src/lib.rs").unwrap();
+        let ffi = exported_methods("crates/leaf-ffi/src/lib.rs", "LeafDoc").unwrap();
+        let wasm = exported_methods("crates/leaf-wasm/src/lib.rs", "LeafDoc").unwrap();
         let allowed: Vec<&str> = BINDING_DIVERGENCE.iter().map(|(name, _)| *name).collect();
 
         let missing = |from: &[String], present_in: &[String]| -> Vec<String> {
@@ -364,12 +388,23 @@ mod tests {
         );
     }
 
+    /// The two bindings of leaf's own region editors (leaf-session): the
+    /// Swift one beside `LeafDoc` in leaf-ffi, the web one beside the
+    /// typesetter in leaf-math-wasm, which the web editor loads on its own.
+    #[test]
+    fn the_two_edit_sessions_export_the_same_methods() {
+        let ffi = exported_methods("crates/leaf-ffi/src/lib.rs", "EditSession").unwrap();
+        let wasm = exported_methods("crates/leaf-math-wasm/src/lib.rs", "EditSession").unwrap();
+        assert!(!ffi.is_empty(), "no EditSession methods found in leaf-ffi");
+        assert_eq!(ffi, wasm, "the two EditSession bindings have drifted");
+    }
+
     /// An entry that no longer describes a real divergence is worse than no
     /// entry: it silently exempts a name the test would otherwise check.
     #[test]
     fn every_divergence_is_still_a_real_one() {
-        let ffi = exported_methods("crates/leaf-ffi/src/lib.rs").unwrap();
-        let wasm = exported_methods("crates/leaf-wasm/src/lib.rs").unwrap();
+        let ffi = exported_methods("crates/leaf-ffi/src/lib.rs", "LeafDoc").unwrap();
+        let wasm = exported_methods("crates/leaf-wasm/src/lib.rs", "LeafDoc").unwrap();
         for (name, why) in BINDING_DIVERGENCE {
             let in_ffi = ffi.iter().any(|m| m == name);
             let in_wasm = wasm.iter().any(|m| m == name);

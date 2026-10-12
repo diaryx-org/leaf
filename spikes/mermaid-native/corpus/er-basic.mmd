@@ -1,0 +1,12 @@
+erDiagram
+  DOCUMENT ||--o{ REGION : contains
+  REGION ||--|| SESSION : "opened in"
+  DOCUMENT {
+    string source
+    string format
+  }
+  REGION {
+    string kind
+    int src
+    int end
+  }

@@ -208,9 +208,9 @@ final class EditorLayoutTests: XCTestCase {
     func testAFormulaTooLargeToDrawIsTreatedAsOneThatFailed() {
         // TeX typesets a rule 10^20 em wide without complaint; turned into
         // pixels it is an integer overflow. Core's glyphs stand in for it.
-        XCTAssertNil(MathStore.glyph(tex: "\\rule{100000000000000000000em}{1em}", display: false,
-                                     size: 16, ink: .black))
-        XCTAssertNotNil(MathStore.glyph(tex: "x^2", display: false, size: 16, ink: .black))
+        XCTAssertNil(MathStore.picture(tex: "\\rule{100000000000000000000em}{1em}", display: false,
+                                       size: 16, ink: .black))
+        XCTAssertNotNil(MathStore.picture(tex: "x^2", display: false, size: 16, ink: .black))
     }
 
     func testALineHoldingATallFormulaGrowsToHoldIt() throws {
@@ -223,7 +223,7 @@ final class EditorLayoutTests: XCTestCase {
                               format: "markdown")
         let dv = doc.setInlinePictures(on: true)
         let tex = try XCTUnwrap(dv.math.first { $0.inline }).tex
-        let glyph = try XCTUnwrap(MathStore.glyph(tex: tex, display: false, size: theme.fontSize,
+        let glyph = try XCTUnwrap(MathStore.picture(tex: tex, display: false, size: theme.fontSize,
                                                   ink: theme.textColor))
         let layout = EditorLayout(dv, theme: theme, wrapWidth: 150)
         let rl = try XCTUnwrap(layout.rows.first { $0.row.runs.contains { $0.role == "math" } })
@@ -232,7 +232,7 @@ final class EditorLayoutTests: XCTestCase {
 
         let base = theme.rowHeight(for: rl.row)
         XCTAssertGreaterThan(rl.lineHeight(tall), base)
-        XCTAssertGreaterThanOrEqual(rl.lineHeight(tall), glyph.ascent + glyph.descent)
+        XCTAssertGreaterThanOrEqual(rl.lineHeight(tall), glyph.height)
         XCTAssertEqual(rl.lineHeight(tall + 1), base, accuracy: 0.5)
         XCTAssertEqual(rl.lineTop(tall + 1), rl.lineTop(tall) + rl.lineHeight(tall), accuracy: 0.5)
         XCTAssertEqual(rl.height, CGFloat(rl.wrapped.count) * base + rl.wrapped[tall].rise, accuracy: 0.5)

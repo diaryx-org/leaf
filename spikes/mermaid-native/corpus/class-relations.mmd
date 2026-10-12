@@ -1,0 +1,10 @@
+classDiagram
+  Animal <|-- Duck
+  Animal <|-- Fish
+  Animal *-- Leg
+  Animal o-- Owner
+  Duck --> Pond
+  Fish ..> Water
+  Animal : +int age
+  Animal : +isMammal() bool
+  Duck : +swim()

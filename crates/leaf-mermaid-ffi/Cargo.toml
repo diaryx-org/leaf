@@ -1,0 +1,22 @@
+[package]
+name = "leaf-mermaid-ffi"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Swift binding for leaf-mermaid: Mermaid diagrams to SVG for a host's fence renderer. Rides inside leaf-ffi's archive under its `mermaid` feature; not part of leaf's default build."
+
+# No staticlib of its own: two Rust archives in one executable is a
+# duplicate-`std` link error, so this binding rides inside leaf-ffi's, which
+# links it under its `mermaid` feature — as resvg-uniffi rides along. `lib`
+# is that link; leaf-ffi's `uniffi-bindgen` generates the Swift from the
+# archive both are in.
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+leaf-mermaid.workspace = true
+uniffi = "0.32"
+thiserror = "1"

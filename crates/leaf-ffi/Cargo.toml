@@ -34,6 +34,11 @@ path = "uniffi-bindgen.rs"
 # Swift package paints every `Run::token`, and a run without one is plain code.
 default = ["syntax"]
 syntax = ["leaf-core/syntax"]
+# Mermaid diagrams for a host's `fence:mermaid` renderer (leaf-mermaid-ffi),
+# linked into this archive as a Swift module of its own. Off by default: leaf's
+# own views draw no diagrams, and an app that does not either should not carry
+# a Mermaid renderer. The leaf-editor app turns it on.
+mermaid = ["dep:leaf-mermaid-ffi"]
 
 [dependencies]
 # The document model, filesystem-free — same contract leaf-wasm builds against: a
@@ -68,3 +73,9 @@ resvg-uniffi = { git = "https://github.com/diaryx-org/resvg-swift", branch = "ma
 # `typeset_math`; the fonts ride inside the crate, so nothing is loaded at
 # runtime.
 leaf-math.workspace = true
+# The editors leaf runs itself, chosen by a region's kind, behind
+# `EditSession`: today a formula opened in place, edited as fractions and
+# scripts, written back as splices on its TeX (leaf-math-edit).
+leaf-session.workspace = true
+# Under the `mermaid` feature: see above.
+leaf-mermaid-ffi = { path = "../leaf-mermaid-ffi", optional = true }

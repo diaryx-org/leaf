@@ -1,0 +1,26 @@
+# How big mmdr is as a web module: one exported function, nothing else.
+[workspace]
+
+[package]
+name = "mermaid-wasm-size"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The fork, which carries upstream's PR #155: web-time in place of
+# std::time::Instant, without which every render panics on wasm32.
+mermaid-rs-renderer = { git = "https://github.com/adammharris/mermaid-rs-renderer", branch = "diaryx", default-features = false }
+wasm-bindgen = "=0.2.127"
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+strip = true
+

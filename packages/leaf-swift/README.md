@@ -168,17 +168,27 @@ app says it means. `model.directiveCatalogue` lists the ones it offers —
 `DirectiveItem`s with an id, a name, a title, an SF Symbol, and either a fixed
 label and attributes or an `ask` that prompts the author and may cancel — and
 they join Insert on the iOS row and panel, in the Mac bar, and in the menu bar's
-Format menu, dimmed by `capabilities.directives`. `model.directiveView` draws
-them: answer a directive with an `NSView`/`UIView` and it replaces core's
-`⧉ name` placeholder, as wide as the text column and as tall as its
-`intrinsicContentSize` (else its fitting size at that width). The directive's
-rows collapse onto that box, pages flow around it as around a picture, and the
-caret has a picture's two stops, in front of it and past it. A nil answer, and
-`::page-break`, which is leaf's own and never asked about, keep leaf's drawing.
-The view is the host's: make it ignore hits (`hitTest` → nil, or
-`isUserInteractionEnabled = false`) and a click on it places the caret.
-`apps/leaf-editor` draws an `::embed` as a titled card and offers Insert ▸
-Embed…. See `docs/proposals/host-directives.md`.
+Format menu, dimmed by `capabilities.directives`. Each directive is a region of
+kind `directive:<name>`, drawn by `model.regionRenderers["directive:<name>"]`
+(see Regions, below): answer it with a `RegionPicture` and it replaces core's
+`⧉ name` placeholder, as a picture laid out with the text. A picture with no
+width takes the text column's. The directive's rows collapse onto that box,
+pages flow around it, and the caret has a picture's two stops, in front of it
+and past it. A nil answer, and `::page-break`, which is leaf's own and cannot
+be named, keep leaf's drawing. `regionEditors["directive:<name>"]` opens one
+for editing: its content is the directive's whole source. `apps/leaf-editor`
+draws an `::embed` as a titled card and offers Insert ▸ Embed…. See
+`docs/proposals/host-directives.md`.
+
+*Migrating from `directiveView`.* The hook and its live views are gone. For
+each name the hook answered, register a renderer for `directive:<name>` that
+draws what the view showed as a picture — `RegionPicture(width: nil, height:)`
+with a draw closure, `RegionPicture(svg:)`, or `RegionPicture(image:size:)`.
+The `RegionView` it is handed carries the `name`, `label` and `attrs` the
+`DirectiveView` did. A picture that waits on data (an album's photographs)
+draws what it has, and the host calls `redrawRegions(kind:)` when the rest
+arrives. What a tap on the view did, such as following a link, belongs to a
+`RegionEditor` for the same kind, whose `open` may do it and answer nil.
 
 `LeafEditorModel` exposes every formatting command (`toggleBold`, `setHeading`,
 `toggleList`, `insertLink`, `undo`, …), `source()` / `markSaved()` for
@@ -393,6 +403,105 @@ menu, VoiceOver, and the emphasized/unemphasized (key-window-aware) highlight al
 behave natively. *Inline IME (marked text) is the one remaining follow-up* —
 committed CJK/emoji insert correctly, but the composing overlay isn't drawn yet
 (the web got that free from `contenteditable`; AppKit needs it explicit).
+
+### Formulas
+
+A `$…$` formula is its typeset picture in the line, and a `$$` block a
+picture centred in a row of its own: leaf-math's SVG, drawn as vectors
+through resvg-swift. You don't edit one as TeX. → in front of a formula, ←
+behind it, or a click or tap on its picture opens it in place:
+
+- `/` makes a fraction of the term before the caret.
+- `^` and `_` open a superscript or subscript, and space leaves the slot.
+- `sqrt`, `pi`, `alpha` and the like become symbols as they are typed.
+- The arrows walk the slots; ↑ and ↓ cross a fraction bar.
+
+The open formula draws its own caret, and its empty slots, inside its
+picture.
+
+What it writes is TeX. Each keystroke becomes one or two splices on the
+formula's bytes (`LeafDoc.editSource`) and is one undo step, so nothing it
+didn't touch is rewritten.
+
+- ← at the first stop or → at the last leaves the formula.
+- Escape, Return or Tab leave it too.
+- ⌘Z leaves it and then undoes.
+
+`editsFormulasAsStructure = false` on the text view puts back the old
+behaviour, where a formula on the caret's line reveals its TeX. The editing
+lives in `LeafSessions.swift` over the binding's `EditSession` — leaf's own
+region editors, chosen by kind — the same Rust as the web editor's.
+
+### Regions: renderers and editors
+
+A formula, a fence of a language the host names, or a leaf directive of a name
+it names is a *region*, and each kind has two parts, both registered by kind on
+the text view or on `LeafEditorModel`:
+
+- **A renderer**, `regionRenderers[kind]`: a `RegionRenderer` that draws the
+  region's content as a picture — vectors
+  with a size and a baseline (`RegionPicture(svg:)`, `RegionPicture(image:size:)`,
+  or a size and a draw closure). The layout places the picture itself, inline
+  on the baseline or as a block centred on the region's rows, and draws it with
+  the text, so it pages, prints and goes into a PDF like everything else. A
+  picture with no width takes the column's. Pictures are kept by kind, content,
+  size, ink and appearance; `redrawRegions(kind:)` draws them again when the
+  renderer's answer changed for a reason leaf cannot see. Leaf's `math`
+  renderer is leaf-math, and a host may replace it. A kind with no renderer, or
+  a nil answer, keeps leaf's placeholder row.
+- **An editor**, `regionEditors[kind]`, optional: `RegionEditor(open:)`. → in
+  front of a region, ← behind it, or a click on its picture opens it, and
+  `open` answers with one of two kinds of session:
+  - **A view of its own** (`RegionSession.view`), for a block: it stands where
+    the picture was and takes the focus, writes back through its `RegionHost`
+    — `edit` (splices on the region's content) or `replace` (the whole
+    content), one undo step each — undoes through `undo`, and closes with
+    `leave(atEnd:)`. Only an open region is ever a live view.
+  - **A picture session** (`RegionPictureSession`), inline or block: leaf
+    hands it keys (`input`), committed text (`type`), clicks and the
+    clipboard, and lays out the picture it returns
+    (`RegionSessionPicture`) on every keystroke, so drawing it must be cheap.
+    The picture holds no caret or selection: the session says where they
+    stand on it, and leaf draws them with its own blink and colours. Leaf
+    shows an input method's composition at the caret itself and passes on
+    only what is committed. A run of typing is one undo step, ended by any
+    other key or a click. `RegionInput` is a set of named keys that grows
+    (arrows, ⇧-arrows, word and line moves, Home and End, …): match the
+    ones a session knows and answer `.pass` to the rest, which leaves the
+    region and lets the key act on the document. `RegionHost.caretRect()`
+    and `regionRect()`, in `host.view`'s coordinates, anchor a popover.
+    `accessibilityValue` is what VoiceOver reads for the open region, its
+    content by default.
+
+Kinds are `math` (inline or block), `fence:<lang>` (block) and
+`directive:<name>` (block, or inline for `:name[label]{attrs}`). Leaf's own
+formula editor is registered as `math`'s through the same door, and a host's
+`regionEditors["math"]` replaces it; `editsFormulasAsStructure = false` turns
+leaf's off. The leaf-editor app's date chip (`DateChip.swift`) is a picture
+session on an inline directive. A renderer answers at once
+(`RegionRenderer { region, context in … }`), on the main thread as the layout
+needs it, which suits a cheap picture such as a formula's. Or it answers later
+(`RegionRenderer(later: { region, context, done in … })`), calling `done` from
+any thread, which suits a picture that takes long enough to draw to stall the
+view, such as a large diagram. Until then the region keeps the size of its last
+picture with the same content, else leaf's placeholder, and when the picture
+comes only that region is laid out again. An answer for content the region no
+longer has, or from before a `redrawRegions(kind:)`, is dropped. Print, PDF and
+page images wait for pictures drawn later, so `done` must not need the main
+thread. On screen a block picture is drawn from a bitmap kept at the screen's
+scale; on paper it is drawn as vectors. A
+named fence stops being code. Formulas run on the same protocol, with leaf's
+own session that draws its picture, so opening, leaving, undo and the caret
+behave alike for every kind (`RegionEditing.swift`, `RegionPictures.swift`).
+leaf ships no fence renderer or editor; the leaf-editor app's Mermaid ones
+(`MermaidFence.swift`) are the example.
+
+`SVGView` draws an SVG document as vectors, through resvg-swift with the
+system's fonts, at its natural size or fitted to its bounds. leaf's own views
+do not use it. It is for a host's open editor: the app's Mermaid preview draws
+`renderMermaid`'s SVG with it. `renderMermaid` itself is not in `LeafFFI`: it
+is `leaf-mermaid-ffi`'s, built into the app's archive under leaf-ffi's
+`mermaid` feature and compiled as its own module (`apps/leaf-editor/LeafMermaid`).
 
 ### Type-checking the Swift without an app
 

@@ -1,0 +1,18 @@
+# A spike, not a leaf crate: its own workspace, so leaf takes no dependency
+# on a Mermaid renderer until the results in README.md say it should.
+[workspace]
+
+[package]
+name = "mermaid-native-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The fork carries upstream's open PRs #155 (web-time, so it runs on wasm)
+# and #151 (host text metrics) until they merge.
+mermaid-rs-renderer = { git = "https://github.com/adammharris/mermaid-rs-renderer", branch = "diaryx", default-features = false }
+# The versions leaf already carries, so the raster here is the one leaf's
+# formulas go through.
+resvg = "0.46"
+usvg = "0.46"

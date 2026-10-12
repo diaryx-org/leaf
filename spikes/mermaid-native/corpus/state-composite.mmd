@@ -1,0 +1,11 @@
+stateDiagram-v2
+  [*] --> Editing
+  state Editing {
+    [*] --> Caret
+    Caret --> Selecting: ⇧←
+    Selecting --> Caret: ←
+    Selecting --> Caret: type
+  }
+  Editing --> Idle: Escape
+  Idle --> Editing: →
+  note right of Idle: drawn as a picture

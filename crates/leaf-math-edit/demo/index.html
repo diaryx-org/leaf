@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>leaf-math-edit spike</title>
+<style>
+  :root { color-scheme: light; font: 15px/1.5 -apple-system, system-ui, sans-serif; color: #1a1a1f; }
+  body { margin: 0; padding: 32px; background: #f6f6f4; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.lede { margin: 0 0 24px; color: #555; max-width: 60em; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
+  section { background: #fff; border: 1px solid #e2e2de; border-radius: 10px; padding: 16px 20px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #777; margin: 0 0 12px; font-weight: 600; }
+  #formula { min-height: 120px; display: flex; align-items: center; justify-content: center; outline: none; border-radius: 8px; cursor: text; }
+  #formula:focus { box-shadow: 0 0 0 3px #2563eb33; }
+  #tex { font: 14px ui-monospace, Menlo, monospace; background: #f3f3f0; padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; }
+  #doc { font: 13px/1.6 ui-monospace, Menlo, monospace; white-space: pre-wrap; margin: 0; }
+  #doc mark { background: #dbe7ff; color: inherit; border-radius: 3px; }
+  .picker { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .picker button { font: inherit; font-size: 13px; border: 1px solid #d4d4cf; background: #fff; border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+  .picker button.on { background: #1a1a1f; color: #fff; border-color: #1a1a1f; }
+  table { border-collapse: collapse; font-size: 13px; }
+  td { padding: 2px 12px 2px 0; vertical-align: top; }
+  kbd { font: 12px ui-monospace, Menlo, monospace; background: #f3f3f0; border: 1px solid #d4d4cf; border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; }
+</style>
+</head>
+<body>
+<h1>Structural math editing over twig: spike</h1>
+<p class="lede">Click the formula and type. The editor edits a tree, but what it
+writes is TeX, spliced into the Markdown source on the right, so nothing you
+didn't touch changes.</p>
+<main>
+  <div>
+    <section>
+      <h2>Formula</h2>
+      <div class="picker" id="picker"></div>
+      <div id="formula" tabindex="0"></div>
+    </section>
+    <section style="margin-top: 16px">
+      <h2>TeX</h2>
+      <div id="tex"></div>
+    </section>
+    <section style="margin-top: 16px">
+      <h2>Keys</h2>
+      <table>
+        <tr><td><kbd>/</kbd></td><td>fraction: the term before the caret becomes the numerator</td></tr>
+        <tr><td><kbd>^</kbd> <kbd>_</kbd></td><td>superscript, subscript</td></tr>
+        <tr><td><kbd>space</kbd></td><td>leave the current slot</td></tr>
+        <tr><td><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></td><td>move through slots; up/down between numerator and denominator</td></tr>
+        <tr><td><kbd>⌫</kbd></td><td>delete; enters a structure, then dissolves it</td></tr>
+        <tr><td>names</td><td><code>sqrt</code> <code>pi</code> <code>alpha</code>…<code>omega</code> <code>sum</code> <code>int</code> <code>infty</code> <code>sin</code> <code>leq</code> become symbols as you type</td></tr>
+        <tr><td><kbd>*</kbd></td><td>· (<code>\cdot</code>)</td></tr>
+      </table>
+    </section>
+  </div>
+  <section>
+    <h2>Markdown document</h2>
+    <pre id="doc"></pre>
+  </section>
+</main>
+<script type="module">
+import init, { Demo } from "./pkg/leaf_math_edit.js";
+await init();
+
+const markdown = `# Notes on circles
+
+The area of a circle is $\\pi r^2$, and its circumference $2\\pi r$.
+
+Hand-written TeX keeps its spacing: $\\frac12 \\;+\\; \\alpha$.
+
+$$
+\\sum_{k=0}^{n} \\binom{n}{k} = 2^n
+$$
+
+An empty one to start from: $x$.
+`;
+
+let source = markdown;
+let demo;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+
+function open(i) {
+  demo = new Demo(source, i);
+  [...$("picker").children].forEach((b, j) => b.classList.toggle("on", j === i));
+  draw();
+  $("formula").focus();
+}
+
+function draw() {
+  $("formula").innerHTML = demo.svg();
+  $("tex").textContent = demo.tex() || "(empty)";
+  const d = demo.document();
+  source = d.replace("\u0001", "").replace("\u0002", "");
+  const [a, rest] = d.split("\u0001");
+  const [b, c] = rest.split("\u0002");
+  $("doc").innerHTML = esc(a) + "<mark>" + esc(b) + "</mark>" + esc(c);
+}
+
+const n = Demo.count(source);
+for (let i = 0; i < n; i++) {
+  const b = document.createElement("button");
+  b.textContent = `formula ${i + 1}`;
+  b.onclick = () => open(i);
+  $("picker").append(b);
+}
+
+$("formula").addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey) return;
+  if (demo.key(e.key)) { e.preventDefault(); draw(); }
+});
+$("formula").addEventListener("mousedown", (e) => {
+  const svg = $("formula").querySelector("svg");
+  if (!svg) return;
+  const r = svg.getBoundingClientRect();
+  const vb = svg.viewBox.baseVal;
+  demo.click((e.clientX - r.left) * vb.width / r.width, (e.clientY - r.top) * vb.height / r.height);
+  draw();
+  e.preventDefault();
+  $("formula").focus();
+});
+
+open(0);
+window.demo = () => demo;
+</script>
+</body>
+</html>

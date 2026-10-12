@@ -1,0 +1,8 @@
+sequenceDiagram
+  participant V as View
+  participant S as Session
+  participant D as Doc
+  V->>S: key("/")
+  S-->>V: splices
+  V->>D: edit_source(from, to, text)
+  D-->>V: frame

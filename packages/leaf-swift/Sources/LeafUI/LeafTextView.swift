@@ -402,34 +402,6 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         set { mediaStore.onResolveMedia = newValue }
     }
 
-    /// Asked for a view to draw each leaf directive (`::name{…}`) with, in place
-    /// of the `⧉ name` placeholder core leaves for it — how a host that knows
-    /// its own vocabulary paints an `::embed{src=…}` as the real thing. Nil,
-    /// the default, and a nil answer both leave the placeholder as it is.
-    ///
-    /// Asked once per directive while it stays in the document, the answer
-    /// kept under what the directive says (its name, label and attributes) and
-    /// placed over its box on every frame after. The directive's rows collapse
-    /// onto one box the view's height — its `intrinsicContentSize`, else its
-    /// `fittingSize` at the text column's width — and the column's width;
-    /// pages flow around it as around a picture, and the caret has the
-    /// picture's two homes, in front of it and past it. `::page-break` is leaf's
-    /// and is never asked about.
-    ///
-    /// The view is the host's to draw and to answer events in; to leave the
-    /// caret a click on it, return `nil` from its `hitTest(_:)`. Setting this
-    /// takes down every view the old hook made.
-    public var directiveView: ((DirectiveView) -> LeafView?)? {
-        get { directiveHost.provider }
-        set {
-            directiveHost.provider = newValue
-            render(docView, keepVerticalGoal: true, reflow: true)
-        }
-    }
-
-    /// The host's views for the document's directives.
-    private let directiveHost = DirectiveHost()
-
     /// Loads and caches the stills the media boxes draw.
     private let mediaStore = MediaStore()
     /// The AVKit players currently installed over media boxes.
@@ -578,10 +550,93 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// so passive reflows (width/theme relayout, state refreshes) leave the reader's
     /// scroll position alone instead of yanking it back to the caret.
     private var lastCaretOffset: UInt32?
+    /// The region open for editing, if any, and its routing — see
+    /// `RegionEditing.swift`.
+    let regionSlot = RegionSlot()
+    /// Set while a frame shows the same document another way — the kinds of
+    /// region the view owns changed — so its rows reading differently is not
+    /// an edit the host has to save.
+    private var reshowing = false
+    /// What the open region was last laid out as, so a keystroke inside it
+    /// that changed nothing core knows still lays its row out again.
+    private var laidRegion: OpenRegionLayout?
+    /// Whether a formula is open for structural editing.
+    var isEditingFormula: Bool { regionSlot.open?.kind == MathRenderer.kind }
 
-    public init(doc: LeafDoc, theme: EditorTheme = .default) {
+    /// Whether a formula is edited in place as structure — fractions, scripts,
+    /// roots, written back as TeX — or, when `false`, revealed as its TeX on
+    /// the caret's line to be typed. On by default.
+    public var editsFormulasAsStructure: Bool = true {
+        didSet {
+            guard editsFormulasAsStructure != oldValue else { return }
+            regionSlot.editsMath = editsFormulasAsStructure
+            reshowing = true
+            render(doc.setOwnedRegions(kinds: regionSlot.ownedKinds))
+            reshowing = false
+        }
+    }
+
+    /// The host's editors, by region kind — `"fence:"` and a language
+    /// (`"fence:mermaid"`), or `"directive:"` and a name. Formulas are leaf's
+    /// own (`editsFormulasAsStructure`).
+    /// → in front of a region, ← behind it or a click on its picture opens it
+    /// in the session the editor's `open` answers with; a session with a view
+    /// of its own stands it where the picture was and gives it the focus.
+    /// While closed, a region is its kind's picture (`regionRenderers`), or
+    /// leaf's placeholder row where the kind has no renderer. A kind a host may
+    /// not name is dropped. See `RegionEditing.swift`.
+    public var regionEditors: [String: RegionEditor] {
+        get { regionSlot.editors }
+        set {
+            regionSlot.editors = newValue.filter { RegionKinds.editable($0.key) }
+            reownRegions()
+        }
+    }
+
+    /// The host's renderers, by region kind, over leaf's own: `"fence:"` and a
+    /// language, or `"math"` to replace leaf-math's pictures. Each named
+    /// kind's regions are drawn as the pictures it answers — laid out, paged
+    /// and printed with the text — and leaf's placeholder row where it
+    /// answers nil. A named fence stops being code. See `RegionPictures.swift`.
+    public var regionRenderers: [String: RegionRenderer] {
+        get { regionSlot.pictures.renderers }
+        set {
+            regionSlot.pictures.renderers = newValue.filter { RegionKinds.hostable($0.key) }
+            reownRegions()
+        }
+    }
+
+    /// Forget the pictures drawn for regions of `kind`, or of every kind, and
+    /// draw them again — for a renderer whose picture changed for a reason
+    /// leaf cannot see, such as data it was waiting for.
+    public func redrawRegions(kind: String? = nil) {
+        regionSlot.pictures.invalidate(kind: kind)
+        render(docView, keepVerticalGoal: true, reflow: true)
+    }
+
+    /// Tell core the kinds the view now owns, and show the document again.
+    private func reownRegions() {
+        reshowing = true
+        render(doc.setOwnedRegions(kinds: regionSlot.ownedKinds), keepVerticalGoal: true, reflow: true)
+        reshowing = false
+    }
+
+    public convenience init(doc: LeafDoc, theme: EditorTheme = .default) {
+        self.init(doc: doc, theme: theme, regions: RegionSetup())
+    }
+
+    /// A view over `doc` that draws and edits its regions as `regions` says —
+    /// a sheet over another view's document owns the kinds that view owns.
+    init(doc: LeafDoc, theme: EditorTheme, regions: RegionSetup) {
         self.doc = doc
         self.theme = theme
+        regionSlot.adopt(regions)
+        editsFormulasAsStructure = regions.editsMath
+        // A formula is edited in place as structure (`MathEditing.swift`), so
+        // on the caret's line it stays its picture rather than revealing TeX.
+        // Said before frames become changes: the frame it answers with is
+        // dropped, and `setUnwrapped`'s below must be whole.
+        _ = doc.setOwnedRegions(kinds: regionSlot.ownedKinds)
         // Every frame after the first is the change since the frame before —
         // the rows that differ, and where they go — which `render` splices
         // into `docView`. Lifting every row of a long document into Swift
@@ -595,6 +650,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         self.layoutEngine = EditorLayout(first, theme: theme, viewWidth: 0, cache: &seed)
         self.shapeCache = seed
         super.init(frame: .zero)
+        regionSlot.owner = self
+        regionSlot.listen()
         if #available(macOS 14, *) {
             let indicator = NSTextInsertionIndicator(frame: .zero)
             indicator.displayMode = .hidden
@@ -760,7 +817,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// keystroke or a drag. `reflow` says the geometry under the rows moved —
     /// the width, the theme, the page, a picture that arrived — and every row
     /// is laid out again.
-    private func render(_ frame: DocView, keepVerticalGoal: Bool = false, reflow: Bool = false) {
+    private func render(_ frame: DocView, keepVerticalGoal: Bool = false, reflow: Bool = false,
+                        picturesFrom: Int? = nil) {
         if !keepVerticalGoal { verticalGoalX = nil }
         // Whatever the peek was pointing at has just moved, changed or gone: an
         // edit reflowed the line under it, or a relayout put the reference
@@ -773,6 +831,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // Complete on every frame, so compared before the rows are touched.
         let blocksChanged = frame.tables != docView.tables || frame.media != docView.media
             || frame.math != docView.math || frame.directives != docView.directives
+            || frame.regions != docView.regions
+        // An owned fence is one placeholder row whatever it holds, so an edit
+        // inside it that keeps its length changes no row: its region's
+        // content says so instead.
+        let regionContentChanged = frame.view == docView.view
+            && !frame.regions.map(\.content).elementsEqual(docView.regions.map(\.content)) {
+                $0.utf8.elementsEqual($1.utf8)
+            }
         // The find bar caches the string and its matches; an edit — or a view
         // toggle, which changes what the visible text *is* — invalidates both.
         // Rows compare cheaply, and a motion leaves them equal. A selection
@@ -804,13 +870,23 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             docView = frame
         }
         let view = docView
-        if textChanged {
+        // Pictures drawn later arrived for regions from `picturesFrom` on:
+        // the rows above it stand as they were laid out.
+        let layoutChange = change ?? picturesFrom.map { (new: $0..<$0 + 1, old: $0..<$0 + 1) }
+        // The open region, followed into this frame — or closed, when the
+        // frame has none at its place any more — and laid out again whenever
+        // what it draws changed.
+        regionSlot.follow(view)
+        let open = regionSlot.layout
+        let openChanged = !(open?.same(as: laidRegion) ?? (laidRegion == nil))
+        laidRegion = open
+        if textChanged || regionContentChanged {
             textFinder.noteClientStringWillChange()
             accessibilityTextCache = nil
         }
         // The document changed, as distinct from what is shown of it: a toggle
         // between source and rendered rewrites every row and edits nothing.
-        let edited = !viewFlipped && textChanged
+        let edited = !viewFlipped && !reshowing && (textChanged || regionContentChanged)
         // Under this view's own appearance, not whatever happens to be current.
         // The text's colours are dynamic and resolve when drawn, inside
         // `draw(_:)`, where AppKit has made the view's appearance current; a
@@ -818,23 +894,25 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // handed. Left to the caller's appearance, a paper sheet (`aqua`,
         // whatever the screen) laid out from a dark-mode window would set its
         // formulas in white — and print them on white.
+        let drawing = regionSlot.drawing(dark: effectiveAppearance.isDark, scale: (window?.backingScaleFactor ?? 2) * zoomScale)
         effectiveAppearance.performAsCurrentDrawingAppearance {
             if reflow {
                 layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore,
-                                            directives: directiveHost.measure)
-            } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
+                                            regions: regionSlot.views.measure, drawing: drawing)
+            } else if layoutChange != nil || blocksChanged || openChanged || layoutEngine.rows.isEmpty {
                 layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore, previous: layoutEngine,
-                                            change: change, directives: directiveHost.measure)
+                                            change: layoutChange,
+                                            regions: regionSlot.views.measure, drawing: drawing)
             }
         }
-        let relaid = reflow || change != nil || blocksChanged
+        let relaid = reflow || layoutChange != nil || blocksChanged || openChanged
         // The host's views follow their boxes, as the players do, and a view
         // whose directive was edited away goes with it. Scaled by hand: this
         // view zooms its drawing, not itself.
-        if relaid, !directiveHost.isEmpty {
-            directiveHost.place(layoutEngine.directiveRects(), in: self, scale: zoomScale)
+        if relaid, !regionSlot.views.isEmpty {
+            regionSlot.views.place(layoutEngine.openRegionRect(), in: self, scale: zoomScale)
         }
         // The misspellings still stand where the text did not change, but the
         // layout under them is new: map them onto it again. A text change
@@ -910,6 +988,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // What Writing Tools is animating over: hidden under its preview, or
         // greyed while it waits. Nothing, and no work, the rest of the time.
         let effects = printing ? (hidden: [], dimmed: []) : writingToolsEffectRects()
+        // The open region's selection, behind its picture: leaf draws a
+        // picture session's selection, as it draws the document's.
+        if !printing, regionSlot.isOpen {
+            ctx.setFillColor(selColor.cgColor)
+            for r in regionSlot.selectionRects() { ctx.fill(r) }
+        }
 
         for rl in layoutEngine.rows {
             // Cull to the dirty band, so a scroll or a caret blink repaints only
@@ -937,18 +1021,20 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 }
                 continue
             }
-            // A display formula's picture, once, on its first placeholder row,
-            // centred on the column — vectors, so the PDF gets paths.
-            if let box = rl.math {
-                if rl.mathFirst {
-                    box.draw(in: box.rect(top: rl.mathTop, left: rl.originX + rl.shaped.prefixWidth,
-                                          width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx)
+            // A block region's picture, once, on its first placeholder row,
+            // centred on the column — vectors, so the PDF gets paths, and a
+            // kept bitmap on screen.
+            if let box = rl.picture {
+                if rl.pictureFirst {
+                    box.draw(in: box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
+                                          width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx,
+                             screen: !printing)
                 }
                 continue
             }
-            // A directive the host draws is its view, a subview over the box;
-            // nothing of core's placeholder is painted under it.
-            if rl.directive != nil { continue }
+            // The open region's view is a subview over the box; nothing of
+            // core's placeholder is painted under it.
+            if rl.hosted != nil { continue }
             // The row's bands, not one rect over its whole height: a split row has
             // a sheet edge — or a column gutter — through the middle of it, and a
             // code fill drawn over that would tile the backdrop or the gutter too.
@@ -1001,10 +1087,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             BlockChrome.drawPlaceholder(placeholder, in: box, theme: theme, in: ctx)
         }
 
-        if active, caretVisible, !usesSystemCaret, let rect = layoutEngine.caretRect(docView, theme: theme) {
+        if active, caretVisible, !usesSystemCaret, let rect = shownCaretRect {
             ctx.setFillColor(theme.caretColor.cgColor)
             ctx.fill(rect)
         }
+        if !printing { drawRegionComposition(in: ctx) }
         drawDropIndicator(in: ctx)
 
         drawHighlightMarkers()
@@ -1654,6 +1741,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         closeIdleWritingToolsGroup()
         window?.makeFirstResponder(self)
         let p = layoutPoint(convert(event.locationInWindow, from: nil))
+        // A click on a formula's picture or a region's drawing opens it, the
+        // caret at the stop under the pointer; a click anywhere else closes
+        // the open one first.
+        if regionClick(p, event: event) { return }
         // A margin marker outranks everything at its point, and — unlike the
         // touch surface, which cannot call a tap back — this click is consumed
         // whole: the caret stays where it was, because the reader asked for
@@ -2469,6 +2560,61 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
     }
 
+    // MARK: regions edited in place
+
+    /// The command as a key for the open region's session, or nil for one
+    /// that is not a region's.
+    private func regionInput(_ selector: Selector) -> RegionInput? {
+        switch selector {
+        case #selector(moveLeft(_:)): return .left
+        case #selector(moveRight(_:)): return .right
+        case #selector(moveUp(_:)): return .up
+        case #selector(moveDown(_:)): return .down
+        case #selector(moveLeftAndModifySelection(_:)): return .extendLeft
+        case #selector(moveRightAndModifySelection(_:)): return .extendRight
+        case #selector(moveUpAndModifySelection(_:)): return .extendUp
+        case #selector(moveDownAndModifySelection(_:)): return .extendDown
+        case #selector(moveWordLeft(_:)), #selector(moveWordBackward(_:)): return .wordLeft
+        case #selector(moveWordRight(_:)), #selector(moveWordForward(_:)): return .wordRight
+        case #selector(moveToLeftEndOfLine(_:)), #selector(moveToBeginningOfLine(_:)): return .lineStart
+        case #selector(moveToRightEndOfLine(_:)), #selector(moveToEndOfLine(_:)): return .lineEnd
+        case #selector(moveToBeginningOfDocument(_:)), #selector(scrollToBeginningOfDocument(_:)): return .home
+        case #selector(moveToEndOfDocument(_:)), #selector(scrollToEndOfDocument(_:)): return .end
+        case #selector(deleteBackward(_:)): return .backspace
+        case #selector(deleteForward(_:)): return .deleteForward
+        case #selector(cancelOperation(_:)): return .cancel
+        case #selector(insertNewline(_:)): return .newline
+        case #selector(insertTab(_:)), #selector(insertBacktab(_:)): return .tab
+        default: return nil
+        }
+    }
+
+    /// A command while a region is open goes to its session, which may take
+    /// it; any other command closes the region and runs. With none open, →
+    /// in front of a region or ← behind one opens it. Whether it was taken.
+    private func regionCommand(_ selector: Selector) -> Bool {
+        if regionSlot.isOpen {
+            if let input = regionInput(selector) { return regionSlot.input(input) }
+            regionSlot.close()
+            return false
+        }
+        let right = selector == #selector(moveRight(_:))
+        guard right || selector == #selector(moveLeft(_:)) else { return false }
+        return regionSlot.enter(right: right)
+    }
+
+    /// A plain click on a formula's picture or a region's drawing opens it, or
+    /// moves the caret in the one already open. A click anywhere else closes
+    /// the open one and is left to run. Whether the click was a region's.
+    private func regionClick(_ p: CGPoint, event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard event.clickCount == 1, mods.isEmpty else {
+            regionSlot.close()
+            return false
+        }
+        return regionSlot.click(at: p, in: layoutEngine, theme: theme)
+    }
+
     // MARK: keyboard — text + IME
 
     public override func keyDown(with event: NSEvent) {
@@ -2504,6 +2650,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public func insertText(_ string: Any, replacementRange: NSRange) {
         closeWritingToolsGroupForUserEdit()
         let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        // Typing into the open region is its session's; a composition or a
+        // named range closes it and lands as text.
+        if regionSlot.isOpen {
+            if markedByteRange == nil, replacementRange.location == NSNotFound, regionSlot.type(text) { return }
+            regionSlot.close()
+        }
         // Committing an IME composition: replace the marked bytes with the final text.
         if let m = markedByteRange {
             markedByteRange = nil
@@ -2525,6 +2677,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func doCommand(by selector: Selector) {
         if Self.editingCommands.contains(selector) { closeWritingToolsGroupForUserEdit() }
+        if regionCommand(selector) { return }
         switch selector {
         case #selector(moveLeft(_:)):                       render(doc.moveLeft(extend: false))
         case #selector(moveRight(_:)):                      render(doc.moveRight(extend: false))
@@ -3046,8 +3199,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     // MARK: Edit menu — history, and what the menu may enable
 
-    @objc public func undo(_ sender: Any?) { historyManager.undo() }
-    @objc public func redo(_ sender: Any?) { historyManager.redo() }
+    @objc public func undo(_ sender: Any?) { regionSlot.close(); historyManager.undo() }
+    @objc public func redo(_ sender: Any?) { regionSlot.close(); historyManager.redo() }
 
     /// Edit ▸ Find ▸ Find…, Find Next, Find Previous, Use Selection for Find,
     /// Find and Replace…: each item's tag is an `NSTextFinder.Action`.
@@ -3081,8 +3234,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         switch item.action {
         case #selector(undo(_:)): return docView.canUndo
         case #selector(redo(_:)): return docView.canRedo
-        case #selector(copy(_:)): return hasSelection
-        case #selector(cut(_:)): return hasSelection && !isReadOnly
+        case #selector(copy(_:)): return regionSlot.isOpen ? regionSlot.copyText != nil : hasSelection
+        case #selector(cut(_:)):
+            return (regionSlot.isOpen ? regionSlot.copyText != nil : hasSelection) && !isReadOnly
         case #selector(paste(_:)):
             guard !isReadOnly else { return false }
             let pb = NSPasteboard.general
@@ -3128,6 +3282,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     // MARK: rich clipboard
 
     @objc public func copy(_ sender: Any?) {
+        // The open formula copies its own selection, as TeX.
+        if let text = regionSlot.copyText {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return
+        }
         guard let text = doc.selectedText() else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -3136,6 +3296,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     @objc public func cut(_ sender: Any?) {
+        if let text = regionSlot.cut() {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return
+        }
         closeWritingToolsGroupForUserEdit()
         copy(sender)
         if doc.selectedText() != nil { render(doc.backspace()) }
@@ -3146,6 +3311,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // holding only an image has no text at all, so by the time this method
         // decided there was nothing to paste, the host would never hear about the
         // one thing that was there. See `LeafEditorModel.onPaste`.
+        if regionSlot.isOpen, let text = NSPasteboard.general.string(forType: .string),
+           regionSlot.paste(text) { return }
         if onPaste?() == true { return }
         closeWritingToolsGroupForUserEdit()
         let pb = NSPasteboard.general
@@ -3164,7 +3331,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         render(doc.paste(text: text))
     }
 
-    @objc public override func selectAll(_ sender: Any?) { render(doc.selectAll()) }
+    @objc public override func selectAll(_ sender: Any?) {
+        // The open formula selects itself; anything else closes and selects all.
+        if regionSlot.isOpen, regionSlot.input(.selectAll) { return }
+        render(doc.selectAll())
+    }
 
     // MARK: contextual menu + macOS text services
 
@@ -3830,7 +4001,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         defer { ctx.restoreGState() }
         ctx.scaleBy(x: zoomScale, y: zoomScale)
         ctx.clip(to: boxes)
-        for rl in layoutEngine.rows where rl.table == nil && rl.media == nil && rl.math == nil {
+        for rl in layoutEngine.rows where rl.table == nil && rl.media == nil && rl.picture == nil {
             for (i, wl) in rl.wrapped.enumerated() {
                 let o = rl.lineOrigin(i)
                 guard o.y < union.maxY, o.y + rl.lineHeight(i) > union.minY else { continue }
@@ -3943,7 +4114,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public override func accessibilitySelectedText() -> String? {
-        doc.textInRange(from: UInt32(selLowByte), to: UInt32(selHighByte))
+        // An open region is what is selected: its session's value.
+        if let value = regionSlot.accessibilityValue { return value }
+        return doc.textInRange(from: UInt32(selLowByte), to: UInt32(selHighByte))
     }
 
     public override func accessibilitySelectedTextRange() -> NSRange {
@@ -4163,7 +4336,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.caretVisible.toggle()
-            if let r = self.layoutEngine.caretRect(self.docView, theme: self.theme) {
+            if let r = self.shownCaretRect {
                 self.setNeedsDisplay(self.viewRect(r))
             }
         }
@@ -4176,7 +4349,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private func placeSystemCaret() {
         guard #available(macOS 14, *), let indicator = insertionIndicator as? NSTextInsertionIndicator else { return }
         indicator.color = theme.caretColor
-        if selectionIsActive, let rect = layoutEngine.caretRect(docView, theme: theme) {
+        // An open region leaf draws has its caret where its session says,
+        // over its picture; one with a view of its own has none of leaf's.
+        if selectionIsActive, let rect = shownCaretRect {
             indicator.frame = viewRect(rect)
             indicator.displayMode = .automatic
         } else {
@@ -4918,6 +5093,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         closeWritingToolsGroupForUserEdit()
         let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        // A composition in an open region leaf draws is shown by leaf and
+        // reaches the session only once committed.
+        if regionSlot.composes {
+            regionSlot.setMarked(text, selected: selectedRange)
+            return
+        }
         // Bytes to replace: the existing composition, else the proposed replacement,
         // else the current selection.
         let start: Int, end: Int
@@ -4946,7 +5127,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         needsDisplay = true
     }
 
-    public func unmarkText() { markedByteRange = nil; needsDisplay = true }
+    public func unmarkText() {
+        // A composition in an open region is the region's: committed, as the
+        // focus moving commits one.
+        if regionSlot.marked != nil { return regionSlot.commitMarked() }
+        markedByteRange = nil
+        needsDisplay = true
+    }
 
     /// Whether an underline style draws heavier than a single line. The style
     /// is a bitmask: its low byte is the line (single, thick, double), and the
@@ -4989,8 +5176,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             return (NSRange(location: from, length: length), selected)
         }
     }
-    public func hasMarkedText() -> Bool { markedByteRange != nil }
+    public func hasMarkedText() -> Bool { markedByteRange != nil || regionSlot.marked != nil }
     public func markedRange() -> NSRange {
+        // An open region's composition stands at core's caret, in front of
+        // the region, and holds no bytes of the document.
+        if let m = regionSlot.marked {
+            return NSRange(location: utf16Range(fromByte: selLowByte, toByte: selLowByte).location,
+                           length: (m.text as NSString).length)
+        }
         guard let m = markedByteRange else { return NSRange(location: NSNotFound, length: 0) }
         return utf16Range(fromByte: m.location, toByte: m.location + m.length)
     }
@@ -5001,7 +5194,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public func selectedRange() -> NSRange {
-        utf16Range(fromByte: selLowByte, toByte: selHighByte)
+        if let m = regionSlot.marked {
+            let at = utf16Range(fromByte: selLowByte, toByte: selLowByte).location
+            return NSRange(location: at + m.selected.location, length: m.selected.length)
+        }
+        return utf16Range(fromByte: selLowByte, toByte: selHighByte)
     }
 
     public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
@@ -5037,6 +5234,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// line at a time, as the protocol asks, and the caller comes back for
     /// the rest.
     public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        // In an open region leaf draws, the input method's window goes at its
+        // caret.
+        if regionSlot.composes, let caret = regionSlot.caretRect() {
+            actualRange?.pointee = range
+            return screenRect(fromView: viewRect(caret))
+        }
         let (from, to) = byteBounds(range)
         let s = doc.posForOffset(off: UInt32(from))
         guard to > from, let line = layoutEngine.visualLine(row: Int(s.row), ch: Int(s.ch)),
@@ -5340,6 +5543,65 @@ final class LeafWritingToolsDelegate: NSObject, NSWritingToolsCoordinator.Delega
                                  completion: @escaping @Sendable () -> Void) {
         onView(()) { $0.writingToolsWillChange(to: newState) }
         completion()
+    }
+}
+extension LeafTextView: RegionSlotOwner {
+    var shownFrame: DocView { docView }
+    var regionLayout: EditorLayout { layoutEngine }
+    var regionTheme: EditorTheme { theme }
+    func regionViewRect(_ rect: CGRect) -> CGRect { viewRect(rect) }
+
+    func regionMarksChanged() {
+        needsDisplay = true
+        resetBlink()
+        inputContext?.invalidateCharacterCoordinates()
+    }
+
+    func regionAnnounce(_ value: String) {
+        NSAccessibility.post(element: self, notification: .announcementRequested, userInfo: [
+            .announcement: value,
+            .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+        ])
+    }
+
+    /// The caret leaf shows, in layout coordinates: an open picture session's,
+    /// where it says; none for a region with a view of its own; else the
+    /// document's.
+    var shownCaretRect: CGRect? {
+        regionSlot.isOpen ? regionSlot.caretRect() : layoutEngine.caretRect(docView, theme: theme)
+    }
+
+    /// An input method's composition in the open region, drawn at its caret
+    /// over the picture: the marked text on the page's colour, underlined.
+    func drawRegionComposition(in ctx: CGContext) {
+        guard let marked = regionSlot.marked, let caret = regionSlot.caretRect() else { return }
+        let font = NSFont.systemFont(ofSize: max(8, caret.height * 0.8))
+        let text = NSAttributedString(string: marked.text, attributes: [
+            .font: font, .foregroundColor: theme.textColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ])
+        let size = text.size()
+        let box = CGRect(x: caret.minX, y: caret.midY - size.height / 2, width: size.width, height: size.height)
+        ctx.setFillColor(theme.pageColor.cgColor)
+        ctx.fill(box.insetBy(dx: -2, dy: 0))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        text.draw(at: box.origin)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+    func regionRender(_ frame: DocView) { render(frame) }
+    func focusDocument() { window?.makeFirstResponder(self) }
+    func regionHistory(redo: Bool) {
+        if redo { historyManager.redo() } else { historyManager.undo() }
+    }
+    func relayout() { render(docView, keepVerticalGoal: true, reflow: true) }
+
+    func regionPicturesArrived(_ kinds: Set<String>) {
+        // Only from the first region of an arrived kind down: the rows above
+        // it are as they were.
+        guard let first = docView.regions.filter({ kinds.contains($0.kind) }).map({ Int($0.startRow) }).min()
+        else { return }
+        render(docView, keepVerticalGoal: true, picturesFrom: first)
     }
 }
 #endif

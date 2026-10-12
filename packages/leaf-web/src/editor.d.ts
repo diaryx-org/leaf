@@ -6,12 +6,12 @@
 import type {
   CapabilitiesView,
   DirectiveAttr,
-  DirectiveView,
   DocView,
   FootnoteDefView,
   FootnoteView,
   HighlightIn,
   HighlightOut,
+  RegionView,
   SelectionQuote,
   TextCounts,
 } from "../pkg/leaf_wasm.js";
@@ -158,33 +158,300 @@ export interface EditorOptions {
   /** Called after every repaint with the new caret/document state. */
   onChange?: (state: EditorState) => void;
   /**
-   * The host's drawing of a leaf directive (`::name[label]{attrs}`), or null
-   * to leave it as leaf's `⧉ label` placeholder row.
-   *
-   * Asked about each directive a frame has that the frame before did not —
-   * one that survives an edit keeps the element it was answered with, as a
-   * picture keeps its `<img>`, and a null answer is remembered the same way;
-   * `redrawDirectives()` asks afresh. Two identical directives are asked about
-   * separately and must be answered with two elements. `::page-break` is
-   * leaf's own and is never offered.
-   *
-   * The element is wrapped as a `contenteditable="false"` atom standing in for
-   * the rows in `[view.start_row, view.end_row)`, with a caret stop before it
-   * and one after, so the caret steps over it in one press and never enters
-   * it. What it does with a click or a key of its own is the host's; the
-   * directive's source is edited by deleting it, or by the host writing it
-   * back. A hook that throws, or answers with something that is not an
-   * `HTMLElement`, is reported on the console and drawn as the placeholder.
-   */
-  directive?: (view: DirectiveView) => HTMLElement | null;
-  /**
    * The directives this host names — its catalogue, for a toolbar or an
    * Insert menu to list (`directiveItems()`) and run
    * (`insertDirectiveItem()`), each row dimmed by `capabilities().directives`.
    * Empty by default, which offers nothing: leaf has no free-form "insert
-   * directive", since a name no one draws is only a placeholder.
+   * directive", since a name no one draws is only a placeholder. How each
+   * one looks is its renderer's, `regionRenderers["directive:<name>"]`.
    */
   directives?: DirectiveItem[];
+  /**
+   * How a formula is edited. `"structure"`, the default: → or ← onto a
+   * formula, or a click on its picture, opens it in place — `/` makes a
+   * fraction, `^` and `_` scripts, `sqrt` a root, the arrows walk its slots —
+   * and what it writes is TeX, spliced into the document. `"source"`: a
+   * formula on the caret's line reveals its TeX to be typed, as it does
+   * while the math module has not loaded, or under `markupMode("full")`.
+   */
+  mathEditing?: "structure" | "source";
+  /**
+   * How each kind of region is drawn, by region kind: `"math"`,
+   * `"fence:<language>"` (`"fence:mermaid"`) or `"directive:<name>"`
+   * (`"directive:embed"`). A renderer turns a region's content into a
+   * picture the layout places — inline on the baseline for a formula in a
+   * line, or as a block standing in for the region's rows.
+   *
+   * Leaf registers one for `"math"`, the typesetter; a host's entry replaces
+   * it, and draws every formula, edited or not. Every other kind named here
+   * stops being drawn as its source: core keeps each such fence or directive
+   * a placeholder row (`set_owned_regions`), and the renderer's picture is
+   * drawn there, with a caret stop before it and one after. A kind with no
+   * renderer, or a region its renderer answers null for, keeps leaf's
+   * placeholder row. `"directive:page-break"` is leaf's own and cannot be
+   * named.
+   *
+   * A picture is kept by kind, content, style, size, ink and scheme, so a
+   * region whose content stands is not drawn again; `redrawRegions()` asks
+   * afresh. Two identical block regions are asked about separately, and an
+   * `{element}` picture must be a different element for each. A renderer
+   * that answers with a promise is shown as the placeholder until the
+   * promise settles. One that throws, rejects, or answers with something
+   * that is not a `RegionPicture` is reported on the console and drawn as
+   * the placeholder. An inline region — a formula in a line, or an inline
+   * directive (`:date[2026-10-12]`) — is drawn only from `{svg}`, on the
+   * baseline, in place of the one-glyph atom core lays out for it.
+   */
+  regionRenderers?: Partial<Record<RegionKind, RegionRenderer>>;
+  /**
+   * Editors by region kind: `"math"`, a fenced block's, `"fence:"` and its
+   * language (`"fence:mermaid"`), or a leaf directive's, `"directive:"` and
+   * its name (`"directive:embed"`, `"directive:date"`) — block
+   * (`::name[label]{attrs}`) or inline (`:name[label]{attrs}`). A kind is
+   * edited exactly when it has an editor here. Each named kind is a region
+   * core keeps a picture or a placeholder (`set_owned_regions`), drawn by its
+   * renderer, and → in front of it, ← behind it, or a click on its picture
+   * opens it (`open`), in one of two sessions:
+   *
+   * - a `RegionPictureSession`, which leaf runs: keys by name, typed text,
+   *   clicks and the clipboard are routed to it, its picture is drawn where
+   *   the region's was, and leaf draws its caret, its selection and any IME
+   *   composition over it. The only kind an inline region can open in.
+   * - a `RegionSession`, a view of the host's own (`element`) placed over a
+   *   block region's rows, which has its own keys and focus.
+   *
+   * What either writes comes back as splices on the region's content. A
+   * fence's content is its lines between the fences; a directive's is its
+   * whole source. Leaf registers its own editor for `"math"` — formulas
+   * edited as structure — once the math module is here; a host's `"math"`
+   * replaces it. `"directive:page-break"` is leaf's own and cannot be named.
+   */
+  regionEditors?: Partial<Record<RegionKind, RegionEditor>>;
+}
+
+/** A region kind a host may name: `"math"`, a fence's or a directive's
+ *  (block or inline). */
+export type RegionKind = "math" | `fence:${string}` | `directive:${string}`;
+
+/**
+ * What a region is drawn as, in CSS pixels. `{svg}` is a standalone SVG
+ * document at `width` × `height`, whose baseline — where an inline one sits
+ * on the line — is `baseline` from its top (default: its bottom). A block
+ * one is centred on the measure at its own size, scaled down to fit it.
+ * `{element}` is an element of the host's, placed as a block standing in for
+ * the region's rows, as a `contenteditable="false"` atom; what it does with
+ * a click or a key of its own is the host's.
+ */
+export type RegionPicture =
+  | { svg: string; width: number; height: number; baseline?: number }
+  | { element: HTMLElement };
+
+/** What a renderer is told about where its picture goes. */
+export interface RegionRenderContext {
+  /** The size of the text around the region, in CSS pixels per em. */
+  size: number;
+  /** The colour of that text, as a CSS hex (`"#1c1f26"`). */
+  ink: string;
+  /** Whether the surface is dark: its text is light. */
+  dark: boolean;
+}
+
+/**
+ * A region kind's renderer: its picture of `region`, or null for leaf's
+ * placeholder — at once, or once a promise settles. `region` is a copy.
+ */
+export type RegionRenderer = (
+  region: RegionView,
+  ctx: RegionRenderContext,
+) => RegionPicture | null | Promise<RegionPicture | null>;
+
+/**
+ * Where the caret enters a region being opened: its first stop, its last, or
+ * nearest a point in CSS pixels from its drawing's top left.
+ */
+export type RegionEntry =
+  | { at: "home" }
+  | { at: "end" }
+  | { at: "point"; x: number; y: number; size: number };
+
+/**
+ * One splice on a region's content: replace the UTF-8 bytes `[from, to)` —
+ * offsets into the content as the splice before this one left it — with
+ * `text`, written exactly.
+ */
+export interface RegionSplice {
+  from: number;
+  to: number;
+  text: string;
+}
+
+/**
+ * What leaf hands a host's editor when it opens a region: the way back. Every
+ * call is ignored once the region has closed.
+ */
+export interface RegionHost {
+  /** Write splices on the content, as one undo step. Ends a typing step. */
+  edit(splices: RegionSplice[]): void;
+  /** Write the whole content anew; leaf splices only what differs, as one
+   *  undo step. For a fence the content is whole lines, each ending in `\n`
+   *  (empty for an empty fence) — keep it so. */
+  replace(content: string): void;
+  /** Close the region, the caret in front of it or behind it, and give the
+   *  focus back to the document. */
+  leave(side: "before" | "after"): void;
+  /** Undo or redo in the document. The region stays open, and a change to its
+   *  content reaches the session as `reload`. */
+  undo(): void;
+  redo(): void;
+  /**
+   * Where an open picture session's caret is drawn, in viewport (client)
+   * coordinates — to anchor a popover of the host's, a completion list or a
+   * calendar, which leaf does not draw. Null before the picture is laid
+   * out (during `open`; ask after it, as in a `requestAnimationFrame`), for
+   * a session with no caret, for a host view, and once the region closed.
+   */
+  caretRect(): DOMRect | null;
+  /** The open region's drawing — its picture, or the atom a host's view
+   *  stands in — in viewport coordinates; null once it closed. */
+  regionRect(): DOMRect | null;
+}
+
+/** A rect on a session's picture, in CSS pixels from its top left. */
+export interface RegionRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * An open picture session's picture: `RegionPicture`'s `{svg}` form, in CSS
+ * pixels, and where on it leaf draws the session's caret and selection.
+ * Neither belongs in the SVG: leaf draws them over it, with its own blink,
+ * `--leaf-caret` and `--leaf-sel`. `caret` is a bar at `x` (`width` 0 is
+ * fine), `height` tall; null or absent draws none. A picture that is not
+ * scaled is drawn at exactly this size; a block one scaled down to fit the
+ * measure has its rects scaled with it.
+ */
+export interface RegionSessionPicture {
+  svg: string;
+  width: number;
+  height: number;
+  baseline?: number;
+  caret?: RegionRect | null;
+  selection?: RegionRect[];
+}
+
+/**
+ * The name of a key leaf hands a picture session (`key`). An open set: leaf
+ * may add names in any release, so a session answers null to a name it does
+ * not know, and leaf closes the region and lets the key run. Leaf names:
+ *
+ * - `ArrowLeft` … `ArrowDown`: the arrows; with ⇧, `ExtendLeft` …
+ *   `ExtendDown`
+ * - `WordLeft`, `WordRight`: ⌥← / ⌥→ on a Mac, Ctrl← / Ctrl→ elsewhere
+ * - `LineStart`, `LineEnd`: ⌘← / ⌘→ on a Mac, and Home / End
+ * - `Home`, `End`: ⌘↑ / ⌘↓ on a Mac, Ctrl Home / Ctrl End
+ * - `SelectAll`: ⌘A (Ctrl A)
+ * - `Backspace`, `Delete`, `Escape`, `Enter`, `Tab`
+ *
+ * A printable character is not a key but text, through `type`. A key with
+ * no name — a shortcut such as ⌘Z, F5 — is not asked about: it closes the
+ * region and runs. Copy, cut and paste arrive as `copy` and `paste`.
+ */
+export type RegionKey =
+  | "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown"
+  | "ExtendLeft" | "ExtendRight" | "ExtendUp" | "ExtendDown"
+  | "WordLeft" | "WordRight" | "LineStart" | "LineEnd" | "Home" | "End"
+  | "Backspace" | "Delete" | "SelectAll" | "Escape" | "Enter" | "Tab"
+  | (string & {});
+
+/**
+ * What a picture session answers an input with: splices it made on the
+ * content (`edit`, applied through `edit_source` exactly, one undo step —
+ * or, for typed text, part of the typing step), a move inside it that
+ * changed only its picture (`moved`), or leaving it, the caret in front of
+ * the region or behind it (`leave`).
+ */
+export type RegionOutcome =
+  | { edit: RegionSplice[] }
+  | { moved: true }
+  | { leave: "before" | "after" };
+
+/**
+ * A region open in a session leaf runs and draws: what leaf's own formula
+ * editor is, and what a host's editor may answer `open` with, for a region of
+ * any kind, inline or block. Leaf has the focus (a hidden field at the
+ * caret, which an input method composes into), names the keys, draws the
+ * picture in the line or the block, and draws the caret, the selection and
+ * marked text over it. Every method is synchronous.
+ *
+ * Undo: consecutive `type` edits are one undo step, as typing in the
+ * document is; any other key, a click, a paste, a `host.edit`, leaving and
+ * closing end it. Every other edit is a step of its own. ⌘Z is no name: it
+ * closes the region and undoes in the document.
+ */
+export interface RegionPictureSession {
+  /**
+   * The picture at `size` CSS pixels per em, in `ink` (a CSS hex), with its
+   * caret and selection. Asked again after every key, click and edit,
+   * synchronously, so it must be cheap: a kind whose drawing is slow edits
+   * through a view. Null draws the kind's renderer's picture.
+   */
+  picture(size: number, ink: string): RegionSessionPicture | null;
+  /** A key, by name (`RegionKey`). Null: not the session's — leaf closes the
+   *  region and lets the key run. Unknown names must answer null. */
+  key?(name: RegionKey): RegionOutcome | null;
+  /** Text typed, or committed by an input method — never text still being
+   *  composed, which leaf shows itself. Null: closes the region, and the
+   *  text goes into the document in front of it. */
+  type?(text: string): RegionOutcome | null;
+  /** A click on the open picture, at `x, y` CSS pixels from its top left at
+   *  `size` pixels per em. Null counts as `{ moved: true }`. */
+  click?(x: number, y: number, size: number): RegionOutcome | null;
+  /** The selection as text, for copy and cut (which then sends `Delete`);
+   *  null copies nothing. */
+  copy?(): string | null;
+  /** Paste `text`. Null refuses it, and nothing is pasted. */
+  paste?(text: string): RegionOutcome | null;
+  /** The content changed under the session — an undo, another writer.
+   *  `false` closes the region. */
+  reload?(content: string): boolean | void;
+  /** The region closed: by a leave, a key it did not know, a click
+   *  elsewhere, or because it went. */
+  close?(): void;
+  /** What a screen reader is told the open region holds — on opening and
+   *  after each edit, politely, and as the picture's label. Default: the
+   *  region's content. */
+  accessibilityValue?(): string | null;
+}
+
+/** A region open in a host's editor: the view leaf places over it. Block
+ *  regions only. */
+export interface RegionSession {
+  /** The view, placed over the region's rows in place of its drawing while it
+   *  is open. Its keys, clicks, input and clipboard are its own. */
+  element: HTMLElement;
+  /** Called once the view is in the document, to take the focus. */
+  focus?(): void;
+  /** The content changed under the view — an undo, a redo, another writer.
+   *  `false` closes the region. */
+  reload?(content: string): boolean | void;
+  /** The region closed: by `leave`, a click elsewhere, or because it went. */
+  close?(): void;
+}
+
+/**
+ * An editor for one kind of region. Closed, the region is drawn by its
+ * kind's renderer (`EditorOptions.regionRenderers`); open, it is the
+ * session `open` answers with: a picture session leaf runs, or — for a block
+ * region only — a view of the host's own. An inline region whose editor
+ * answers with a view is closed again, and the refusal reported on the
+ * console.
+ */
+export interface RegionEditor {
+  /** Open `region`, or answer null to leave it closed. */
+  open(region: RegionView, entry: RegionEntry, host: RegionHost): RegionSession | RegionPictureSession | null;
 }
 
 /**
@@ -487,8 +754,12 @@ export class LeafEditor {
    * cancelled, the id names nothing, or core refused it.
    */
   insertDirectiveItem(item: string | DirectiveItem): Promise<boolean>;
-  /** Forget every drawing the `directive` hook answered, and ask it again. */
-  redrawDirectives(): void;
+  /**
+   * Forget the pictures the renderers drew — all, or those of one `kind` —
+   * and ask the renderers again for each region on the page, for a host
+   * whose drawing changed without the document changing.
+   */
+  redrawRegions(kind?: RegionKind): void;
   /** The alignment in force at the caret, or null — which swatch is lit. */
   alignmentAtCaret(): Align | null;
   /** The line spacing in force at the caret, or null. */

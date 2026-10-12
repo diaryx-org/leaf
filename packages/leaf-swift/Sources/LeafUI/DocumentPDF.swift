@@ -34,7 +34,7 @@ extension LeafEditorModel {
     public func pdfData(theme: EditorTheme = .default, page: PageSetup = .usLetter,
                         title: String? = nil) -> Data {
         LeafTextView.pdf(of: doc, theme: theme, documentDirectory: documentDirectory,
-                         page: page, title: title)
+                         page: page, title: title, regions: regionSetup)
     }
 }
 
@@ -45,12 +45,14 @@ extension LeafTextView {
     /// The document as a PDF, one page per sheet of `page`, in this view's theme
     /// and with its images. See `LeafEditorModel.pdfData(theme:page:title:)`.
     public func pdfData(page: PageSetup = .usLetter, title: String? = nil) -> Data {
-        Self.pdf(of: doc, theme: theme, documentDirectory: documentDirectory, page: page, title: title)
+        Self.pdf(of: doc, theme: theme, documentDirectory: documentDirectory, page: page, title: title,
+                 regions: regionSlot.setup.onPaper)
     }
 
     static func pdf(of doc: LeafDoc, theme: EditorTheme, documentDirectory: URL?,
-                    page: PageSetup, title: String?) -> Data {
-        let sheet = paperSheet(of: doc, theme: theme, documentDirectory: documentDirectory, page: page)
+                    page: PageSetup, title: String?, regions: RegionSetup = RegionSetup()) -> Data {
+        let sheet = paperSheet(of: doc, theme: theme, documentDirectory: documentDirectory, page: page,
+                               regions: regions.onPaper)
         // The print info carries the paper and no margins: the sheet's own margins
         // are inside the page setup, and `rectForPage` hands each sheet over whole.
         let info = NSPrintInfo()
@@ -81,8 +83,8 @@ extension LeafTextView {
     /// screen's appearance: the theme's semantic colours resolve against the
     /// view's, and a dark one would print white.
     static func paperSheet(of doc: LeafDoc, theme: EditorTheme, documentDirectory: URL?,
-                           page: PageSetup) -> LeafTextView {
-        let sheet = LeafTextView(doc: doc, theme: theme)
+                           page: PageSetup, regions: RegionSetup = RegionSetup()) -> LeafTextView {
+        let sheet = LeafTextView(doc: doc, theme: theme, regions: regions.onPaper)
         sheet.layOutAsPaper()
         sheet.appearance = NSAppearance(named: .aqua)
         sheet.frame = NSRect(origin: .zero, size: CGSize(width: page.size.width, height: 0))
@@ -93,7 +95,8 @@ extension LeafTextView {
 
     /// `paperSheet(of:…)` over this view's own document, theme and images.
     func paperSheet(_ page: PageSetup) -> LeafTextView {
-        Self.paperSheet(of: doc, theme: theme, documentDirectory: documentDirectory, page: page)
+        Self.paperSheet(of: doc, theme: theme, documentDirectory: documentDirectory, page: page,
+                        regions: regionSlot.setup.onPaper)
     }
 }
 
@@ -108,12 +111,13 @@ extension LeafTextView {
     /// a point is a point on paper, and the reader's text-size setting is about
     /// their screen.
     public func pdfData(page: PageSetup = .usLetter, title: String? = nil) -> Data {
-        Self.pdf(of: doc, theme: theme, documentDirectory: documentDirectory, page: page, title: title)
+        Self.pdf(of: doc, theme: theme, documentDirectory: documentDirectory, page: page, title: title,
+                 regions: regionSlot.setup.onPaper)
     }
 
     static func pdf(of doc: LeafDoc, theme: EditorTheme, documentDirectory: URL?,
-                    page: PageSetup, title: String?) -> Data {
-        let sheet = LeafTextView(doc: doc, theme: theme)
+                    page: PageSetup, title: String?, regions: RegionSetup = RegionSetup()) -> Data {
+        let sheet = LeafTextView(doc: doc, theme: theme, regions: regions.onPaper)
         sheet.isPaper = true
         // Light, whatever the screen's: the sheet's layout resolves a formula's
         // ink under its own traits (the AppKit sheet's `aqua`), and its drawing

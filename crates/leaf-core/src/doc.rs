@@ -1309,6 +1309,11 @@ impl Doc {
         if self.markup_mode.reveals_caret_line() {
             return Some(Reveal::full(line));
         }
+        // A frontend with a formula editor of its own opens the picture,
+        // not the source.
+        if self.surface.owns(wysiwyg::MATH_REGION) {
+            return None;
+        }
         self.block_cache
             .math_meets(&line)
             .then_some(Reveal::math(line))
@@ -1527,6 +1532,33 @@ impl Doc {
             return;
         }
         self.surface.inline_pictures = on;
+        self.surface_changed();
+    }
+
+    /// Name the regions the frontend edits itself rather than as their
+    /// source: [`MATH_REGION`](wysiwyg::MATH_REGION) for formulas,
+    /// [`FENCE_REGION`](wysiwyg::FENCE_REGION) with a language for that
+    /// language's fenced code blocks (`fence:mermaid`), and
+    /// [`DIRECTIVE_REGION`](wysiwyg::DIRECTIVE_REGION) with a name for that
+    /// name's leaf directives (`directive:embed`). Each owned region is
+    /// published in [`VisualMap::regions`](wysiwyg::VisualMap::regions), and
+    /// its edits come back through [`Doc::edit`] on its content range.
+    ///
+    /// An owned formula on the caret's line stays a picture in the two hidden
+    /// markup modes instead of revealing its TeX, and an owned fence is one
+    /// placeholder row the frontend draws its own view over.
+    /// [`MarkupMode::Full`] still reveals the caret's line, regions included.
+    /// A leaf directive is a placeholder row whether it is owned or not, so
+    /// owning one changes no rows: it only publishes the region, whose content
+    /// is the directive's whole source. `directive:page-break` is never one.
+    /// Replaces the whole set; an empty list owns nothing, the default.
+    pub fn set_owned_regions<S: AsRef<str>>(&mut self, kinds: &[S]) {
+        let owned: std::collections::BTreeSet<String> =
+            kinds.iter().map(|k| k.as_ref().to_string()).collect();
+        if self.surface.owned_regions == owned {
+            return;
+        }
+        self.surface.owned_regions = owned;
         self.surface_changed();
     }
 
@@ -22500,6 +22532,313 @@ mod tests {
         d.build_visual(80);
         assert_eq!(drawn_rows(&d)[2], "∑ \\int_0^1 x^2");
         assert_eq!(d.vmap.math[0].tex, "\n\\int_0^1 x^2\n");
+    }
+
+    #[test]
+    fn a_frontend_that_edits_math_keeps_the_picture_on_the_caret_line() {
+        let src = "*one* $x+y$ here\n\n$$\n\\int_0^1 x\n$$\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "math_edits", src);
+        d.set_inline_pictures(true);
+        d.set_owned_regions(&["math"]);
+        // On the formula's line, and on the block's: still pictures.
+        caret_at(&mut d, "here");
+        assert!(
+            drawn_rows(&d).iter().any(|r| r == "one ∑ here"),
+            "{:?}",
+            drawn_rows(&d)
+        );
+        assert_eq!(d.reveal_line(), None);
+        d.move_down(false);
+        d.move_down(false);
+        d.build_visual(80);
+        assert_eq!(d.vmap.math.len(), 2, "{:?}", drawn_rows(&d));
+        // Each formula is a region that says where it is and where its TeX
+        // is, exactly.
+        assert_eq!(d.vmap.regions.len(), 2);
+        for (r, m) in d.vmap.regions.iter().zip(&d.vmap.math) {
+            assert_eq!(r.kind, "math");
+            assert_eq!(r.src, m.src);
+            assert_eq!(r.inline, m.glyph.is_some());
+            assert_eq!(&d.source[r.content.clone()], m.tex);
+            assert!(d.source[r.src..r.end].starts_with('$'));
+            assert!(d.source[r.src..r.end].ends_with('$'));
+        }
+        assert_eq!(&d.source[d.vmap.regions[0].content.clone()], "x+y");
+        // An edit above shifts the reused block; its spans move with it.
+        d.place_caret(0, false);
+        d.insert("Z");
+        d.build_visual(80);
+        for (r, m) in d.vmap.regions.iter().zip(&d.vmap.math) {
+            assert_eq!(&d.source[r.content.clone()], m.tex);
+        }
+        // Full still reveals everything.
+        d.set_markup_mode(MarkupMode::Full);
+        caret_at(&mut d, "here");
+        assert!(drawn_rows(&d).iter().any(|r| r.contains("$x+y$")));
+    }
+
+    #[test]
+    fn a_formula_nobody_owns_is_no_region() {
+        let mut d = doc_in(View::Wysiwyg, "math_unowned", "say $x$ here\n\nnext\n");
+        d.set_inline_pictures(true);
+        d.place_caret(d.source.len(), false);
+        d.build_visual(80);
+        assert_eq!(d.vmap.math.len(), 1);
+        assert!(d.vmap.regions.is_empty());
+        d.set_owned_regions(&["fence:mermaid"]);
+        d.build_visual(80);
+        assert!(
+            d.vmap.regions.is_empty(),
+            "owning fences owned formulas too"
+        );
+    }
+
+    #[test]
+    fn an_owned_fence_is_one_placeholder_row_and_a_region() {
+        let src = "intro\n\n```mermaid\ngraph TD\n  A-->B\n```\n\n```rust\nfn x() {}\n```\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "fence_owned", src);
+        d.set_owned_regions(&["fence:mermaid"]);
+        caret_at(&mut d, "end");
+        let rows = drawn_rows(&d);
+        assert!(rows.iter().any(|r| r == "▤ mermaid"), "{rows:?}");
+        assert!(!rows.iter().any(|r| r.contains("A-->B")), "{rows:?}");
+        // The other language is still code.
+        assert!(rows.iter().any(|r| r == "fn x() {}"), "{rows:?}");
+        assert_eq!(d.vmap.regions.len(), 1);
+        let r = d.vmap.regions[0].clone();
+        assert_eq!(r.kind, "fence:mermaid");
+        assert!(!r.inline);
+        assert_eq!(&d.source[r.content.clone()], "graph TD\n  A-->B\n");
+        assert!(d.source[r.src..r.end].starts_with("```mermaid"));
+        assert!(d.source[r.src..r.end].trim_end().ends_with("```"));
+        // The caret rests either side of it, and on its line it stays a
+        // placeholder.
+        d.place_caret(r.src, false);
+        d.build_visual(80);
+        assert!(drawn_rows(&d).iter().any(|row| row == "▤ mermaid"));
+        assert_eq!(d.caret, r.src);
+        d.move_right(false);
+        assert_eq!(d.caret, r.end, "one step crosses the block");
+        // An edit through its content moves the end and keeps the region.
+        d.edit(r.content.start, r.content.start, "%% note\n");
+        d.build_visual(80);
+        let r2 = d.vmap.regions[0].clone();
+        assert_eq!(
+            &d.source[r2.content.clone()],
+            "%% note\ngraph TD\n  A-->B\n"
+        );
+        assert_eq!(r2.end, r.end + 8);
+        // An edit above shifts the reused block, and the region with it.
+        d.place_caret(0, false);
+        d.insert("Z");
+        d.build_visual(80);
+        let r3 = d.vmap.regions[0].clone();
+        assert_eq!(r3.src, r2.src + 1);
+        assert_eq!(
+            &d.source[r3.content.clone()],
+            "%% note\ngraph TD\n  A-->B\n"
+        );
+        // Full reveals the fence on the caret's line as its source.
+        d.set_markup_mode(MarkupMode::Full);
+        d.place_caret(r3.src, false);
+        d.build_visual(80);
+        assert!(drawn_rows(&d).iter().any(|row| row.contains("A-->B")));
+        assert!(d.vmap.regions.is_empty());
+    }
+
+    #[test]
+    fn an_empty_owned_fence_has_empty_content_at_its_closing_fence() {
+        let src = "```mermaid\n```\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "fence_empty", src);
+        d.set_owned_regions(&["fence:mermaid"]);
+        caret_at(&mut d, "end");
+        let r = d.vmap.regions[0].clone();
+        assert_eq!(r.content, 11..11);
+        d.edit(r.content.start, r.content.end, "graph LR\n");
+        assert_eq!(d.source, "```mermaid\ngraph LR\n```\n\nend\n");
+    }
+
+    #[test]
+    fn an_owned_inline_directive_is_an_atom_and_an_inline_region() {
+        let src = "Due :date[2026-10-12] and :date[2026-11-01]{tz=UTC} then :tag[x] done\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "inline_directive_owned", src);
+        d.set_inline_pictures(true);
+        caret_at(&mut d, "end");
+        let plain = drawn_rows(&d);
+        assert!(plain[0].contains("2026-10-12"), "{plain:?}");
+        assert!(d.vmap.regions.is_empty());
+        d.set_owned_regions(&["directive:date"]);
+        caret_at(&mut d, "end");
+        let rows = drawn_rows(&d);
+        assert_eq!(rows[0], "Due ▤ and ▤ then x done", "{rows:?}");
+        let [a, b] = d
+            .vmap
+            .regions
+            .clone()
+            .try_into()
+            .unwrap_or_else(|v| panic!("two regions: {v:?}"));
+        for r in [&a, &b] {
+            assert_eq!(r.kind, "directive:date");
+            assert!(r.inline && !r.display);
+            assert_eq!(r.rows_span, 0..1);
+            assert_eq!(
+                r.content,
+                r.src..r.end,
+                "an inline directive's content is its whole source"
+            );
+        }
+        assert_eq!(&d.source[a.src..a.end], ":date[2026-10-12]");
+        assert_eq!(&d.source[b.src..b.end], ":date[2026-11-01]{tz=UTC}");
+        let mark = a.directive.as_ref().expect("its directive");
+        assert_eq!(
+            (mark.name.as_str(), mark.label.as_str()),
+            ("date", "2026-10-12")
+        );
+        let mark = b.directive.as_ref().expect("its directive");
+        assert_eq!(
+            mark.attrs,
+            vec![("tz".to_string(), Some("UTC".to_string()))]
+        );
+        // The atom is one stop: the caret steps over the whole directive.
+        d.place_caret(a.src, false);
+        d.move_right(false);
+        assert_eq!(d.caret, a.end);
+        d.move_left(false);
+        assert_eq!(d.caret, a.src);
+        // An edit through its content is an edit of the directive.
+        let at = a.src + ":date[2026-10-".len();
+        d.edit(at, at + 2, "31");
+        d.build_visual(80);
+        assert_eq!(
+            d.vmap.regions[0].directive.as_ref().unwrap().label,
+            "2026-10-31"
+        );
+        // An edit above shifts the reused block, and the regions with it.
+        d.place_caret(0, false);
+        d.insert("Z");
+        d.build_visual(80);
+        assert_eq!(
+            &d.source[d.vmap.regions[1].src..d.vmap.regions[1].end],
+            ":date[2026-11-01]{tz=UTC}"
+        );
+        // Full shows the caret's line as an unowned directive is drawn: its
+        // label, to be typed into.
+        d.set_markup_mode(MarkupMode::Full);
+        caret_at(&mut d, "Due");
+        let line = &drawn_rows(&d)[0];
+        assert!(
+            line.contains("2026-10-31") && !line.contains('▤'),
+            "{line:?}"
+        );
+        assert!(d.vmap.regions.is_empty());
+    }
+
+    #[test]
+    fn an_inline_directive_draws_as_before_where_it_is_not_owned_or_cannot_be_a_picture() {
+        let src = "Due :date[2026-10-12] and :vis{.family} done\n\nend\n";
+        // Not owned, on a picture surface (the web, Apple).
+        let mut d = doc_in(View::Wysiwyg, "inline_directive_unowned", src);
+        d.set_inline_pictures(true);
+        caret_at(&mut d, "end");
+        let before = drawn_rows(&d);
+        d.set_owned_regions(&["directive:other", "math"]);
+        caret_at(&mut d, "end");
+        assert_eq!(drawn_rows(&d), before);
+        assert!(d.vmap.regions.is_empty());
+        // Owned, on a surface that paints nothing in a line (the terminal,
+        // Android): drawn as it always was.
+        let mut t = doc_in(View::Wysiwyg, "inline_directive_terminal", src);
+        caret_at(&mut t, "end");
+        let terminal = drawn_rows(&t);
+        t.set_owned_regions(&["directive:date", "directive:vis"]);
+        caret_at(&mut t, "end");
+        assert_eq!(drawn_rows(&t), terminal);
+        assert!(t.vmap.regions.is_empty());
+        assert!(
+            terminal[0].contains("2026-10-12") && terminal[0].contains("⧉ vis"),
+            "{terminal:?}"
+        );
+    }
+
+    #[test]
+    fn an_owned_inline_directive_wraps_with_its_atom() {
+        let words = "word ".repeat(30);
+        let src = format!("{words}:date[2026-10-12] {words}\n");
+        let mut d = doc_in(View::Wysiwyg, "inline_directive_wrapped", &src);
+        d.set_inline_pictures(true);
+        d.set_owned_regions(&["directive:date"]);
+        d.place_caret(0, false);
+        d.build_visual(40);
+        let [r] = d
+            .vmap
+            .regions
+            .clone()
+            .try_into()
+            .unwrap_or_else(|v| panic!("one region: {v:?}"));
+        let row = &d.vmap.rows[r.rows_span.start];
+        assert!(
+            row.glyphs.iter().any(|g| g.ch == '▤' && g.src == r.src),
+            "the region's row lacks its atom"
+        );
+        assert_eq!(&d.source[r.src..r.end], ":date[2026-10-12]");
+    }
+
+    #[test]
+    fn an_owned_directive_is_a_region_of_its_whole_source() {
+        let src = "intro\n\n::embed[Card]{src=\"a.md\" wide}\n\n::toc\n\n::page-break\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "directive_owned", src);
+        caret_at(&mut d, "end");
+        let before = drawn_rows(&d);
+        assert!(d.vmap.regions.is_empty());
+        d.set_owned_regions(&["directive:embed", "directive:page-break"]);
+        caret_at(&mut d, "end");
+        assert_eq!(
+            drawn_rows(&d),
+            before,
+            "owning a directive changed its rows"
+        );
+        let [r] = d
+            .vmap
+            .regions
+            .clone()
+            .try_into()
+            .unwrap_or_else(|v| panic!("one region: {v:?}"));
+        assert_eq!(r.kind, "directive:embed");
+        assert!(!r.inline && !r.display);
+        assert_eq!(&d.source[r.src..r.end], "::embed[Card]{src=\"a.md\" wide}");
+        assert_eq!(r.content, r.src..r.end);
+        let mark = r.directive.as_ref().expect("its directive");
+        assert_eq!(mark.name, "embed");
+        assert_eq!(mark.label, "Card");
+        assert_eq!(
+            mark.attrs,
+            vec![
+                ("src".to_string(), Some("a.md".to_string())),
+                ("wide".to_string(), Some(String::new()))
+            ]
+        );
+        assert_eq!(r.rows_span, d.vmap.directives[0].rows_span);
+        // The caret rests either side of it, as before.
+        d.place_caret(r.src, false);
+        d.move_right(false);
+        assert_eq!(d.caret, r.end);
+        // An edit through its content is an edit of the directive.
+        let at = r.src + "::embed[".len();
+        d.edit(at, at + 4, "Album");
+        d.build_visual(80);
+        let r2 = d.vmap.regions[0].clone();
+        assert_eq!(r2.directive.expect("its directive").label, "Album");
+        assert_eq!(&d.source[r2.content], "::embed[Album]{src=\"a.md\" wide}");
+    }
+
+    #[test]
+    fn a_fence_inside_a_quote_is_not_owned() {
+        let src = "> ```mermaid\n> graph TD\n> ```\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "fence_quoted", src);
+        d.set_owned_regions(&["fence:mermaid"]);
+        caret_at(&mut d, "end");
+        assert!(d.vmap.regions.is_empty(), "{:?}", drawn_rows(&d));
+        assert!(drawn_rows(&d).iter().any(|r| r.contains("graph TD")));
     }
 
     #[test]

@@ -612,6 +612,379 @@ fileprivate struct FfiConverterString: FfiConverter {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterData: FfiConverterRustBuffer {
+    typealias SwiftType = Data
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        let len: Int32 = try readInt(&buf)
+        return Data(try readBytes(&buf, count: Int(len)))
+    }
+
+    public static func write(_ value: Data, into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        writeBytes(&buf, value)
+    }
+}
+
+
+
+
+/**
+ * A region open in an editor leaf runs itself, chosen by the region's kind
+ * (`leaf-session`): a formula (`math`) edited as structure, where `/` makes
+ * a fraction, `^` a superscript and `sqrt` a root. Each key answers with the
+ * splices it made to the region's content, so the document stays the source
+ * of truth and its undo history sees ordinary edits. One type for every
+ * kind, so a second editor written in Rust needs no new binding; the web
+ * editor's `EditSession` is the same.
+ */
+public protocol EditSessionProtocol: AnyObject, Sendable {
+    
+    /**
+     * Whether → would leave it.
+     */
+    func atEnd()  -> Bool
+    
+    /**
+     * Whether ← would leave the region.
+     */
+    func atHome()  -> Bool
+    
+    /**
+     * The caret to the stop nearest `(x, y)`, in points from the picture's
+     * top left at `size` points per em.
+     */
+    func click(x: Double, y: Double, size: Double) 
+    
+    /**
+     * The content as the session holds it.
+     */
+    func content()  -> String
+    
+    /**
+     * The caret to the last stop, as ← into the region from behind.
+     */
+    func end() 
+    
+    /**
+     * Whether part of the region is selected.
+     */
+    func hasSelection()  -> Bool
+    
+    /**
+     * The caret to the first stop, as → into the region from in front.
+     */
+    func home() 
+    
+    /**
+     * Apply a key, returning the splices it made, in order.
+     */
+    func key(key: EditKey)  -> [EditSplice]
+    
+    /**
+     * Paste `text` at the caret, over the selection.
+     */
+    func paste(text: String)  -> [EditSplice]
+    
+    /**
+     * The region drawn at `size` points per em in `ink` (RGBA bytes), and
+     * where its caret and selection stand on it.
+     */
+    func picture(size: Double, ink: Data) throws  -> EditPicture
+    
+    /**
+     * Take `content` as the region's after an undo or an outside change.
+     */
+    func reload(content: String) throws 
+    
+    /**
+     * The selection as the content's own text — what a copy takes — or
+     * `None` with nothing selected.
+     */
+    func selectedText()  -> String?
+    
+}
+/**
+ * A region open in an editor leaf runs itself, chosen by the region's kind
+ * (`leaf-session`): a formula (`math`) edited as structure, where `/` makes
+ * a fraction, `^` a superscript and `sqrt` a root. Each key answers with the
+ * splices it made to the region's content, so the document stays the source
+ * of truth and its undo history sees ordinary edits. One type for every
+ * kind, so a second editor written in Rust needs no new binding; the web
+ * editor's `EditSession` is the same.
+ */
+open class EditSession: EditSessionProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_leaf_ffi_fn_clone_editsession(self.handle, $0) }
+    }
+    /**
+     * Open `content`, a region of `kind`, the caret at its end. `display` is
+     * a formula's style. [`LeafError::Edit`] for a kind no editor here edits
+     * ([`edit_session_kinds`]), or content its editor cannot read; the view
+     * leaves that region to be edited as source.
+     */
+public convenience init(kind: String, content: String, display: Bool)throws  {
+    let handle =
+        try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_constructor_editsession_new(
+        FfiConverterString.lower(kind),
+        FfiConverterString.lower(content),
+        FfiConverterBool.lower(display),uniffiCallStatus
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_leaf_ffi_fn_free_editsession(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Whether → would leave it.
+     */
+open func atEnd() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_at_end(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Whether ← would leave the region.
+     */
+open func atHome() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_at_home(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The caret to the stop nearest `(x, y)`, in points from the picture's
+     * top left at `size` points per em.
+     */
+open func click(x: Double, y: Double, size: Double)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_click(
+            self.uniffiCloneHandle(),
+        FfiConverterDouble.lower(x),
+        FfiConverterDouble.lower(y),
+        FfiConverterDouble.lower(size),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The content as the session holds it.
+     */
+open func content() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_content(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The caret to the last stop, as ← into the region from behind.
+     */
+open func end()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_end(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Whether part of the region is selected.
+     */
+open func hasSelection() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_has_selection(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The caret to the first stop, as → into the region from in front.
+     */
+open func home()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_home(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Apply a key, returning the splices it made, in order.
+     */
+open func key(key: EditKey) -> [EditSplice]  {
+    return try!  FfiConverterSequenceTypeEditSplice.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_key(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeEditKey_lower(key),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Paste `text` at the caret, over the selection.
+     */
+open func paste(text: String) -> [EditSplice]  {
+    return try!  FfiConverterSequenceTypeEditSplice.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_paste(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(text),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The region drawn at `size` points per em in `ink` (RGBA bytes), and
+     * where its caret and selection stand on it.
+     */
+open func picture(size: Double, ink: Data)throws  -> EditPicture  {
+    return try  FfiConverterTypeEditPicture_lift(try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_picture(
+            self.uniffiCloneHandle(),
+        FfiConverterDouble.lower(size),
+        FfiConverterData.lower(ink),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Take `content` as the region's after an undo or an outside change.
+     */
+open func reload(content: String)throws   {try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_reload(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(content),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The selection as the content's own text — what a copy takes — or
+     * `None` with nothing selected.
+     */
+open func selectedText() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_selected_text(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEditSession: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = EditSession
+
+    public static func lift(_ handle: UInt64) throws -> EditSession {
+        return EditSession(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: EditSession) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EditSession {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: EditSession, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditSession_lift(_ handle: UInt64) throws -> EditSession {
+    return try FfiConverterTypeEditSession.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditSession_lower(_ value: EditSession) -> UInt64 {
+    return FfiConverterTypeEditSession.lower(value)
+}
+
+
+
 
 
 
@@ -790,6 +1163,14 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
      * a row with no block under it. See [`leaf_core::Doc::drop_target_at`].
      */
     func dropTargetAt(row: UInt32)  -> DropTargetView?
+    
+    /**
+     * Replace the source range `[from, to)` with `text`, written exactly —
+     * nothing escaped, the way a formula editor writes TeX — and the caret
+     * after it. Its own undo step; group several with
+     * [`begin_undo_group`](Self::begin_undo_group). See `Doc::edit`.
+     */
+    func editSource(from: UInt32, to: UInt32, text: String)  -> DocView
     
     /**
      * Close the group [`begin_undo_group`](Self::begin_undo_group) opened; a
@@ -1411,6 +1792,17 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
      * to call this at all.
      */
     func setMediaRows(heights: [MediaHeight])  -> DocView
+    
+    /**
+     * Name the regions the view edits itself: `"math"` for formulas, and
+     * `"fence:"` and a language for that language's fenced blocks. Each is
+     * published in [`DocView::regions`] and edited through
+     * [`edit_source`](Self::edit_source) on its content. An owned formula on
+     * the caret's line keeps its picture rather than revealing its TeX, and
+     * an owned fence is one placeholder row, except under `MarkupMode::Full`.
+     * Replaces the whole set. See `Doc::set_owned_regions`.
+     */
+    func setOwnedRegions(kinds: [String])  -> DocView
     
     func setParagraph()  -> DocView
     
@@ -2078,6 +2470,24 @@ open func dropTargetAt(row: UInt32) -> DropTargetView?  {
     uniffi_leaf_ffi_fn_method_leafdoc_drop_target_at(
             self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(row),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Replace the source range `[from, to)` with `text`, written exactly —
+     * nothing escaped, the way a formula editor writes TeX — and the caret
+     * after it. Its own undo step; group several with
+     * [`begin_undo_group`](Self::begin_undo_group). See `Doc::edit`.
+     */
+open func editSource(from: UInt32, to: UInt32, text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_edit_source(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(from),
+        FfiConverterUInt32.lower(to),
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -3325,6 +3735,25 @@ open func setMediaRows(heights: [MediaHeight]) -> DocView  {
     uniffi_leaf_ffi_fn_method_leafdoc_set_media_rows(
             self.uniffiCloneHandle(),
         FfiConverterSequenceTypeMediaHeight.lower(heights),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Name the regions the view edits itself: `"math"` for formulas, and
+     * `"fence:"` and a language for that language's fenced blocks. Each is
+     * published in [`DocView::regions`] and edited through
+     * [`edit_source`](Self::edit_source) on its content. An owned formula on
+     * the caret's line keeps its picture rather than revealing its TeX, and
+     * an owned fence is one placeholder row, except under `MarkupMode::Full`.
+     * Replaces the whole set. See `Doc::set_owned_regions`.
+     */
+open func setOwnedRegions(kinds: [String]) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_owned_regions(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceString.lower(kinds),uniffiCallStatus
     )
 })
 }
@@ -4681,6 +5110,12 @@ public struct DocView: Equatable, Hashable {
      */
     public var math: [MathView]
     /**
+     * The regions this view edits itself, in row order — see
+     * [`RegionView`]. Empty in the source view, and until the view names
+     * some ([`LeafDoc::set_owned_regions`]).
+     */
+    public var regions: [RegionView]
+    /**
      * The caret's row: an index into [`Self::rows`].
      */
     public var caretRow: UInt32
@@ -4875,6 +5310,11 @@ public struct DocView: Equatable, Hashable {
          * empty of any formula on the caret's line, which is its TeX there.
          */math: [MathView], 
         /**
+         * The regions this view edits itself, in row order — see
+         * [`RegionView`]. Empty in the source view, and until the view names
+         * some ([`LeafDoc::set_owned_regions`]).
+         */regions: [RegionView], 
+        /**
          * The caret's row: an index into [`Self::rows`].
          */caretRow: UInt32, 
         /**
@@ -4991,6 +5431,7 @@ public struct DocView: Equatable, Hashable {
         self.directives = directives
         self.media = media
         self.math = math
+        self.regions = regions
         self.caretRow = caretRow
         self.caretCol = caretCol
         self.caretCh = caretCh
@@ -5039,6 +5480,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
                 directives: FfiConverterSequenceTypeDirectiveView.read(from: &buf), 
                 media: FfiConverterSequenceTypeMediaView.read(from: &buf), 
                 math: FfiConverterSequenceTypeMathView.read(from: &buf), 
+                regions: FfiConverterSequenceTypeRegionView.read(from: &buf), 
                 caretRow: FfiConverterUInt32.read(from: &buf), 
                 caretCol: FfiConverterUInt32.read(from: &buf), 
                 caretCh: FfiConverterUInt32.read(from: &buf), 
@@ -5073,6 +5515,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         FfiConverterSequenceTypeDirectiveView.write(value.directives, into: &buf)
         FfiConverterSequenceTypeMediaView.write(value.media, into: &buf)
         FfiConverterSequenceTypeMathView.write(value.math, into: &buf)
+        FfiConverterSequenceTypeRegionView.write(value.regions, into: &buf)
         FfiConverterUInt32.write(value.caretRow, into: &buf)
         FfiConverterUInt32.write(value.caretCol, into: &buf)
         FfiConverterUInt32.write(value.caretCh, into: &buf)
@@ -5169,6 +5612,213 @@ public func FfiConverterTypeDropTargetView_lift(_ buf: RustBuffer) throws -> Dro
 #endif
 public func FfiConverterTypeDropTargetView_lower(_ value: DropTargetView) -> RustBuffer {
     return FfiConverterTypeDropTargetView.lower(value)
+}
+
+
+/**
+ * An [`EditSession`]'s picture: a standalone SVG, and its advance, its rise
+ * above the baseline and its reach below it, in em of the size it was drawn
+ * at — [`typeset_math`]'s shape, so a view draws it where it would have
+ * drawn the region's renderer's picture. It holds no caret or selection: the
+ * view draws those, with its own blink and colours, at `caret` (a
+ * zero-width rect at the stop) and `selection`.
+ */
+public struct EditPicture: Equatable, Hashable {
+    public var svg: String
+    public var width: Double
+    public var height: Double
+    public var depth: Double
+    public var caret: EditRect
+    public var selection: [EditRect]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(svg: String, width: Double, height: Double, depth: Double, caret: EditRect, selection: [EditRect]) {
+        self.svg = svg
+        self.width = width
+        self.height = height
+        self.depth = depth
+        self.caret = caret
+        self.selection = selection
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EditPicture: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEditPicture: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EditPicture {
+        return
+            try EditPicture(
+                svg: FfiConverterString.read(from: &buf), 
+                width: FfiConverterDouble.read(from: &buf), 
+                height: FfiConverterDouble.read(from: &buf), 
+                depth: FfiConverterDouble.read(from: &buf), 
+                caret: FfiConverterTypeEditRect.read(from: &buf), 
+                selection: FfiConverterSequenceTypeEditRect.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EditPicture, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.svg, into: &buf)
+        FfiConverterDouble.write(value.width, into: &buf)
+        FfiConverterDouble.write(value.height, into: &buf)
+        FfiConverterDouble.write(value.depth, into: &buf)
+        FfiConverterTypeEditRect.write(value.caret, into: &buf)
+        FfiConverterSequenceTypeEditRect.write(value.selection, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditPicture_lift(_ buf: RustBuffer) throws -> EditPicture {
+    return try FfiConverterTypeEditPicture.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditPicture_lower(_ value: EditPicture) -> RustBuffer {
+    return FfiConverterTypeEditPicture.lower(value)
+}
+
+
+/**
+ * A rect on an [`EditPicture`], in em from its top left.
+ */
+public struct EditRect: Equatable, Hashable {
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(x: Double, y: Double, width: Double, height: Double) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EditRect: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEditRect: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EditRect {
+        return
+            try EditRect(
+                x: FfiConverterDouble.read(from: &buf), 
+                y: FfiConverterDouble.read(from: &buf), 
+                width: FfiConverterDouble.read(from: &buf), 
+                height: FfiConverterDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EditRect, into buf: inout [UInt8]) {
+        FfiConverterDouble.write(value.x, into: &buf)
+        FfiConverterDouble.write(value.y, into: &buf)
+        FfiConverterDouble.write(value.width, into: &buf)
+        FfiConverterDouble.write(value.height, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditRect_lift(_ buf: RustBuffer) throws -> EditRect {
+    return try FfiConverterTypeEditRect.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditRect_lower(_ value: EditRect) -> RustBuffer {
+    return FfiConverterTypeEditRect.lower(value)
+}
+
+
+/**
+ * One splice an [`EditSession`] made to its region's content: replace
+ * `[from, to)` — byte offsets into the content as the splice before this one
+ * left it — with `text`. The view adds the region's `content_start` and
+ * applies it with [`LeafDoc::edit_source`].
+ */
+public struct EditSplice: Equatable, Hashable {
+    public var from: UInt32
+    public var to: UInt32
+    public var text: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(from: UInt32, to: UInt32, text: String) {
+        self.from = from
+        self.to = to
+        self.text = text
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EditSplice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEditSplice: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EditSplice {
+        return
+            try EditSplice(
+                from: FfiConverterUInt32.read(from: &buf), 
+                to: FfiConverterUInt32.read(from: &buf), 
+                text: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EditSplice, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.from, into: &buf)
+        FfiConverterUInt32.write(value.to, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditSplice_lift(_ buf: RustBuffer) throws -> EditSplice {
+    return try FfiConverterTypeEditSplice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditSplice_lower(_ value: EditSplice) -> RustBuffer {
+    return FfiConverterTypeEditSplice.lower(value)
 }
 
 
@@ -6211,6 +6861,178 @@ public func FfiConverterTypeMediaView_lift(_ buf: RustBuffer) throws -> MediaVie
 #endif
 public func FfiConverterTypeMediaView_lower(_ value: MediaView) -> RustBuffer {
     return FfiConverterTypeMediaView.lower(value)
+}
+
+
+/**
+ * A part of the document the view draws or edits itself, as it asked
+ * through [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), a
+ * fenced block of a language it named (`"fence:mermaid"`), or a leaf
+ * directive of a name it named (`"directive:embed"`). A renderer draws one
+ * from its `content`; an editor opens it, reads `[content_start,
+ * content_end)` and writes back through [`LeafDoc::edit_source`]. An owned
+ * fence or directive stands as placeholder rows the view draws over; an
+ * owned formula is the picture its [`MathView`] already describes.
+ */
+public struct RegionView: Equatable, Hashable {
+    /**
+     * `"math"`, `"fence:"` and the fence's language, or `"directive:"` and
+     * the leaf directive's name.
+     */
+    public var kind: String
+    /**
+     * An atom in a line of text — an inline formula's, or an inline
+     * directive's (`:name[label]`) — rather than a block on rows of its own.
+     */
+    public var inline: Bool
+    /**
+     * A formula set in display style (`$$…$$`, inline or not) rather than
+     * text style. False for every other kind.
+     */
+    public var display: Bool
+    /**
+     * A leaf directive's name, `[label]` and `{…}` attributes, as its
+     * [`DirectiveView`] carries them. Empty for every other kind.
+     */
+    public var name: String
+    public var label: String
+    public var attrs: [DirectiveAttr]
+    /**
+     * The [`DocView::rows`] it stands on, `[start_row, end_row)`.
+     */
+    public var startRow: UInt32
+    public var endRow: UInt32
+    /**
+     * Its source start, where the caret rests in front of it.
+     */
+    public var src: UInt32
+    /**
+     * Its source end, past its closing delimiter or fence.
+     */
+    public var end: UInt32
+    /**
+     * The bytes its editor reads and splices: a formula's TeX, or a fence's
+     * lines between the fences, each with its newline.
+     */
+    public var contentStart: UInt32
+    public var contentEnd: UInt32
+    /**
+     * Those bytes, so a view can open an editor without asking for them.
+     */
+    public var content: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `"math"`, `"fence:"` and the fence's language, or `"directive:"` and
+         * the leaf directive's name.
+         */kind: String, 
+        /**
+         * An atom in a line of text — an inline formula's, or an inline
+         * directive's (`:name[label]`) — rather than a block on rows of its own.
+         */inline: Bool, 
+        /**
+         * A formula set in display style (`$$…$$`, inline or not) rather than
+         * text style. False for every other kind.
+         */display: Bool, 
+        /**
+         * A leaf directive's name, `[label]` and `{…}` attributes, as its
+         * [`DirectiveView`] carries them. Empty for every other kind.
+         */name: String, label: String, attrs: [DirectiveAttr], 
+        /**
+         * The [`DocView::rows`] it stands on, `[start_row, end_row)`.
+         */startRow: UInt32, endRow: UInt32, 
+        /**
+         * Its source start, where the caret rests in front of it.
+         */src: UInt32, 
+        /**
+         * Its source end, past its closing delimiter or fence.
+         */end: UInt32, 
+        /**
+         * The bytes its editor reads and splices: a formula's TeX, or a fence's
+         * lines between the fences, each with its newline.
+         */contentStart: UInt32, contentEnd: UInt32, 
+        /**
+         * Those bytes, so a view can open an editor without asking for them.
+         */content: String) {
+        self.kind = kind
+        self.inline = inline
+        self.display = display
+        self.name = name
+        self.label = label
+        self.attrs = attrs
+        self.startRow = startRow
+        self.endRow = endRow
+        self.src = src
+        self.end = end
+        self.contentStart = contentStart
+        self.contentEnd = contentEnd
+        self.content = content
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RegionView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegionView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegionView {
+        return
+            try RegionView(
+                kind: FfiConverterString.read(from: &buf), 
+                inline: FfiConverterBool.read(from: &buf), 
+                display: FfiConverterBool.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                label: FfiConverterString.read(from: &buf), 
+                attrs: FfiConverterSequenceTypeDirectiveAttr.read(from: &buf), 
+                startRow: FfiConverterUInt32.read(from: &buf), 
+                endRow: FfiConverterUInt32.read(from: &buf), 
+                src: FfiConverterUInt32.read(from: &buf), 
+                end: FfiConverterUInt32.read(from: &buf), 
+                contentStart: FfiConverterUInt32.read(from: &buf), 
+                contentEnd: FfiConverterUInt32.read(from: &buf), 
+                content: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RegionView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterBool.write(value.inline, into: &buf)
+        FfiConverterBool.write(value.display, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterSequenceTypeDirectiveAttr.write(value.attrs, into: &buf)
+        FfiConverterUInt32.write(value.startRow, into: &buf)
+        FfiConverterUInt32.write(value.endRow, into: &buf)
+        FfiConverterUInt32.write(value.src, into: &buf)
+        FfiConverterUInt32.write(value.end, into: &buf)
+        FfiConverterUInt32.write(value.contentStart, into: &buf)
+        FfiConverterUInt32.write(value.contentEnd, into: &buf)
+        FfiConverterString.write(value.content, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegionView_lift(_ buf: RustBuffer) throws -> RegionView {
+    return try FfiConverterTypeRegionView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegionView_lower(_ value: RegionView) -> RustBuffer {
+    return FfiConverterTypeRegionView.lower(value)
 }
 
 
@@ -7652,6 +8474,143 @@ public func FfiConverterTypeBlockClass_lower(_ value: BlockClass) -> RustBuffer 
 
 
 /**
+ * A key an [`EditSession`] understands.
+ */
+
+public enum EditKey: Equatable, Hashable {
+    
+    case char(ch: String
+    )
+    case left
+    case right
+    case up
+    case down
+    case backspace
+    /**
+     * Forward delete.
+     */
+    case delete
+    /**
+     * ⇧← and ⇧→: move the caret, extending the selection.
+     */
+    case extendLeft
+    case extendRight
+    /**
+     * The whole region.
+     */
+    case selectAll
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension EditKey: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEditKey: FfiConverterRustBuffer {
+    typealias SwiftType = EditKey
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EditKey {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .char(ch: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 2: return .left
+        
+        case 3: return .right
+        
+        case 4: return .up
+        
+        case 5: return .down
+        
+        case 6: return .backspace
+        
+        case 7: return .delete
+        
+        case 8: return .extendLeft
+        
+        case 9: return .extendRight
+        
+        case 10: return .selectAll
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: EditKey, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .char(ch):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(ch, into: &buf)
+            
+        
+        case .left:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .right:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .up:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .down:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .backspace:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .delete:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .extendLeft:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .extendRight:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .selectAll:
+            writeInt(&buf, Int32(10))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditKey_lift(_ buf: RustBuffer) throws -> EditKey {
+    return try FfiConverterTypeEditKey.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditKey_lower(_ value: EditKey) -> RustBuffer {
+    return FfiConverterTypeEditKey.lower(value)
+}
+
+
+
+/**
  * The face a run is set in: one of CSS's four generics, or the family the
  * author named.
  *
@@ -7940,6 +8899,13 @@ enum LeafError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case Math(message: String, position: UInt32?
     )
+    /**
+     * An [`EditSession`] could not open, take new content, or draw: no
+     * editor for the kind, or content its editor cannot read. `position` is
+     * a byte offset into the content where, when it can say.
+     */
+    case Edit(message: String, position: UInt32?
+    )
 
     
 
@@ -7979,6 +8945,10 @@ public struct FfiConverterTypeLeafError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf), 
             position: try FfiConverterOptionUInt32.read(from: &buf)
             )
+        case 4: return .Edit(
+            message: try FfiConverterString.read(from: &buf), 
+            position: try FfiConverterOptionUInt32.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -8003,6 +8973,12 @@ public struct FfiConverterTypeLeafError: FfiConverterRustBuffer {
         
         case let .Math(message,position):
             writeInt(&buf, Int32(3))
+            FfiConverterString.write(message, into: &buf)
+            FfiConverterOptionUInt32.write(position, into: &buf)
+            
+        
+        case let .Edit(message,position):
+            writeInt(&buf, Int32(4))
             FfiConverterString.write(message, into: &buf)
             FfiConverterOptionUInt32.write(position, into: &buf)
             
@@ -9405,6 +10381,56 @@ fileprivate struct FfiConverterSequenceTypeDirectiveView: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeEditRect: FfiConverterRustBuffer {
+    typealias SwiftType = [EditRect]
+
+    public static func write(_ value: [EditRect], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeEditRect.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [EditRect] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [EditRect]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeEditRect.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeEditSplice: FfiConverterRustBuffer {
+    typealias SwiftType = [EditSplice]
+
+    public static func write(_ value: [EditSplice], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeEditSplice.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [EditSplice] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [EditSplice]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeEditSplice.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeHighlight: FfiConverterRustBuffer {
     typealias SwiftType = [Highlight]
 
@@ -9547,6 +10573,31 @@ fileprivate struct FfiConverterSequenceTypeMediaView: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeMediaView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeRegionView: FfiConverterRustBuffer {
+    typealias SwiftType = [RegionView]
+
+    public static func write(_ value: [RegionView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRegionView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RegionView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RegionView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRegionView.read(from: &buf))
         }
         return seq
     }
@@ -9702,6 +10753,16 @@ fileprivate struct FfiConverterSequenceTypeTableView: FfiConverterRustBuffer {
     }
 }
 /**
+ * The kinds of region an [`EditSession`] can be opened for.
+ */
+public func editSessionKinds() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_func_edit_session_kinds(uniffiCallStatus
+    )
+})
+}
+/**
  * Typeset `tex` — the text between a formula's delimiters, as a [`MathView`]
  * hands it over — to a picture. `display` is the view's `display`; `size` is
  * the font size in points the formula is set at (an inline formula takes the
@@ -9743,7 +10804,46 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_leaf_ffi_checksum_func_edit_session_kinds() != 58350) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_func_typeset_math() != 60617) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_at_end() != 23239) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_at_home() != 52164) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_click() != 50524) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_content() != 53390) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_end() != 30973) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_has_selection() != 21517) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_home() != 38496) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_key() != 50893) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_paste() != 39625) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_picture() != 35252) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_reload() != 10774) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_selected_text() != 15380) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_alignment_at_caret() != 31168) {
@@ -9816,6 +10916,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_drop_target_at() != 28018) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_edit_source() != 23680) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_end_undo_group() != 59997) {
@@ -10058,6 +11161,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_media_rows() != 28680) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_owned_regions() != 50786) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_paragraph() != 35833) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -10179,6 +11285,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_word_range_at() != 44185) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_constructor_editsession_new() != 28946) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_constructor_leafdoc_new() != 63804) {

@@ -32,7 +32,7 @@ extension LeafEditorModel {
     public func sheetImage(_ index: Int, theme: EditorTheme, page: PageSetup,
                            scale: CGFloat, dark: Bool = false) -> SheetImage? {
         LeafTextView.sheetImage(of: doc, theme: theme, documentDirectory: documentDirectory,
-                                page: page, index: index, scale: scale, dark: dark)
+                                page: page, index: index, scale: scale, dark: dark, regions: regionSetup)
     }
 }
 
@@ -41,8 +41,10 @@ import AppKit
 
 extension LeafTextView {
     static func sheetImage(of doc: LeafDoc, theme: EditorTheme, documentDirectory: URL?,
-                           page: PageSetup, index: Int, scale: CGFloat, dark: Bool) -> SheetImage? {
-        let sheet = paperSheet(of: doc, theme: theme, documentDirectory: documentDirectory, page: page)
+                           page: PageSetup, index: Int, scale: CGFloat, dark: Bool,
+                           regions: RegionSetup = RegionSetup()) -> SheetImage? {
+        let sheet = paperSheet(of: doc, theme: theme, documentDirectory: documentDirectory, page: page,
+                               regions: regions.onPaper)
         sheet.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         guard !sheet.pages.isEmpty else { return nil }
         let at = min(max(index, 0), sheet.pages.count - 1)
@@ -79,8 +81,9 @@ import UIKit
 
 extension LeafTextView {
     static func sheetImage(of doc: LeafDoc, theme: EditorTheme, documentDirectory: URL?,
-                           page: PageSetup, index: Int, scale: CGFloat, dark: Bool) -> SheetImage? {
-        let sheet = LeafTextView(doc: doc, theme: theme)
+                           page: PageSetup, index: Int, scale: CGFloat, dark: Bool,
+                           regions: RegionSetup = RegionSetup()) -> SheetImage? {
+        let sheet = LeafTextView(doc: doc, theme: theme, regions: regions.onPaper)
         sheet.isPaper = true
         let style: UIUserInterfaceStyle = dark ? .dark : .light
         sheet.overrideUserInterfaceStyle = style

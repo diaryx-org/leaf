@@ -1,4 +1,4 @@
-import SwiftUI
+import CoreText
 import LeafFFI
 import LeafUI
 
@@ -10,11 +10,14 @@ import UIKit
 
 /// The one directive the demo has a meaning for: `::embed{src=…}`, drawn as a
 /// titled card with its URL, and offered in Insert as "Embed…", which asks for
-/// the URL. A demonstration of the host hook, not a vocabulary — the same card
-/// the web, Android and terminal demos paint, so the apps show the hook without
-/// leaf adopting a name. See `docs/proposals/host-directives.md`.
+/// the URL. A demonstration of the host's half, not a vocabulary — the same
+/// card the web, Android and terminal demos paint, so the apps show it without
+/// leaf adopting a name. The card is the renderer's picture for
+/// `directive:embed`, laid out, paged and printed with the text. See
+/// `docs/proposals/host-directives.md` and `docs/proposals/embedded-editors.md`.
 enum EmbedDirective {
     static let name = "embed"
+    static let kind = "directive:embed"
 
     /// The catalogue entry: Insert ▸ Embed…, asking for a URL.
     static let item = DirectiveItem(
@@ -25,87 +28,105 @@ enum EmbedDirective {
         }
     }
 
-    /// The drawing: a card for an `::embed`, and nothing — core's placeholder —
-    /// for any other directive.
-    static func view(for directive: DirectiveView) -> LeafView? {
-        guard directive.name == name else { return nil }
-        let src = directive.attrs.first { $0.key == "src" }?.value ?? ""
-        return EmbedCardView(src: src)
+    /// The picture: a card as wide as the column, titled "Embed", its URL
+    /// beneath, in the text's ink.
+    static let renderer = RegionRenderer { region, context in
+        let src = region.attrs.first { $0.key == "src" }?.value ?? ""
+        return card(title: "Embed", detail: src.isEmpty ? "No URL" : src, ink: context.ink.cgColor)
     }
-}
 
-/// The card itself: bordered, titled "Embed", the URL beneath.
-struct EmbedCard: View {
-    let src: String
+    private static let pad: CGFloat = 12
+    private static let spacing: CGFloat = 4
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label("Embed", systemImage: "link.circle")
-                .font(.headline)
-            Text(src.isEmpty ? "No URL" : src)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+    /// A bordered card with a headline and a line of detail under it, filling
+    /// whatever width it is drawn at.
+    static func card(title: String, detail: String, ink: CGColor) -> RegionPicture {
+        let headline = CTFontCreateUIFontForLanguage(.emphasizedSystem, 13, nil)
+            ?? CTFontCreateWithName("Helvetica-Bold" as CFString, 13, nil)
+        let callout = CTFontCreateUIFontForLanguage(.system, 12, nil)
+            ?? CTFontCreateWithName("Helvetica" as CFString, 12, nil)
+        let secondary = ink.copy(alpha: ink.alpha * 0.6) ?? ink
+        let top = line(title, font: headline, color: ink)
+        let bottom = line(detail, font: callout, color: secondary)
+        let height = (pad * 2 + top.height + spacing + bottom.height).rounded(.up)
+        let symbol = linkSymbol(size: top.height)
+        return RegionPicture(width: nil, height: height) { ctx, rect in
+            let box = rect.insetBy(dx: 0.5, dy: 0.5)
+            let path = CGPath(roundedRect: box, cornerWidth: 8, cornerHeight: 8, transform: nil)
+            ctx.saveGState()
+            ctx.addPath(path)
+            ctx.setFillColor(ink.copy(alpha: 0.06) ?? ink)
+            ctx.fillPath()
+            ctx.addPath(path)
+            ctx.setStrokeColor(ink.copy(alpha: 0.35) ?? ink)
+            ctx.setLineWidth(1)
+            ctx.strokePath()
+            var x = rect.minX + pad
+            if let symbol {
+                // A template image: its shape, in the ink.
+                let r = CGRect(x: x, y: rect.minY + pad, width: top.height, height: top.height)
+                ctx.saveGState()
+                ctx.translateBy(x: r.minX, y: r.maxY)
+                ctx.scaleBy(x: 1, y: -1)
+                ctx.clip(to: CGRect(origin: .zero, size: r.size), mask: symbol)
+                ctx.setFillColor(ink)
+                ctx.fill(CGRect(origin: .zero, size: r.size))
+                ctx.restoreGState()
+                x += top.height + 6
+            }
+            draw(top, at: CGPoint(x: x, y: rect.minY + pad), width: rect.maxX - pad - x, in: ctx)
+            draw(bottom, at: CGPoint(x: rect.minX + pad, y: rect.minY + pad + top.height + spacing),
+                 width: rect.width - pad * 2, in: ctx)
+            ctx.restoreGState()
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.5)))
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("embed-card")
-    }
-}
-
-#if canImport(AppKit)
-/// The card in a hosting view that lets every click through to the editor, so
-/// a click on it places the caret in front of it or past it as a click on a
-/// picture does. Its height is the SwiftUI card's own, which the hosting view
-/// reports as its intrinsic size.
-final class EmbedCardView: NSHostingView<EmbedCard> {
-    convenience init(src: String) {
-        self.init(rootView: EmbedCard(src: src))
     }
 
-    required init(rootView: EmbedCard) {
-        super.init(rootView: rootView)
+    private struct Line {
+        let text: NSAttributedString
+        let height: CGFloat
+        let ascent: CGFloat
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-#elseif canImport(UIKit)
-/// The card in a hosting controller's view, kept by this view so the
-/// controller lives as long as the card does. Taps go through to the editor.
-final class EmbedCardView: UIView {
-    private let host: UIHostingController<EmbedCard>
-
-    init(src: String) {
-        host = UIHostingController(rootView: EmbedCard(src: src))
-        host.sizingOptions = .intrinsicContentSize
-        super.init(frame: .zero)
-        isUserInteractionEnabled = false
-        host.view.backgroundColor = .clear
-        host.view.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(host.view)
-        NSLayoutConstraint.activate([
-            host.view.leadingAnchor.constraint(equalTo: leadingAnchor),
-            host.view.trailingAnchor.constraint(equalTo: trailingAnchor),
-            host.view.topAnchor.constraint(equalTo: topAnchor),
-            host.view.bottomAnchor.constraint(equalTo: bottomAnchor),
+    private static func line(_ text: String, font: CTFont, color: CGColor) -> Line {
+        let attributed = NSAttributedString(string: text, attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): color,
         ])
+        let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font)
+        return Line(text: attributed, height: (ascent + descent).rounded(.up), ascent: ascent)
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    /// One line set at `origin` (its top left) in a y-down context, cut short
+    /// with an ellipsis in the middle where it runs past `width`.
+    private static func draw(_ line: Line, at origin: CGPoint, width: CGFloat, in ctx: CGContext) {
+        var ct = CTLineCreateWithAttributedString(line.text)
+        if CTLineGetTypographicBounds(ct, nil, nil, nil) > width {
+            let dots = CTLineCreateWithAttributedString(NSAttributedString(
+                string: "\u{2026}", attributes: line.text.attributes(at: 0, effectiveRange: nil)))
+            ct = CTLineCreateTruncatedLine(ct, Double(max(0, width)), .middle, dots) ?? ct
+        }
+        ctx.saveGState()
+        ctx.textMatrix = .identity
+        ctx.translateBy(x: origin.x, y: origin.y + line.ascent)
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.textPosition = .zero
+        CTLineDraw(ct, ctx)
+        ctx.restoreGState()
+    }
 
-    override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: host.view.intrinsicContentSize.height)
+    /// The `link.circle` symbol as a mask, `size` points square.
+    private static func linkSymbol(size: CGFloat) -> CGImage? {
+        #if canImport(AppKit)
+        let image = NSImage(systemSymbolName: "link.circle", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: size, weight: .semibold))
+        var rect = CGRect(x: 0, y: 0, width: size * 2, height: size * 2)
+        return image?.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+        #else
+        return UIImage(systemName: "link.circle",
+                       withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .semibold))?.cgImage
+        #endif
     }
 }
-#endif
 
 /// Ask for the URL to embed, and call back with it — or with nil when the
 /// author cancels or leaves the field empty. The link prompt's twin.

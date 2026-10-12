@@ -59,6 +59,10 @@ use unicode_segmentation::UnicodeSegmentation;
 // what makes rustc treat the crate as referenced and carry its objects into
 // the staticlib.
 use resvg_uniffi as _;
+// Mermaid, for a host that draws its fences — linked in only under the
+// `mermaid` feature, and a Swift module of its own. See leaf-mermaid-ffi.
+#[cfg(feature = "mermaid")]
+use leaf_mermaid_ffi as _;
 
 uniffi::setup_scaffolding!();
 
@@ -77,6 +81,14 @@ pub enum LeafError {
     /// into the formula's text where the parser gave up, when it can say.
     #[error("math error: {message}")]
     Math {
+        message: String,
+        position: Option<u32>,
+    },
+    /// An [`EditSession`] could not open, take new content, or draw: no
+    /// editor for the kind, or content its editor cannot read. `position` is
+    /// a byte offset into the content where, when it can say.
+    #[error("edit error: {message}")]
+    Edit {
         message: String,
         position: Option<u32>,
     },
@@ -589,7 +601,7 @@ pub struct DirectiveView {
 /// tuple because UniFFI has no tuple type; an absent value flattens to `""`,
 /// since a bare attribute is a flag and the distinction from `key=""` has no
 /// consumer on this side.
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct DirectiveAttr {
     pub key: String,
     pub value: String,
@@ -710,6 +722,45 @@ pub struct MathView {
     pub src: u32,
 }
 
+/// A part of the document the view draws or edits itself, as it asked
+/// through [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), a
+/// fenced block of a language it named (`"fence:mermaid"`), or a leaf
+/// directive of a name it named (`"directive:embed"`). A renderer draws one
+/// from its `content`; an editor opens it, reads `[content_start,
+/// content_end)` and writes back through [`LeafDoc::edit_source`]. An owned
+/// fence or directive stands as placeholder rows the view draws over; an
+/// owned formula is the picture its [`MathView`] already describes.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct RegionView {
+    /// `"math"`, `"fence:"` and the fence's language, or `"directive:"` and
+    /// the leaf directive's name.
+    pub kind: String,
+    /// An atom in a line of text — an inline formula's, or an inline
+    /// directive's (`:name[label]`) — rather than a block on rows of its own.
+    pub inline: bool,
+    /// A formula set in display style (`$$…$$`, inline or not) rather than
+    /// text style. False for every other kind.
+    pub display: bool,
+    /// A leaf directive's name, `[label]` and `{…}` attributes, as its
+    /// [`DirectiveView`] carries them. Empty for every other kind.
+    pub name: String,
+    pub label: String,
+    pub attrs: Vec<DirectiveAttr>,
+    /// The [`DocView::rows`] it stands on, `[start_row, end_row)`.
+    pub start_row: u32,
+    pub end_row: u32,
+    /// Its source start, where the caret rests in front of it.
+    pub src: u32,
+    /// Its source end, past its closing delimiter or fence.
+    pub end: u32,
+    /// The bytes its editor reads and splices: a formula's TeX, or a fence's
+    /// lines between the fences, each with its newline.
+    pub content_start: u32,
+    pub content_end: u32,
+    /// Those bytes, so a view can open an editor without asking for them.
+    pub content: String,
+}
+
 /// A per-formula measured height, the way a renderer that reserves rows
 /// (rather than laying pictures out in its own units) reports one back — the
 /// input half of the loop [`LeafDoc::set_math_rows`] closes. The Swift views
@@ -815,6 +866,10 @@ pub struct DocView {
     /// `math` run or the placeholder rows. Empty in the source view, and
     /// empty of any formula on the caret's line, which is its TeX there.
     pub math: Vec<MathView>,
+    /// The regions this view edits itself, in row order — see
+    /// [`RegionView`]. Empty in the source view, and until the view names
+    /// some ([`LeafDoc::set_owned_regions`]).
+    pub regions: Vec<RegionView>,
     /// The caret's row: an index into [`Self::rows`].
     pub caret_row: u32,
     /// The caret's display *column* within its row — core's grid position. Kept
@@ -1896,6 +1951,10 @@ impl Inner {
             View::Wysiwyg => wysiwyg_math(&self.doc.vmap),
             View::Source => Vec::new(),
         };
+        let regions = match self.doc.view {
+            View::Wysiwyg => wysiwyg_regions(&self.doc.vmap, &self.doc.source),
+            View::Source => Vec::new(),
+        };
 
         let (caret_row, caret_col) = self.doc.caret_pos();
         // Map the caret's display column to a UTF-16 text offset so a native
@@ -1937,6 +1996,7 @@ impl Inner {
             directives,
             media,
             math,
+            regions,
             caret_row: caret_row as u32,
             caret_col: caret_col as u32,
             caret_ch: caret_ch as u32,
@@ -2115,6 +2175,225 @@ pub fn typeset_math(
         height: p.height,
         depth: p.depth,
     })
+}
+
+/// One splice an [`EditSession`] made to its region's content: replace
+/// `[from, to)` — byte offsets into the content as the splice before this one
+/// left it — with `text`. The view adds the region's `content_start` and
+/// applies it with [`LeafDoc::edit_source`].
+#[derive(uniffi::Record)]
+pub struct EditSplice {
+    pub from: u32,
+    pub to: u32,
+    pub text: String,
+}
+
+/// A rect on an [`EditPicture`], in em from its top left.
+#[derive(uniffi::Record, Clone, Copy, Debug, PartialEq)]
+pub struct EditRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// An [`EditSession`]'s picture: a standalone SVG, and its advance, its rise
+/// above the baseline and its reach below it, in em of the size it was drawn
+/// at — [`typeset_math`]'s shape, so a view draws it where it would have
+/// drawn the region's renderer's picture. It holds no caret or selection: the
+/// view draws those, with its own blink and colours, at `caret` (a
+/// zero-width rect at the stop) and `selection`.
+#[derive(uniffi::Record)]
+pub struct EditPicture {
+    pub svg: String,
+    pub width: f64,
+    pub height: f64,
+    pub depth: f64,
+    pub caret: EditRect,
+    pub selection: Vec<EditRect>,
+}
+
+/// A key an [`EditSession`] understands.
+#[derive(uniffi::Enum)]
+pub enum EditKey {
+    Char {
+        ch: String,
+    },
+    Left,
+    Right,
+    Up,
+    Down,
+    Backspace,
+    /// Forward delete.
+    Delete,
+    /// ⇧← and ⇧→: move the caret, extending the selection.
+    ExtendLeft,
+    ExtendRight,
+    /// The whole region.
+    SelectAll,
+}
+
+/// A region open in an editor leaf runs itself, chosen by the region's kind
+/// (`leaf-session`): a formula (`math`) edited as structure, where `/` makes
+/// a fraction, `^` a superscript and `sqrt` a root. Each key answers with the
+/// splices it made to the region's content, so the document stays the source
+/// of truth and its undo history sees ordinary edits. One type for every
+/// kind, so a second editor written in Rust needs no new binding; the web
+/// editor's `EditSession` is the same.
+#[derive(uniffi::Object)]
+pub struct EditSession {
+    inner: Mutex<Box<dyn leaf_session::Editor>>,
+}
+
+/// The kinds of region an [`EditSession`] can be opened for.
+#[uniffi::export]
+pub fn edit_session_kinds() -> Vec<String> {
+    leaf_session::KINDS.iter().map(|k| k.to_string()).collect()
+}
+
+fn edit_error(e: leaf_session::Error) -> LeafError {
+    LeafError::Edit {
+        message: e.message,
+        position: e.at.map(|at| at as u32),
+    }
+}
+
+/// A session's splices as the binding hands them over.
+fn edit_splices(splices: Vec<leaf_session::Splice>) -> Vec<EditSplice> {
+    splices
+        .into_iter()
+        .map(|s| EditSplice {
+            from: s.range.start as u32,
+            to: s.range.end as u32,
+            text: s.text,
+        })
+        .collect()
+}
+
+#[uniffi::export]
+impl EditSession {
+    /// Open `content`, a region of `kind`, the caret at its end. `display` is
+    /// a formula's style. [`LeafError::Edit`] for a kind no editor here edits
+    /// ([`edit_session_kinds`]), or content its editor cannot read; the view
+    /// leaves that region to be edited as source.
+    #[uniffi::constructor]
+    pub fn new(kind: String, content: String, display: bool) -> Result<Arc<Self>, LeafError> {
+        let editor = leaf_session::open(&kind, &content, display).map_err(edit_error)?;
+        Ok(Arc::new(EditSession {
+            inner: Mutex::new(editor),
+        }))
+    }
+
+    /// Apply a key, returning the splices it made, in order.
+    pub fn key(&self, key: EditKey) -> Vec<EditSplice> {
+        use leaf_session::Key;
+        let k = match key {
+            EditKey::Char { ch } => match ch.chars().next() {
+                Some(c) => Key::Char(c),
+                None => return Vec::new(),
+            },
+            EditKey::Left => Key::Left,
+            EditKey::Right => Key::Right,
+            EditKey::Up => Key::Up,
+            EditKey::Down => Key::Down,
+            EditKey::Backspace => Key::Backspace,
+            EditKey::Delete => Key::Delete,
+            EditKey::ExtendLeft => Key::ExtendLeft,
+            EditKey::ExtendRight => Key::ExtendRight,
+            EditKey::SelectAll => Key::SelectAll,
+        };
+        edit_splices(self.lock().key(k))
+    }
+
+    /// Whether part of the region is selected.
+    pub fn has_selection(&self) -> bool {
+        self.lock().selected().is_some()
+    }
+
+    /// The selection as the content's own text — what a copy takes — or
+    /// `None` with nothing selected.
+    pub fn selected_text(&self) -> Option<String> {
+        self.lock().selected()
+    }
+
+    /// Paste `text` at the caret, over the selection.
+    pub fn paste(&self, text: String) -> Vec<EditSplice> {
+        edit_splices(self.lock().paste(&text))
+    }
+
+    /// The caret to the first stop, as → into the region from in front.
+    pub fn home(&self) {
+        self.lock().home();
+    }
+
+    /// The caret to the last stop, as ← into the region from behind.
+    pub fn end(&self) {
+        self.lock().end();
+    }
+
+    /// Whether ← would leave the region.
+    pub fn at_home(&self) -> bool {
+        self.lock().at_home()
+    }
+
+    /// Whether → would leave it.
+    pub fn at_end(&self) -> bool {
+        self.lock().at_end()
+    }
+
+    /// Take `content` as the region's after an undo or an outside change.
+    pub fn reload(&self, content: String) -> Result<(), LeafError> {
+        self.lock().reload(&content).map_err(edit_error)
+    }
+
+    /// The caret to the stop nearest `(x, y)`, in points from the picture's
+    /// top left at `size` points per em.
+    pub fn click(&self, x: f64, y: f64, size: f64) {
+        self.lock().click(x / size, y / size);
+    }
+
+    /// The content as the session holds it.
+    pub fn content(&self) -> String {
+        self.lock().content()
+    }
+
+    /// The region drawn at `size` points per em in `ink` (RGBA bytes), and
+    /// where its caret and selection stand on it.
+    pub fn picture(&self, size: f64, ink: Vec<u8>) -> Result<EditPicture, LeafError> {
+        let rgba = |v: &[u8]| -> [u8; 4] {
+            [
+                v.first().copied().unwrap_or(0),
+                v.get(1).copied().unwrap_or(0),
+                v.get(2).copied().unwrap_or(0),
+                v.get(3).copied().unwrap_or(255),
+            ]
+        };
+        let style = leaf_session::Style {
+            size,
+            ink: rgba(&ink),
+        };
+        let p = self.lock().picture(&style).map_err(edit_error)?;
+        let rect = |r: leaf_session::Rect| EditRect {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        };
+        Ok(EditPicture {
+            svg: p.svg,
+            width: p.width,
+            height: p.height,
+            depth: p.depth,
+            caret: rect(p.caret),
+            selection: p.selection.into_iter().map(rect).collect(),
+        })
+    }
+}
+
+impl EditSession {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Box<dyn leaf_session::Editor>> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
 }
 
 #[uniffi::export]
@@ -2309,6 +2588,19 @@ impl LeafDoc {
                 .map(|h| (h.tex, h.rows.max(1) as usize))
                 .collect(),
         );
+        g.frame()
+    }
+
+    /// Name the regions the view edits itself: `"math"` for formulas, and
+    /// `"fence:"` and a language for that language's fenced blocks. Each is
+    /// published in [`DocView::regions`] and edited through
+    /// [`edit_source`](Self::edit_source) on its content. An owned formula on
+    /// the caret's line keeps its picture rather than revealing its TeX, and
+    /// an owned fence is one placeholder row, except under `MarkupMode::Full`.
+    /// Replaces the whole set. See `Doc::set_owned_regions`.
+    pub fn set_owned_regions(&self, kinds: Vec<String>) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_owned_regions(&kinds);
         g.frame()
     }
 
@@ -3741,6 +4033,16 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// Replace the source range `[from, to)` with `text`, written exactly —
+    /// nothing escaped, the way a formula editor writes TeX — and the caret
+    /// after it. Its own undo step; group several with
+    /// [`begin_undo_group`](Self::begin_undo_group). See `Doc::edit`.
+    pub fn edit_source(&self, from: u32, to: u32, text: String) -> DocView {
+        let mut g = self.lock();
+        g.doc.edit(from as usize, to as usize, &text);
+        g.frame()
+    }
+
     /// Replace the source range `[from, to]` with `text` — `replace(_:withText:)`.
     pub fn replace_range(&self, from: u32, to: u32, text: String) -> DocView {
         let mut g = self.lock();
@@ -4041,6 +4343,44 @@ fn wysiwyg_math(vmap: &VisualMap) -> Vec<MathView> {
             tex: m.tex.clone(),
             display: m.display,
             src: m.src as u32,
+        })
+        .collect()
+}
+
+/// The regions the view edits itself, as [`RegionView`]s.
+fn wysiwyg_regions(vmap: &VisualMap, source: &str) -> Vec<RegionView> {
+    vmap.regions
+        .iter()
+        .map(|r| RegionView {
+            kind: r.kind.clone(),
+            inline: r.inline,
+            display: r.display,
+            name: r
+                .directive
+                .as_ref()
+                .map(|d| d.name.clone())
+                .unwrap_or_default(),
+            label: r
+                .directive
+                .as_ref()
+                .map(|d| d.label.clone())
+                .unwrap_or_default(),
+            attrs: r.directive.as_ref().map_or_else(Vec::new, |d| {
+                d.attrs
+                    .iter()
+                    .map(|(k, v)| DirectiveAttr {
+                        key: k.clone(),
+                        value: v.clone().unwrap_or_default(),
+                    })
+                    .collect()
+            }),
+            start_row: r.rows_span.start as u32,
+            end_row: r.rows_span.end as u32,
+            src: r.src as u32,
+            end: r.end as u32,
+            content_start: r.content.start as u32,
+            content_end: r.content.end as u32,
+            content: source.get(r.content.clone()).unwrap_or("").to_string(),
         })
         .collect()
 }
@@ -5941,6 +6281,48 @@ mod tests {
             Err(other) => panic!("expected a math error, got {other}"),
             Ok(_) => panic!("expected a math error, got a picture"),
         }
+    }
+
+    #[test]
+    fn an_edit_session_s_splices_land_in_the_document_through_edit_source() {
+        let doc = LeafDoc::new("say $x$ here\n".into(), "markdown".into()).unwrap();
+        doc.set_inline_pictures(true);
+        let view = doc.set_owned_regions(vec!["math".into()]);
+        let m = &view.math[0];
+        assert_eq!(m.tex, "x");
+        let r = &view.regions[0];
+        assert_eq!((r.kind.as_str(), r.content.as_str()), ("math", "x"));
+        assert_eq!(edit_session_kinds(), vec!["math".to_string()]);
+        let session = EditSession::new(r.kind.clone(), r.content.clone(), r.display).unwrap();
+        // `x/2`: the fraction takes the `x` as its numerator.
+        for k in ["/", "2"] {
+            let splices = session.key(EditKey::Char { ch: k.into() });
+            doc.begin_undo_group();
+            for sp in splices {
+                doc.edit_source(r.content_start + sp.from, r.content_start + sp.to, sp.text);
+            }
+            doc.end_undo_group();
+        }
+        assert_eq!(doc.source(), "say $\\frac{x}{2}$ here\n");
+        assert_eq!(session.content(), "\\frac{x}{2}");
+        let p = session.picture(16.0, vec![0, 0, 0, 255]).unwrap();
+        assert!(p.svg.starts_with("<svg"));
+        assert!(p.caret.height > 0.0, "no caret rect");
+        assert!(p.selection.is_empty());
+        // One keystroke, one undo step.
+        doc.undo();
+        assert_eq!(doc.source(), "say $\\frac{x}{}$ here\n");
+        assert!(matches!(
+            EditSession::new("math".into(), "\\frac{".into(), false),
+            Err(LeafError::Edit {
+                position: Some(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            EditSession::new("fence:mermaid".into(), "graph LR\n".into(), false),
+            Err(LeafError::Edit { position: None, .. })
+        ));
     }
 
     // ── frames as changes ────────────────────────────────────────────────

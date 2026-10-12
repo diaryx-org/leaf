@@ -754,6 +754,45 @@ pub struct MathView {
     src: usize,
 }
 
+/// A part of the document the renderer draws or edits itself, as it asked
+/// through [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), a
+/// fenced block of a language it named (`"fence:mermaid"`), or a leaf
+/// directive of a name it named (`"directive:embed"`). A renderer draws one
+/// from its `content`; an editor opens it, reads `[content_start,
+/// content_end)` and writes back through [`LeafDoc::edit_source`]. An owned
+/// fence or directive stands as placeholder rows the renderer draws over; an
+/// owned formula is the picture its [`MathView`] already describes.
+#[derive(Serialize, Tsify)]
+pub struct RegionView {
+    /// `"math"`, `"fence:"` and the fence's language, or `"directive:"` and
+    /// the leaf directive's name.
+    kind: String,
+    /// An atom in a line of text — an inline formula's, or an inline
+    /// directive's (`:name[label]`) — rather than a block on rows of its own.
+    inline: bool,
+    /// A formula set in display style (`$$…$$`, inline or not) rather than
+    /// text style. False for every other kind.
+    display: bool,
+    /// A leaf directive's name, `[label]` and `{…}` attributes, as its
+    /// [`DirectiveView`] carries them. Empty for every other kind.
+    name: String,
+    label: String,
+    attrs: Vec<DirectiveAttr>,
+    /// The [`DocView::rows`] it stands on, `[start_row, end_row)`.
+    start_row: usize,
+    end_row: usize,
+    /// Its source start, where the caret rests in front of it.
+    src: usize,
+    /// Its source end, past its closing delimiter or fence.
+    end: usize,
+    /// The bytes its editor reads and splices: a formula's TeX, or a fence's
+    /// lines between the fences, each with its newline.
+    content_start: usize,
+    content_end: usize,
+    /// Those bytes, so a renderer can open an editor without asking for them.
+    content: String,
+}
+
 /// A per-formula measured height, the way JS reports one back — the input
 /// half of the height loop [`LeafDoc::set_math_rows`] closes. The web
 /// renderer positions a block formula's element over the rows it reserved
@@ -949,6 +988,10 @@ pub struct DocView {
     /// `math` run or the placeholder rows. Empty in the source view, and
     /// empty of any formula on the caret's line, which is its TeX there.
     math: Vec<MathView>,
+    /// The regions this renderer edits itself, in row order — see
+    /// [`RegionView`]. Empty in the source view, and until the renderer names
+    /// some ([`LeafDoc::set_owned_regions`]).
+    regions: Vec<RegionView>,
     /// Which built map these rows came from — `leaf_core::Doc::visual_key`,
     /// spelled as a string the renderer compares and never reads. Two frames
     /// with the same key have the same rows, so a renderer that repaints only
@@ -1553,6 +1596,10 @@ impl LeafDoc {
                 View::Wysiwyg => math_views(&self.doc.vmap),
                 View::Source => Vec::new(),
             },
+            regions: match self.doc.view {
+                View::Wysiwyg => region_views(&self.doc.vmap, &self.doc.source),
+                View::Source => Vec::new(),
+            },
             map_key: format!("{:?}", self.doc.visual_key()),
         }
     }
@@ -1625,6 +1672,18 @@ impl LeafDoc {
     pub fn set_math_rows(&mut self, heights: Vec<MathHeight>) -> Result<DocView, JsValue> {
         self.doc
             .set_math_rows(heights.into_iter().map(|h| (h.tex, h.rows)).collect());
+        self.frame()
+    }
+
+    /// Name the regions the renderer edits itself: `"math"` for formulas,
+    /// and `"fence:"` and a language for that language's fenced blocks. Each
+    /// is published in [`DocView::regions`] and edited through
+    /// [`edit_source`](Self::edit_source) on its content. An owned formula on
+    /// the caret's line keeps its picture rather than revealing its TeX, and
+    /// an owned fence is one placeholder row, except under `MarkupMode::Full`.
+    /// Replaces the whole set. See `Doc::set_owned_regions`.
+    pub fn set_owned_regions(&mut self, kinds: Vec<String>) -> Result<DocView, JsValue> {
+        self.doc.set_owned_regions(&kinds);
         self.frame()
     }
 
@@ -2697,6 +2756,15 @@ impl LeafDoc {
         self.frame()
     }
 
+    /// Replace the source range `[from, to)` with `text`, written exactly —
+    /// nothing escaped, the way a formula editor writes TeX — and the caret
+    /// after it. Its own undo step; group several with
+    /// [`begin_undo_group`](Self::begin_undo_group). See `Doc::edit`.
+    pub fn edit_source(&mut self, from: usize, to: usize, text: &str) -> Result<DocView, JsValue> {
+        self.doc.edit(from, to, text);
+        self.frame()
+    }
+
     /// Replace the source range `[from, to)` with `text`.
     pub fn replace_range(
         &mut self,
@@ -2969,6 +3037,44 @@ fn math_views(vmap: &VisualMap) -> Vec<MathView> {
             tex: m.tex.clone(),
             display: m.display,
             src: m.src,
+        })
+        .collect()
+}
+
+/// The regions the renderer edits itself, as [`RegionView`]s.
+fn region_views(vmap: &VisualMap, source: &str) -> Vec<RegionView> {
+    vmap.regions
+        .iter()
+        .map(|r| RegionView {
+            kind: r.kind.clone(),
+            inline: r.inline,
+            display: r.display,
+            name: r
+                .directive
+                .as_ref()
+                .map(|d| d.name.clone())
+                .unwrap_or_default(),
+            label: r
+                .directive
+                .as_ref()
+                .map(|d| d.label.clone())
+                .unwrap_or_default(),
+            attrs: r.directive.as_ref().map_or_else(Vec::new, |d| {
+                d.attrs
+                    .iter()
+                    .map(|(k, v)| DirectiveAttr {
+                        key: k.clone(),
+                        value: v.clone().unwrap_or_default(),
+                    })
+                    .collect()
+            }),
+            start_row: r.rows_span.start,
+            end_row: r.rows_span.end,
+            src: r.src,
+            end: r.end,
+            content_start: r.content.start,
+            content_end: r.content.end,
+            content: source.get(r.content.clone()).unwrap_or("").to_string(),
         })
         .collect()
 }

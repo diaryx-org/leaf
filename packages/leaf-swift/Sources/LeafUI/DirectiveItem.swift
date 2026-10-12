@@ -5,8 +5,9 @@
 //  row's Insert menu, the key panel's Insert key, the Mac bar's Insert menu and
 //  the Format menu in the menu bar. leaf offers no free-form "insert a
 //  directive": it would write markup nobody draws. The vocabulary is the host's,
-//  so the host names it, and `LeafEditorModel.directiveView` draws it. See
-//  `docs/proposals/host-directives.md`.
+//  so the host names it, and its renderer for `directive:<name>`
+//  (`LeafEditorModel.regionRenderers`) draws it. See
+//  `docs/proposals/host-directives.md` and `docs/proposals/embedded-editors.md`.
 
 import Foundation
 import LeafFFI

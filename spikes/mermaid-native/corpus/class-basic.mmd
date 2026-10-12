@@ -1,0 +1,18 @@
+classDiagram
+  class RegionSession {
+    <<interface>>
+    +view: LeafView?
+    +input(RegionInput) RegionOutcome
+    +reload(content) Bool
+    +close()
+  }
+  class MathRegionSession {
+    -session: MathSession
+    +picture(size, ink) MathGlyph?
+  }
+  class RegionSlot {
+    +open(region, entry) Bool
+    +follow(frame)
+  }
+  RegionSession <|.. MathRegionSession
+  RegionSlot o-- RegionSession : open

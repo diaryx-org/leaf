@@ -243,6 +243,81 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureRes
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CLONE_EDITSESSION
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CLONE_EDITSESSION
+uint64_t uniffi_leaf_ffi_fn_clone_editsession(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FREE_EDITSESSION
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FREE_EDITSESSION
+void uniffi_leaf_ffi_fn_free_editsession(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CONSTRUCTOR_EDITSESSION_NEW
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CONSTRUCTOR_EDITSESSION_NEW
+uint64_t uniffi_leaf_ffi_fn_constructor_editsession_new(RustBuffer kind, RustBuffer content, int8_t display, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_AT_END
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_AT_END
+int8_t uniffi_leaf_ffi_fn_method_editsession_at_end(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_AT_HOME
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_AT_HOME
+int8_t uniffi_leaf_ffi_fn_method_editsession_at_home(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_CLICK
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_CLICK
+void uniffi_leaf_ffi_fn_method_editsession_click(uint64_t ptr, double x, double y, double size, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_CONTENT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_CONTENT
+RustBuffer uniffi_leaf_ffi_fn_method_editsession_content(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_END
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_END
+void uniffi_leaf_ffi_fn_method_editsession_end(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_HAS_SELECTION
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_HAS_SELECTION
+int8_t uniffi_leaf_ffi_fn_method_editsession_has_selection(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_HOME
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_HOME
+void uniffi_leaf_ffi_fn_method_editsession_home(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_KEY
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_KEY
+RustBuffer uniffi_leaf_ffi_fn_method_editsession_key(uint64_t ptr, RustBuffer key, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_PASTE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_PASTE
+RustBuffer uniffi_leaf_ffi_fn_method_editsession_paste(uint64_t ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_PICTURE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_PICTURE
+RustBuffer uniffi_leaf_ffi_fn_method_editsession_picture(uint64_t ptr, double size, RustBuffer ink, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_RELOAD
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_RELOAD
+void uniffi_leaf_ffi_fn_method_editsession_reload(uint64_t ptr, RustBuffer content, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_SELECTED_TEXT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_SELECTED_TEXT
+RustBuffer uniffi_leaf_ffi_fn_method_editsession_selected_text(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CLONE_LEAFDOC
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CLONE_LEAFDOC
 uint64_t uniffi_leaf_ffi_fn_clone_leafdoc(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -376,6 +451,11 @@ uint32_t uniffi_leaf_ffi_fn_method_leafdoc_doc_end_offset(uint64_t ptr, RustCall
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DROP_TARGET_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DROP_TARGET_AT
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_drop_target_at(uint64_t ptr, uint32_t row, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_EDIT_SOURCE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_EDIT_SOURCE
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_edit_source(uint64_t ptr, uint32_t from, uint32_t to, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_END_UNDO_GROUP
@@ -778,6 +858,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_math_rows(uint64_t ptr, RustBuf
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_media_rows(uint64_t ptr, RustBuffer heights, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_OWNED_REGIONS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_OWNED_REGIONS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_owned_regions(uint64_t ptr, RustBuffer kinds, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_PARAGRAPH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_PARAGRAPH
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_paragraph(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -981,6 +1066,12 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_view(uint64_t ptr, RustCallStatus *
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_WORD_RANGE_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_WORD_RANGE_AT
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_word_range_at(uint64_t ptr, uint32_t off, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_EDIT_SESSION_KINDS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_EDIT_SESSION_KINDS
+RustBuffer uniffi_leaf_ffi_fn_func_edit_session_kinds(RustCallStatus *_Nonnull out_status
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_TYPESET_MATH
@@ -1248,9 +1339,87 @@ void ffi_leaf_ffi_rust_future_free_void(uint64_t handle
 void ffi_leaf_ffi_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_FUNC_EDIT_SESSION_KINDS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_FUNC_EDIT_SESSION_KINDS
+uint16_t uniffi_leaf_ffi_checksum_func_edit_session_kinds(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_FUNC_TYPESET_MATH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_FUNC_TYPESET_MATH
 uint16_t uniffi_leaf_ffi_checksum_func_typeset_math(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_AT_END
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_AT_END
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_at_end(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_AT_HOME
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_AT_HOME
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_at_home(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_CLICK
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_CLICK
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_click(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_CONTENT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_CONTENT
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_content(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_END
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_END
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_end(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_HAS_SELECTION
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_HAS_SELECTION
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_has_selection(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_HOME
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_HOME
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_home(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_KEY
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_KEY
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_key(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_PASTE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_PASTE
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_paste(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_PICTURE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_PICTURE
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_picture(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_RELOAD
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_RELOAD
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_reload(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_SELECTED_TEXT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_EDITSESSION_SELECTED_TEXT
+uint16_t uniffi_leaf_ffi_checksum_method_editsession_selected_text(void
     
 );
 #endif
@@ -1395,6 +1564,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_doc_end_offset(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_DROP_TARGET_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_DROP_TARGET_AT
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_drop_target_at(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_EDIT_SOURCE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_EDIT_SOURCE
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_edit_source(void
     
 );
 #endif
@@ -1878,6 +2053,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_media_rows(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_OWNED_REGIONS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_OWNED_REGIONS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_owned_regions(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_PARAGRAPH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_PARAGRAPH
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_paragraph(void
@@ -2121,6 +2302,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_view(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_WORD_RANGE_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_WORD_RANGE_AT
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_word_range_at(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_CONSTRUCTOR_EDITSESSION_NEW
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_CONSTRUCTOR_EDITSESSION_NEW
+uint16_t uniffi_leaf_ffi_checksum_constructor_editsession_new(void
     
 );
 #endif
