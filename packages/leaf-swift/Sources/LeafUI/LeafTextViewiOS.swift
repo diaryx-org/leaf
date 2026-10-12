@@ -689,7 +689,6 @@ public final class LeafTextView: UIView, UITextInput {
     /// The tint the view had before a region opened: an open region draws its
     /// own caret, or has a view of its own with the focus, so the system's
     /// caret — and its selection handles — would be a second one.
-    private var tintBeforeRegion: UIColor?
     /// Set while a frame shows the same document another way — the kinds of
     /// region the view owns changed — so its rows reading differently is not
     /// an edit the host has to save.
@@ -1675,13 +1674,6 @@ public final class LeafTextView: UIView, UITextInput {
         let open = regionSlot.layout
         let openChanged = !(open?.same(as: laidRegion) ?? (laidRegion == nil))
         laidRegion = open
-        // Only for a region leaf draws: a host's view has a caret of its own,
-        // which would inherit the cleared tint.
-        let drawsOwnCaret = regionSlot.open.map { $0.view == nil } ?? false
-        if drawsOwnCaret != (tintBeforeRegion != nil) {
-            if drawsOwnCaret { tintBeforeRegion = tintColor; tintColor = .clear }
-            else { tintColor = tintBeforeRegion; tintBeforeRegion = nil }
-        }
         readingLines = nil
         // The input traits answer differently per view (see `isSourceView`), and
         // UIKit reads them when the keyboard is set up — so set it up again.
@@ -1866,6 +1858,11 @@ public final class LeafTextView: UIView, UITextInput {
         // What Writing Tools is animating over: hidden under its preview, or
         // greyed while it waits. Nothing, and no work, the rest of the time.
         let effects = isPaper ? (hidden: [], dimmed: []) : writingToolsEffectRects()
+        // The open region's selection, behind its picture — the AppKit peer's.
+        if !isPaper, regionSlot.isOpen {
+            ctx.setFillColor(renderTheme.selectionColor.cgColor)
+            for r in regionSlot.selectionRects() { ctx.fill(r) }
+        }
 
         for rl in layoutEngine.rows {
             // Cull to the dirty band, so a scroll repaints only the visible rows.
@@ -1947,6 +1944,7 @@ public final class LeafTextView: UIView, UITextInput {
         if let placeholder, let box = layoutEngine.placeholderBox {
             BlockChrome.drawPlaceholder(placeholder, in: box, theme: renderTheme, in: ctx)
         }
+        drawRegionComposition(in: ctx)
 
         drawHighlightMarkers()
     }
@@ -2181,11 +2179,17 @@ public final class LeafTextView: UIView, UITextInput {
             c.wantsPriorityOverSystemBehavior = true
             return c
         }
-        // ⇧← ⇧→ extend the open formula's selection, and ⌦ deletes forward.
+        // ⇧ with an arrow extends the open region's selection, ⌥← ⌥→ move
+        // a word, ⌘← ⌘→ to the line's ends, ⌘↑ ⌘↓ to the region's, and ⌦
+        // deletes forward.
         if let open = regionSlot.open, open.view == nil {
-            for (input, flags) in [(UIKeyCommand.inputLeftArrow, UIKeyModifierFlags.shift),
-                                   (UIKeyCommand.inputRightArrow, .shift),
-                                   (UIKeyCommand.inputDelete, UIKeyModifierFlags())] {
+            let arrows = [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow,
+                          UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow]
+            let chords = arrows.map { ($0, UIKeyModifierFlags.shift) }
+                + [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow].map { ($0, UIKeyModifierFlags.alternate) }
+                + arrows.map { ($0, UIKeyModifierFlags.command) }
+                + [(UIKeyCommand.inputHome, UIKeyModifierFlags()), (UIKeyCommand.inputEnd, UIKeyModifierFlags())]
+            for (input, flags) in chords + [(UIKeyCommand.inputDelete, UIKeyModifierFlags())] {
                 let c = UIKeyCommand(input: input, modifierFlags: flags, action: #selector(handleRegionKey(_:)))
                 c.wantsPriorityOverSystemBehavior = true
                 commands.append(c)
@@ -2201,12 +2205,18 @@ public final class LeafTextView: UIView, UITextInput {
             return
         }
         let shift = cmd.modifierFlags.contains(.shift)
+        let option = cmd.modifierFlags.contains(.alternate)
+        let command = cmd.modifierFlags.contains(.command)
         switch input {
-        case UIKeyCommand.inputLeftArrow: _ = regionSlot.input(shift ? .extendLeft : .left)
-        case UIKeyCommand.inputRightArrow: _ = regionSlot.input(shift ? .extendRight : .right)
+        case UIKeyCommand.inputLeftArrow:
+            _ = regionSlot.input(command ? .lineStart : option ? .wordLeft : shift ? .extendLeft : .left)
+        case UIKeyCommand.inputRightArrow:
+            _ = regionSlot.input(command ? .lineEnd : option ? .wordRight : shift ? .extendRight : .right)
+        case UIKeyCommand.inputUpArrow: _ = regionSlot.input(command ? .home : shift ? .extendUp : .up)
+        case UIKeyCommand.inputDownArrow: _ = regionSlot.input(command ? .end : shift ? .extendDown : .down)
+        case UIKeyCommand.inputHome: _ = regionSlot.input(.home)
+        case UIKeyCommand.inputEnd: _ = regionSlot.input(.end)
         case UIKeyCommand.inputDelete: _ = regionSlot.input(.deleteForward)
-        case UIKeyCommand.inputUpArrow: _ = regionSlot.input(.up)
-        case UIKeyCommand.inputDownArrow: _ = regionSlot.input(.down)
         default: _ = regionSlot.input(.cancel)
         }
     }
@@ -2391,11 +2401,25 @@ public final class LeafTextView: UIView, UITextInput {
         }
     }
 
-    public var markedTextRange: UITextRange? { marked }
+    public var markedTextRange: UITextRange? {
+        // An open region's composition stands at core's caret, in front of the
+        // region, and holds no bytes of the document.
+        if regionSlot.marked != nil {
+            let at = LeafTextPosition(Int(doc.caretOffset()))
+            return LeafTextRange(at, at)
+        }
+        return marked
+    }
 
     public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
         closeWritingToolsGroupForUserEdit()
         let text = markedText ?? ""
+        // A composition in an open region leaf draws is shown by leaf and
+        // reaches the session only once committed — the AppKit peer's.
+        if regionSlot.composes {
+            regionSlot.setMarked(text, selected: selectedRange)
+            return
+        }
         let start: Int
         let end: Int
         if let m = marked {
@@ -2410,7 +2434,10 @@ public final class LeafTextView: UIView, UITextInput {
         render(doc.setSelectionOffsets(anchor: UInt32(newEnd), focus: UInt32(newEnd)))
     }
 
-    public func unmarkText() { marked = nil }
+    public func unmarkText() {
+        if regionSlot.marked != nil { return regionSlot.commitMarked() }
+        marked = nil
+    }
 
     // MARK: UITextInput — positions & ranges
 
@@ -2516,6 +2543,12 @@ public final class LeafTextView: UIView, UITextInput {
 
     public func caretRect(for position: UITextPosition) -> CGRect {
         let o = off(position)
+        // An open region leaf draws: the system's caret, with its blink and
+        // tint, stands where the session's caret is on the picture; a region
+        // with a view of its own shows none of leaf's.
+        if let open = regionSlot.open, o == Int(open.src) || o == Int(open.end) {
+            return regionSlot.caretRect() ?? .zero
+        }
         let rc = doc.posForOffset(off: UInt32(o))
         // Through the table-aware path: a position in a cell is drawn in that
         // cell, not at the grid's top-left (see `EditorLayout.caretRect(src:)`).
@@ -3223,7 +3256,38 @@ final class LeafWritingToolsDelegate: NSObject, UIWritingToolsCoordinator.Delega
 }
 extension LeafTextView: RegionSlotOwner {
     var shownFrame: DocView { docView }
-    var regionAccent: LeafColor { renderTheme.caretColor }
+    var regionLayout: EditorLayout { layoutEngine }
+    var regionTheme: EditorTheme { renderTheme }
+    /// Layout coordinates are this view's own: its transform does the zoom.
+    func regionViewRect(_ rect: CGRect) -> CGRect { rect }
+
+    func regionMarksChanged() {
+        setNeedsDisplay()
+        // The system's caret asks `caretRect(for:)` again when told the
+        // selection changed.
+        inputDelegate?.selectionWillChange(self)
+        inputDelegate?.selectionDidChange(self)
+    }
+
+    func regionAnnounce(_ value: String) {
+        UIAccessibility.post(notification: .announcement, argument: value)
+    }
+
+    /// An input method's composition in the open region, drawn at its caret
+    /// over the picture — the AppKit peer's.
+    func drawRegionComposition(in ctx: CGContext) {
+        guard let marked = regionSlot.marked, let caret = regionSlot.caretRect() else { return }
+        let font = UIFont.systemFont(ofSize: max(8, caret.height * 0.8))
+        let text = NSAttributedString(string: marked.text, attributes: [
+            .font: font, .foregroundColor: renderTheme.textColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ])
+        let size = text.size()
+        let box = CGRect(x: caret.minX, y: caret.midY - size.height / 2, width: size.width, height: size.height)
+        ctx.setFillColor(renderTheme.pageColor.cgColor)
+        ctx.fill(box.insetBy(dx: -2, dy: 0))
+        text.draw(at: box.origin)
+    }
     func regionRender(_ frame: DocView) { render(frame) }
     func focusDocument() { _ = becomeFirstResponder() }
     func regionHistory(redo: Bool) {

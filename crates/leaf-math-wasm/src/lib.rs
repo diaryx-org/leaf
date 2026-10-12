@@ -78,6 +78,21 @@ pub fn typeset_math(
     })
 }
 
+/// An [`EditSession`]'s picture: [`MathPicture`]'s fields, in em, with no
+/// caret or selection drawn in it, and where those stand on it — `caret` as
+/// `[x, y, width, height]` (a zero-width rect at the stop), `selection` as
+/// four numbers a rect, in em from the picture's top left. A wasm-bindgen
+/// class, for [`MathPicture`]'s reason.
+#[wasm_bindgen(getter_with_clone)]
+pub struct EditPicture {
+    pub svg: String,
+    pub width: f64,
+    pub height: f64,
+    pub depth: f64,
+    pub caret: Vec<f64>,
+    pub selection: Vec<f64>,
+}
+
 /// One splice an [`EditSession`] made to its region's content: replace
 /// `[from, to)` — byte offsets into the content as the splice before this one
 /// left it — with `text`. A host adds the content's offset in its document
@@ -194,22 +209,25 @@ impl EditSession {
         self.editor.content()
     }
 
-    /// The region with its caret and selection drawn in, in `color` with the
-    /// caret in `accent` — the shape [`typeset_math`] returns, so the host
-    /// draws it where it would have drawn the renderer's picture.
-    pub fn picture(&self, size: f64, color: &str, accent: &str) -> Result<MathPicture, JsValue> {
+    /// The region drawn in `color`, and where its caret and selection stand
+    /// on it — [`typeset_math`]'s shape and more, so the host draws it where
+    /// it would have drawn the renderer's picture, and its own caret and
+    /// selection over it.
+    pub fn picture(&self, size: f64, color: &str) -> Result<EditPicture, JsValue> {
         let ink = parse_hex_color(color)
             .ok_or_else(|| JsValue::from_str(&format!("not a hex colour: {color}")))?;
-        let accent = parse_hex_color(accent).unwrap_or([37, 99, 235, 255]);
         let p = self
             .editor
-            .picture(&leaf_session::Style { size, ink, accent })
+            .picture(&leaf_session::Style { size, ink })
             .map_err(|e| JsValue::from_str(&e.message))?;
-        Ok(MathPicture {
+        let rect = |r: &leaf_session::Rect| [r.x, r.y, r.width, r.height];
+        Ok(EditPicture {
             svg: p.svg,
             width: p.width,
             height: p.height,
             depth: p.depth,
+            caret: rect(&p.caret).to_vec(),
+            selection: p.selection.iter().flat_map(rect).collect(),
         })
     }
 }
@@ -270,17 +288,19 @@ mod tests {
         assert!(s.key("Escape").is_empty());
         s.end();
         assert!(s.at_end() && !s.at_home());
-        let p = s.picture(16.0, "#000", "#00f").unwrap();
-        assert!(p.svg.contains("<rect"), "the caret is drawn");
-        // A selection: copied as TeX, pasted over, shaded in the picture.
+        let p = s.picture(16.0, "#000").unwrap();
+        assert_eq!(p.caret.len(), 4, "the caret is a rect");
+        assert!(p.caret[3] > 0.0);
+        assert!(p.selection.is_empty());
+        // A selection: copied as TeX, pasted over, given as a rect.
         assert!(s.key("SelectAll").is_empty());
         assert!(s.has_selection());
         assert_eq!(s.selected_text().as_deref(), Some("\\frac{x}{}"));
-        assert!(
-            s.picture(16.0, "#000", "#00f")
-                .unwrap()
-                .svg
-                .contains("fill-opacity")
+        let selected = s.picture(16.0, "#000").unwrap();
+        assert_eq!(selected.selection.len(), 4, "one selection rect");
+        assert_eq!(
+            selected.svg, p.svg,
+            "the selection is drawn into the picture"
         );
         let sp = s.paste("y");
         assert_eq!(sp.len(), 2, "the selection's removal, then the paste");

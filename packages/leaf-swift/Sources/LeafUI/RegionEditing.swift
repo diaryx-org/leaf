@@ -71,22 +71,48 @@ public struct RegionSplice: Equatable {
     }
 }
 
-/// A key a view hands the open region, when leaf runs its session.
-public enum RegionInput {
-    case left, right, up, down
-    /// ⇧← and ⇧→: extend the selection.
-    case extendLeft, extendRight
-    case backspace
+/// A key a view hands the open region, when leaf runs its session: one of a
+/// set of named keys that grows. Not an enum, so a key added later breaks no
+/// host: a session matches the keys it knows (`case .left:`) and answers
+/// every other with `.pass` (`default:`), which closes the region and lets
+/// the key act on the document.
+public struct RegionInput: Hashable, CustomStringConvertible {
+    /// The key's name, as the web editor names it too.
+    public let name: String
+
+    public init(_ name: String) { self.name = name }
+
+    public var description: String { name }
+
+    public static let left = RegionInput("ArrowLeft")
+    public static let right = RegionInput("ArrowRight")
+    public static let up = RegionInput("ArrowUp")
+    public static let down = RegionInput("ArrowDown")
+    /// ⇧← ⇧→ ⇧↑ ⇧↓: extend the selection.
+    public static let extendLeft = RegionInput("ExtendLeft")
+    public static let extendRight = RegionInput("ExtendRight")
+    public static let extendUp = RegionInput("ExtendUp")
+    public static let extendDown = RegionInput("ExtendDown")
+    /// ⌥← ⌥→: a word back or on.
+    public static let wordLeft = RegionInput("WordLeft")
+    public static let wordRight = RegionInput("WordRight")
+    /// ⌘← ⌘→: the line's start or end.
+    public static let lineStart = RegionInput("LineStart")
+    public static let lineEnd = RegionInput("LineEnd")
+    /// Home and End, ⌘↑ ⌘↓: the region's first stop or last.
+    public static let home = RegionInput("Home")
+    public static let end = RegionInput("End")
+    public static let backspace = RegionInput("Backspace")
     /// Forward delete — and what deletes a selection a cut copied.
-    case deleteForward
+    public static let deleteForward = RegionInput("Delete")
     /// Select All, of the region alone.
-    case selectAll
+    public static let selectAll = RegionInput("SelectAll")
     /// Escape.
-    case cancel
+    public static let cancel = RegionInput("Escape")
     /// Return.
-    case newline
+    public static let newline = RegionInput("Enter")
     /// Tab, or Shift-Tab.
-    case tab
+    public static let tab = RegionInput("Tab")
 }
 
 /// What a session did with a key, typing or a click.
@@ -128,9 +154,13 @@ public protocol RegionSession: AnyObject {
     func reload(content: String) -> Bool
     /// The region closed.
     func close()
+    /// What assistive technology reads for the open region; nil for its
+    /// content as written.
+    var accessibilityValue: String? { get }
 }
 
 public extension RegionSession {
+    var accessibilityValue: String? { nil }
     var view: LeafView? { nil }
     func focus() {}
     func input(_ input: RegionInput) -> RegionOutcome { .pass }
@@ -142,10 +172,35 @@ public extension RegionSession {
     func close() {}
 }
 
-/// A session leaf draws itself: its picture is laid out where the region's
-/// would be.
-protocol RegionPictureSession: RegionSession {
-    func picture(size: CGFloat, ink: LeafColor) -> RegionPicture?
+/// What a session leaf draws shows: its picture, and where its caret and
+/// selection stand on it, in points from its top left. Leaf draws the caret
+/// and the selection, with its own blink and colours, over the picture —
+/// the picture has neither.
+public struct RegionSessionPicture {
+    public var picture: RegionPicture
+    /// The caret: a rect at the stop, as tall as the line it is on; its
+    /// width is not read. Nil hides it.
+    public var caret: CGRect?
+    /// The selection, as rects.
+    public var selection: [CGRect]
+
+    public init(picture: RegionPicture, caret: CGRect?, selection: [CGRect] = []) {
+        self.picture = picture
+        self.caret = caret
+        self.selection = selection
+    }
+}
+
+/// A session leaf drives with keys and draws as a picture — the only kind
+/// that can stand in a line of text, and leaf's own formula editor's kind.
+/// `RegionEditor.open` may answer with one for any region, inline or block.
+/// Leaf asks for its picture on every keystroke, on the main thread, so it
+/// must be cheap; a kind whose drawing is slow edits through a view. Typed
+/// text arrives through `type`, committed: leaf shows an input method's
+/// composition itself, at the caret.
+public protocol RegionPictureSession: RegionSession {
+    /// The region as it stands, at `size` points per em in `ink`.
+    func picture(size: CGFloat, ink: LeafColor) -> RegionSessionPicture?
 }
 
 /// The way back from a host's session to the view that opened it. Every call
@@ -156,8 +211,22 @@ public final class RegionHost {
     fileprivate var onLeave: (Bool) -> Void = { _ in }
     fileprivate var onHistory: (Bool) -> Void = { _ in }
     fileprivate var onResize: () -> Void = {}
+    fileprivate var onCaretRect: () -> CGRect? = { nil }
+    fileprivate var onRegionRect: () -> CGRect? = { nil }
 
     init() {}
+
+    /// The text view the region is open in: what `caretRect()` and
+    /// `regionRect()` are in the coordinates of, and what a popover is
+    /// anchored to.
+    public internal(set) weak var view: LeafView?
+
+    /// Where the caret is drawn, in the text view's coordinates — for a
+    /// popover the session anchors at it. Nil while it is not drawn.
+    public func caretRect() -> CGRect? { onCaretRect() }
+
+    /// Where the region is drawn, in the text view's coordinates.
+    public func regionRect() -> CGRect? { onRegionRect() }
 
     /// Write splices on the content, as one undo step.
     public func edit(_ splices: [RegionSplice]) { onEdit(splices) }
@@ -183,7 +252,10 @@ public final class RegionHost {
     public func resized() { onResize() }
 }
 
-/// A host's editor for one kind of region — a fence of one language. While
+/// An editor for one kind of region — a fence of one language, a directive of
+/// one name, or formulas, which leaf edits with an editor of its own a host
+/// may replace. Its session either stands a view of its own over a block, or
+/// is a `RegionPictureSession` leaf drives and draws, inline or block. While
 /// the region is closed it is its kind's renderer's picture
 /// (`regionRenderers`), or leaf's placeholder row where it has none.
 public struct RegionEditor {
@@ -274,9 +346,27 @@ final class OpenRegion {
     /// The session's own view, for a host's session.
     var view: LeafView? { session.view }
 
+    /// The session's last picture, at the size it was asked for and the
+    /// revision it showed — where the caret and selection are drawn from.
+    private(set) var shown: (size: CGFloat, revision: Int, picture: RegionSessionPicture)?
+
     var layout: OpenRegionLayout {
-        let picture = (session as? RegionPictureSession).map { s in { (size: CGFloat, ink: LeafColor) in s.picture(size: size, ink: ink) } }
-        return OpenRegionLayout(kind: kind, src: src, revision: revision, picture: picture)
+        guard let s = session as? RegionPictureSession else {
+            return OpenRegionLayout(kind: kind, src: src, revision: revision, picture: nil)
+        }
+        let revision = self.revision
+        return OpenRegionLayout(kind: kind, src: src, revision: revision) { [weak self] size, ink in
+            guard let drawn = s.picture(size: size, ink: ink) else { return nil }
+            self?.shown = (size, revision, drawn)
+            return drawn.picture
+        }
+    }
+
+    /// The caret and selection of the picture last laid out, if it showed the
+    /// region as it stands.
+    var marks: RegionSessionPicture? {
+        guard let shown, shown.revision == revision else { return nil }
+        return shown.picture
     }
 
     /// Follow the region into `frame`. `false` when the frame has no region
@@ -440,12 +530,16 @@ extension RegionHost {
               edit: @escaping ([RegionSplice]) -> Void,
               leave: @escaping (Bool) -> Void,
               history: @escaping (Bool) -> Void,
-              resize: @escaping () -> Void) {
+              resize: @escaping () -> Void,
+              caretRect: @escaping () -> CGRect?,
+              regionRect: @escaping () -> CGRect?) {
         onContent = { isCurrent() ? content() : nil }
         onEdit = { if isCurrent() { edit($0) } }
         onLeave = { if isCurrent() { leave($0) } }
         onHistory = { if isCurrent() { history($0) } }
         onResize = { if isCurrent() { resize() } }
+        onCaretRect = { isCurrent() ? caretRect() : nil }
+        onRegionRect = { isCurrent() ? regionRect() : nil }
     }
 }
 
@@ -467,35 +561,51 @@ extension EditorLayout {
         return out
     }
 
-    /// The region whose picture is at `point` — a block's box, or an inline
-    /// formula's attachment — with that picture's rect and the size it is set
-    /// at, in points per em, so a click can be handed to a session.
-    func regionPicture(at point: CGPoint, theme: EditorTheme) -> (region: RegionView, rect: CGRect, size: CGFloat)? {
+    /// Every region's picture as drawn — a block's box, or an inline
+    /// region's attachment, a formula's or a directive's — with its rect and
+    /// the size it is set at, in points per em, and how much smaller than its
+    /// own size it is drawn (a block fitted to a narrow column).
+    func pictureFrames(theme: EditorTheme) -> [(region: RegionView, rect: CGRect, size: CGFloat, scale: CGFloat)] {
+        var out: [(RegionView, CGRect, CGFloat, CGFloat)] = []
+        var inline: [UInt32: RegionView] = [:]
+        for m in math where m.inline {
+            inline[m.src] = regions.first { $0.kind == MathRenderer.kind && $0.src == m.src } ?? DocView.standIn(for: m)
+        }
+        for r in regions where r.inline && r.kind != MathRenderer.kind { inline[r.src] = r }
         for (i, rl) in rows.enumerated() {
             if rl.pictureFirst, let box = rl.picture {
                 let r = box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
                                  width: rl.columnWidth - rl.shaped.prefixWidth)
-                // A block fitted to a narrow column is drawn smaller.
-                if r.contains(point) { return (box.region, r, theme.fontSize * box.scale) }
+                out.append((box.region, r, theme.fontSize * box.scale, box.scale))
                 continue
             }
-            guard rl.drawsItsGlyphs, rl.row.runs.contains(where: { $0.role == "math" }) else { continue }
+            guard rl.drawsItsGlyphs, !inline.isEmpty else { continue }
             let size = rl.row.heading.map { theme.headingSize(Int($0)) } ?? theme.fontSize
             var ch = 0
             for run in rl.row.runs {
                 defer { ch += run.text.utf16.count }
-                guard run.role == "math", let m = math.first(where: { $0.inline && $0.src == run.src })
-                else { continue }
-                let region = regions.first { $0.kind == MathRenderer.kind && $0.src == m.src } ?? DocView.standIn(for: m)
-                guard let picture = drawing.picture(region, size: size, ink: theme.textColor),
+                guard run.role == "math" || run.role == "image", run.text.utf16.count == 1,
+                      let region = inline[run.src],
+                      let picture = drawing.picture(region, size: size, ink: theme.textColor),
                       let base = baselineOrigin(row: i, ch: ch)
                 else { continue }
-                let r = CGRect(x: base.x, y: base.y - picture.baseline, width: picture.width ?? 0,
-                               height: picture.height)
-                if r.contains(point) { return (region, r, size) }
+                out.append((region, CGRect(x: base.x, y: base.y - picture.baseline, width: picture.width ?? 0,
+                                           height: picture.height), size, 1))
             }
         }
-        return nil
+        return out
+    }
+
+    /// The region whose picture is at `point`, with that picture's rect and
+    /// the size it is set at, so a click can be handed to a session.
+    func regionPicture(at point: CGPoint, theme: EditorTheme) -> (region: RegionView, rect: CGRect, size: CGFloat)? {
+        pictureFrames(theme: theme).first { $0.rect.contains(point) }.map { ($0.region, $0.rect, $0.size) }
+    }
+
+    /// The picture of region `kind` at `src` as drawn.
+    func pictureFrame(kind: String, src: UInt32, theme: EditorTheme)
+        -> (region: RegionView, rect: CGRect, size: CGFloat, scale: CGFloat)? {
+        pictureFrames(theme: theme).first { $0.region.kind == kind && $0.region.src == src }
     }
 }
 
@@ -505,8 +615,17 @@ protocol RegionSlotOwner: AnyObject {
     var doc: LeafDoc { get }
     /// The frame on screen.
     var shownFrame: DocView { get }
-    /// The open formula's caret colour.
-    var regionAccent: LeafColor { get }
+    /// The layout on screen, and the theme it was laid out in.
+    var regionLayout: EditorLayout { get }
+    var regionTheme: EditorTheme { get }
+    /// A rect in layout coordinates in the view's own.
+    func regionViewRect(_ rect: CGRect) -> CGRect
+    /// The open region's caret, selection or composition moved: draw them
+    /// again, and tell the input system.
+    func regionMarksChanged()
+    /// Say `value` to assistive technology: the open region's, after it
+    /// opened or changed.
+    func regionAnnounce(_ value: String)
     func regionRender(_ frame: DocView)
     /// Give the focus back to the document, from a host's view.
     func focusDocument()
@@ -524,9 +643,24 @@ protocol RegionSlotOwner: AnyObject {
 /// following a region from frame to frame are written once for every kind.
 final class RegionSlot {
     weak var owner: RegionSlotOwner?
-    /// The host's region editors, by kind.
+    /// The host's region editors, by kind. One for `math` replaces leaf's.
     var editors: [String: RegionEditor] = [:] {
         didSet { close(repaint: false) }
+    }
+
+    /// Leaf's own editors: one for each kind its Rust editors take — `math`,
+    /// through the same door as a host's.
+    static let leafEditors: [String: RegionEditor] = Dictionary(
+        uniqueKeysWithValues: LeafRegionSession.kinds.map { kind in
+            (kind, RegionEditor { region, entry, _ in LeafRegionSession(region, entry: entry) })
+        })
+
+    /// The editor for `kind`: the host's, else leaf's — leaf's `math` editor
+    /// only while formulas are edited in place.
+    func editor(for kind: String) -> RegionEditor? {
+        if let host = editors[kind] { return host }
+        if kind == MathRenderer.kind, !editsMath { return nil }
+        return Self.leafEditors[kind]
     }
     /// The renderers the view draws its regions with, and their pictures —
     /// a sheet over the same document shares its view's.
@@ -549,9 +683,8 @@ final class RegionSlot {
         return (editsMath ? [MathRenderer.kind] : []) + others.sorted()
     }
 
-    func edits(_ kind: String) -> Bool {
-        kind == MathRenderer.kind ? editsMath : editors[kind] != nil
-    }
+    /// Whether regions of `kind` open for editing: whether it has an editor.
+    func edits(_ kind: String) -> Bool { editor(for: kind) != nil }
 
     /// Whether a region is open, so the view's own caret stands aside.
     var isOpen: Bool { open != nil }
@@ -560,28 +693,40 @@ final class RegionSlot {
     /// editor for it, or the editor declined.
     @discardableResult
     func open(_ region: RegionView, entry: RegionEntry) -> Bool {
-        guard let owner, edits(region.kind), owner.shownFrame.view != "source" else { return false }
+        guard let owner, let editor = editor(for: region.kind), owner.shownFrame.view != "source"
+        else { return false }
         close(repaint: false)
         let host = RegionHost()
-        let session: RegionSession?
-        if LeafRegionSession.kinds.contains(region.kind) {
-            session = LeafRegionSession(region, entry: entry, accent: owner.regionAccent)
-        } else {
-            session = editors[region.kind]?.open(region, entry, host)
+        host.view = owner as? LeafView
+        guard let session = editor.open(region, entry, host) else { return false }
+        // A view cannot stand in a line of text: an inline region is edited
+        // only by a session leaf draws.
+        if region.inline, session.view != nil || !(session is RegionPictureSession) {
+            session.close()
+            return false
         }
-        guard let session else { return false }
         let opened = OpenRegion(region, in: owner.shownFrame, session: session, host: host)
         host.wire(
             isCurrent: { [weak self, weak opened] in opened != nil && self?.open === opened },
             content: { [weak opened] in opened?.content },
-            edit: { [weak self] in self?.edit($0) },
+            edit: { [weak self] in
+                // A host's own write is a step of its own, not more typing.
+                self?.endTyping()
+                self?.edit($0)
+            },
             leave: { [weak self] in self?.leave(atEnd: $0) },
-            history: { [weak self] in self?.owner?.regionHistory(redo: $0) },
-            resize: { [weak self] in self?.owner?.relayout() })
+            history: { [weak self] in
+                self?.endTyping()
+                self?.owner?.regionHistory(redo: $0)
+            },
+            resize: { [weak self] in self?.owner?.relayout() },
+            caretRect: { [weak self] in self?.caretRect().flatMap { r in self?.owner?.regionViewRect(r) } },
+            regionRect: { [weak self] in self?.regionRect().flatMap { r in self?.owner?.regionViewRect(r) } })
         open = opened
         views.open = session.view
         owner.regionRender(owner.doc.selectRange(start: region.src, end: region.src))
         session.focus()
+        announce()
         return true
     }
 
@@ -617,6 +762,7 @@ final class RegionSlot {
             close()
             return false
         }
+        endTyping()
         return act(open.session.input(input))
     }
 
@@ -628,7 +774,104 @@ final class RegionSlot {
             close()
             return false
         }
-        return act(open.session.type(text))
+        marked = nil
+        let outcome = open.session.type(text)
+        // Typing runs on as one undo step, as typing in the document does:
+        // the group opened by the first edit stays open until another key,
+        // a click or leaving closes it.
+        if case .edited = outcome, !typing, let doc = owner?.doc {
+            doc.beginUndoGroup()
+            typing = true
+        }
+        return act(outcome)
+    }
+
+    /// Whether a run of typing is open as one undo step.
+    private var typing = false
+
+    /// Close the run of typing, if one is open: the next edit is a step of
+    /// its own.
+    func endTyping() {
+        guard typing else { return }
+        typing = false
+        owner?.doc.endUndoGroup()
+    }
+
+    // MARK: composition
+
+    /// An input method's composition in the open region leaf draws: shown by
+    /// leaf at the caret, over the picture, and handed to the session only
+    /// once committed, through `type`.
+    private(set) var marked: (text: String, selected: NSRange)? {
+        didSet { owner?.regionMarksChanged() }
+    }
+
+    /// Whether the open region takes a composition: it is one leaf draws.
+    var composes: Bool { open.map { $0.view == nil } ?? false }
+
+    /// Set the composition, or clear it with empty text.
+    func setMarked(_ text: String, selected: NSRange) {
+        guard composes else { return }
+        marked = text.isEmpty ? nil : (text, selected)
+    }
+
+    /// Commit the composition as typed, as an input method does when the
+    /// focus moves.
+    func commitMarked() {
+        guard let text = marked?.text else { return }
+        marked = nil
+        _ = type(text)
+    }
+
+    // MARK: where it is drawn
+
+    /// The open region's picture as drawn, in layout coordinates.
+    func regionRect() -> CGRect? {
+        guard let owner, let open else { return nil }
+        if open.view != nil { return owner.regionLayout.openRegionRect() }
+        return owner.regionLayout.pictureFrame(kind: open.kind, src: open.src, theme: owner.regionTheme)?.rect
+    }
+
+    /// The open picture session's caret, in layout coordinates: its rect on
+    /// the picture, where the picture is drawn, two points wide. Nil for a
+    /// session with a view, or one that hides its caret.
+    func caretRect() -> CGRect? {
+        guard let (frame, marks) = placedMarks(), let caret = marks.caret else { return nil }
+        let w: CGFloat = 2
+        let x = frame.rect.minX + caret.minX * frame.scale
+        // Inside the picture, so a caret at either end is not clipped.
+        let clamped = min(max(x - w / 2, frame.rect.minX), max(frame.rect.minX, frame.rect.maxX - w))
+        return CGRect(x: clamped, y: frame.rect.minY + caret.minY * frame.scale,
+                      width: w, height: caret.height * frame.scale)
+    }
+
+    /// The open picture session's selection, in layout coordinates.
+    func selectionRects() -> [CGRect] {
+        guard let (frame, marks) = placedMarks() else { return [] }
+        return marks.selection.map { r in
+            CGRect(x: frame.rect.minX + r.minX * frame.scale, y: frame.rect.minY + r.minY * frame.scale,
+                   width: r.width * frame.scale, height: r.height * frame.scale)
+        }
+    }
+
+    private func placedMarks() -> ((rect: CGRect, scale: CGFloat), RegionSessionPicture)? {
+        guard let owner, let open, open.view == nil, let marks = open.marks,
+              let frame = owner.regionLayout.pictureFrame(kind: open.kind, src: open.src, theme: owner.regionTheme)
+        else { return nil }
+        return ((frame.rect, frame.scale), marks)
+    }
+
+    // MARK: accessibility
+
+    /// What assistive technology reads for the open region: its session's
+    /// value, else its content.
+    var accessibilityValue: String? {
+        guard let open else { return nil }
+        return open.session.accessibilityValue ?? open.content
+    }
+
+    private func announce() {
+        if let value = accessibilityValue { owner?.regionAnnounce(value) }
     }
 
     /// A click at `point` in layout coordinates: on a region's picture it
@@ -637,6 +880,8 @@ final class RegionSlot {
     /// region's.
     func click(at point: CGPoint, in layout: EditorLayout, theme: EditorTheme) -> Bool {
         guard let owner, owner.shownFrame.view != "source" else { return false }
+        endTyping()
+        commitMarked()
         var hit: (RegionView, RegionEntry, CGPoint, CGFloat)?
         if let p = layout.regionPicture(at: point, theme: theme), edits(p.region.kind),
            let r = owner.shownFrame.region(p.region.kind, at: p.region.src) {
@@ -671,6 +916,7 @@ final class RegionSlot {
     /// Paste into the open region leaf runs. Whether it was taken.
     func paste(_ text: String) -> Bool {
         guard let open, open.view == nil else { return false }
+        endTyping()
         return act(open.session.paste(text))
     }
 
@@ -702,6 +948,8 @@ final class RegionSlot {
     /// that goes on to act elsewhere.
     func close(repaint: Bool = true) {
         guard let open else { return }
+        endTyping()
+        if marked != nil { marked = nil }
         self.open = nil
         let hadView = open.view != nil
         views.closeOpen()
@@ -728,7 +976,9 @@ final class RegionSlot {
             owner.regionRender(owner.shownFrame)
         } else {
             owner.regionRender(open.apply(splices, in: owner.doc))
+            announce()
         }
+        owner.regionMarksChanged()
     }
 
     /// Whether fence content holds a line that would close a fence: three or
@@ -765,10 +1015,9 @@ enum RegionKinds {
         kind == MathRenderer.kind || block(kind)
     }
 
-    /// A kind a host may register an editor for: a block kind. Formulas are
-    /// edited by leaf's own session, which draws its picture inside a line,
-    /// where no host view can stand.
-    static func editable(_ kind: String) -> Bool { block(kind) }
+    /// A kind a host may register an editor for: any it may draw, `math`
+    /// included, which replaces leaf's own formula editor.
+    static func editable(_ kind: String) -> Bool { hostable(kind) }
 
     private static func block(_ kind: String) -> Bool {
         for prefix in ["fence:", "directive:"] where kind.hasPrefix(prefix) {

@@ -40,8 +40,9 @@ enum AttributedRow {
     /// runs, because its `───` glyphs are replaced by a drawn line (see
     /// `Row.isThematicBreak`).
     ///
-    /// `pictures` draws the frame's inline regions by source offset: a `math`
-    /// run whose `src` it has a picture for is drawn as that picture — see
+    /// `pictures` draws the frame's inline regions by source offset: an atom
+    /// run — a formula's `math`, an inline directive's `image` — whose `src`
+    /// it has a picture for is drawn as that picture — see
     /// `picturePiece` — and one it has none for (the frame has not caught up,
     /// or the TeX would not typeset) stays core's own glyph.
     static func make(_ runs: [Run], row: Row, theme: EditorTheme,
@@ -60,7 +61,7 @@ enum AttributedRow {
                 theme: theme,
                 source: source
             )
-            if run.role == "math", let pictures,
+            if run.role == "math" || run.role == "image", let pictures,
                let piece = picturePiece(run, attrs: attrs, pictures: pictures) {
                 result.append(piece)
                 continue

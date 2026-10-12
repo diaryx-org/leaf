@@ -450,16 +450,35 @@ the text view or on `LeafEditorModel`:
   renderer is leaf-math, and a host may replace it. A kind with no renderer, or
   a nil answer, keeps leaf's placeholder row.
 - **An editor**, `regionEditors[kind]`, optional: `RegionEditor(open:)`. → in
-  front of a region, ← behind it, or a click on its picture opens it: `open`
-  answers with a `RegionSession` whose `view` stands where the picture was and
-  takes the focus. That view writes back through its `RegionHost` — `edit`
-  (splices on the region's content) or `replace` (the whole content), one undo
-  step each — undoes through `undo`, and closes with `leave(atEnd:)`. Only an
-  open region is ever a live view.
+  front of a region, ← behind it, or a click on its picture opens it, and
+  `open` answers with one of two kinds of session:
+  - **A view of its own** (`RegionSession.view`), for a block: it stands where
+    the picture was and takes the focus, writes back through its `RegionHost`
+    — `edit` (splices on the region's content) or `replace` (the whole
+    content), one undo step each — undoes through `undo`, and closes with
+    `leave(atEnd:)`. Only an open region is ever a live view.
+  - **A picture session** (`RegionPictureSession`), inline or block: leaf
+    hands it keys (`input`), committed text (`type`), clicks and the
+    clipboard, and lays out the picture it returns
+    (`RegionSessionPicture`) on every keystroke, so drawing it must be cheap.
+    The picture holds no caret or selection: the session says where they
+    stand on it, and leaf draws them with its own blink and colours. Leaf
+    shows an input method's composition at the caret itself and passes on
+    only what is committed. A run of typing is one undo step, ended by any
+    other key or a click. `RegionInput` is a set of named keys that grows
+    (arrows, ⇧-arrows, word and line moves, Home and End, …): match the
+    ones a session knows and answer `.pass` to the rest, which leaves the
+    region and lets the key act on the document. `RegionHost.caretRect()`
+    and `regionRect()`, in `host.view`'s coordinates, anchor a popover.
+    `accessibilityValue` is what VoiceOver reads for the open region, its
+    content by default.
 
-Kinds are `math`, `fence:<lang>` (block) and `directive:<name>` (block); a
-host may draw `math` but not edit it, since leaf's own session edits a formula
-inside a line, where no host view can stand. A renderer answers at once
+Kinds are `math` (inline or block), `fence:<lang>` (block) and
+`directive:<name>` (block, or inline for `:name[label]{attrs}`). Leaf's own
+formula editor is registered as `math`'s through the same door, and a host's
+`regionEditors["math"]` replaces it; `editsFormulasAsStructure = false` turns
+leaf's off. The leaf-editor app's date chip (`DateChip.swift`) is a picture
+session on an inline directive. A renderer answers at once
 (`RegionRenderer { region, context in … }`), on the main thread as the layout
 needs it, which suits a cheap picture such as a formula's. Or it answers later
 (`RegionRenderer(later: { region, context, done in … })`), calling `done` from

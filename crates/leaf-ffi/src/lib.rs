@@ -735,7 +735,8 @@ pub struct RegionView {
     /// `"math"`, `"fence:"` and the fence's language, or `"directive:"` and
     /// the leaf directive's name.
     pub kind: String,
-    /// An inline formula's atom, rather than a block on rows of its own.
+    /// An atom in a line of text — an inline formula's, or an inline
+    /// directive's (`:name[label]`) — rather than a block on rows of its own.
     pub inline: bool,
     /// A formula set in display style (`$$…$$`, inline or not) rather than
     /// text style. False for every other kind.
@@ -2187,16 +2188,29 @@ pub struct EditSplice {
     pub text: String,
 }
 
+/// A rect on an [`EditPicture`], in em from its top left.
+#[derive(uniffi::Record, Clone, Copy, Debug, PartialEq)]
+pub struct EditRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// An [`EditSession`]'s picture: a standalone SVG, and its advance, its rise
 /// above the baseline and its reach below it, in em of the size it was drawn
 /// at — [`typeset_math`]'s shape, so a view draws it where it would have
-/// drawn the region's renderer's picture.
+/// drawn the region's renderer's picture. It holds no caret or selection: the
+/// view draws those, with its own blink and colours, at `caret` (a
+/// zero-width rect at the stop) and `selection`.
 #[derive(uniffi::Record)]
 pub struct EditPicture {
     pub svg: String,
     pub width: f64,
     pub height: f64,
     pub depth: f64,
+    pub caret: EditRect,
+    pub selection: Vec<EditRect>,
 }
 
 /// A key an [`EditSession`] understands.
@@ -2343,14 +2357,9 @@ impl EditSession {
         self.lock().content()
     }
 
-    /// The region with its caret and selection drawn in, at `size` points
-    /// per em: ink in `ink`, the caret in `accent`, each RGBA bytes.
-    pub fn picture(
-        &self,
-        size: f64,
-        ink: Vec<u8>,
-        accent: Vec<u8>,
-    ) -> Result<EditPicture, LeafError> {
+    /// The region drawn at `size` points per em in `ink` (RGBA bytes), and
+    /// where its caret and selection stand on it.
+    pub fn picture(&self, size: f64, ink: Vec<u8>) -> Result<EditPicture, LeafError> {
         let rgba = |v: &[u8]| -> [u8; 4] {
             [
                 v.first().copied().unwrap_or(0),
@@ -2362,14 +2371,21 @@ impl EditSession {
         let style = leaf_session::Style {
             size,
             ink: rgba(&ink),
-            accent: rgba(&accent),
         };
         let p = self.lock().picture(&style).map_err(edit_error)?;
+        let rect = |r: leaf_session::Rect| EditRect {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        };
         Ok(EditPicture {
             svg: p.svg,
             width: p.width,
             height: p.height,
             depth: p.depth,
+            caret: rect(p.caret),
+            selection: p.selection.into_iter().map(rect).collect(),
         })
     }
 }
@@ -6289,13 +6305,10 @@ mod tests {
         }
         assert_eq!(doc.source(), "say $\\frac{x}{2}$ here\n");
         assert_eq!(session.content(), "\\frac{x}{2}");
-        assert!(
-            session
-                .picture(16.0, vec![0, 0, 0, 255], vec![0, 0, 255, 255])
-                .unwrap()
-                .svg
-                .contains("<rect")
-        );
+        let p = session.picture(16.0, vec![0, 0, 0, 255]).unwrap();
+        assert!(p.svg.starts_with("<svg"));
+        assert!(p.caret.height > 0.0, "no caret rect");
+        assert!(p.selection.is_empty());
         // One keystroke, one undo step.
         doc.undo();
         assert_eq!(doc.source(), "say $\\frac{x}{}$ here\n");

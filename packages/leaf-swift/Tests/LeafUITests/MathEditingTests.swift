@@ -64,17 +64,32 @@ final class MathEditingTests: XCTestCase {
         XCTAssertTrue(view.doc.view().math.isEmpty, "with structure off, the caret's line still shows a picture")
     }
 
-    func testAKeystrokeIsOneUndoStepAndUndoLeavesTheFormula() throws {
+    func testARunOfTypingIsOneUndoStepAndUndoLeavesTheFormula() throws {
         let view = try editor("say $x$ here\n")
         place(view, region(view).end)
         send(#selector(NSResponder.moveLeft(_:)), to: view)
         // A key at a time, as the keyboard sends them. `sqrt`'s last letter
-        // makes two splices: the `t`, then the root.
+        // makes two splices: the `t`, then the root. Typed in a row, they
+        // undo together, as typing in the document does.
         for c in "+sqrt" { view.insertText(String(c), replacementRange: none) }
         XCTAssertEqual(view.doc.source(), "say $x+\\sqrt{}$ here\n")
         view.undo(nil)
         XCTAssertFalse(view.isEditingFormula, "undo did not close the formula")
-        XCTAssertEqual(view.doc.source(), "say $x+sqr$ here\n")
+        XCTAssertEqual(view.doc.source(), "say $x$ here\n")
+    }
+
+    func testAKeyBetweenTypingSplitsTheUndoSteps() throws {
+        let view = try editor("say $x$ here\n")
+        place(view, region(view).end)
+        send(#selector(NSResponder.moveLeft(_:)), to: view)
+        for c in "+1" { view.insertText(String(c), replacementRange: none) }
+        send(#selector(NSResponder.moveLeft(_:)), to: view)
+        for c in "2" { view.insertText(String(c), replacementRange: none) }
+        XCTAssertEqual(view.doc.source(), "say $x+21$ here\n")
+        view.undo(nil)
+        XCTAssertEqual(view.doc.source(), "say $x+1$ here\n", "the run after the arrow was not its own step")
+        view.undo(nil)
+        XCTAssertEqual(view.doc.source(), "say $x$ here\n")
     }
 
     func testBackspaceDissolvesWhatItEmptied() throws {

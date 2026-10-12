@@ -1021,6 +1021,11 @@ struct EditorLayout {
                 let r = docView.region(for: m)
                 if m.inline { mathInline[m.src] = r } else { pictureAt[Int(m.startRow)] = r }
             }
+            // An inline region of another kind — a directive in a line — is
+            // drawn into its row as an inline formula is, from its atom.
+            for r in docView.regions where r.inline && r.kind != MathRenderer.kind && drawing.draws(r.kind) {
+                mathInline[r.src] = r
+            }
             for r in docView.regions where !r.inline && r.kind != MathRenderer.kind && drawing.draws(r.kind) {
                 if let open, regionMeasure != nil, open.kind == r.kind, open.src == r.src, open.picture == nil {
                     continue
@@ -1188,7 +1193,7 @@ struct EditorLayout {
             // never cached: the cache is keyed by the row's value, which names
             // the formula's `∑` and not its TeX, so a reused shape could carry
             // a picture the document no longer has.
-            let hasMath = row.runs.contains { $0.role == "math" && mathInline[$0.src] != nil }
+            let hasMath = row.runs.contains { ($0.role == "math" || $0.role == "image") && mathInline[$0.src] != nil }
             if !hasMath, let hit = unchanged(i) ?? cache[row] ?? next[row], hit.wrapWidth == wrapWidth {
                 shaped = hit
             } else {

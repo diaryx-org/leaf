@@ -691,10 +691,10 @@ public protocol EditSessionProtocol: AnyObject, Sendable {
     func paste(text: String)  -> [EditSplice]
     
     /**
-     * The region with its caret and selection drawn in, at `size` points
-     * per em: ink in `ink`, the caret in `accent`, each RGBA bytes.
+     * The region drawn at `size` points per em in `ink` (RGBA bytes), and
+     * where its caret and selection stand on it.
      */
-    func picture(size: Double, ink: Data, accent: Data) throws  -> EditPicture
+    func picture(size: Double, ink: Data) throws  -> EditPicture
     
     /**
      * Take `content` as the region's after an undo or an outside change.
@@ -899,17 +899,16 @@ open func paste(text: String) -> [EditSplice]  {
 }
     
     /**
-     * The region with its caret and selection drawn in, at `size` points
-     * per em: ink in `ink`, the caret in `accent`, each RGBA bytes.
+     * The region drawn at `size` points per em in `ink` (RGBA bytes), and
+     * where its caret and selection stand on it.
      */
-open func picture(size: Double, ink: Data, accent: Data)throws  -> EditPicture  {
+open func picture(size: Double, ink: Data)throws  -> EditPicture  {
     return try  FfiConverterTypeEditPicture_lift(try rustCallWithError(FfiConverterTypeLeafError_lift) {
         uniffiCallStatus in
     uniffi_leaf_ffi_fn_method_editsession_picture(
             self.uniffiCloneHandle(),
         FfiConverterDouble.lower(size),
-        FfiConverterData.lower(ink),
-        FfiConverterData.lower(accent),uniffiCallStatus
+        FfiConverterData.lower(ink),uniffiCallStatus
     )
 })
 }
@@ -5620,21 +5619,27 @@ public func FfiConverterTypeDropTargetView_lower(_ value: DropTargetView) -> Rus
  * An [`EditSession`]'s picture: a standalone SVG, and its advance, its rise
  * above the baseline and its reach below it, in em of the size it was drawn
  * at — [`typeset_math`]'s shape, so a view draws it where it would have
- * drawn the region's renderer's picture.
+ * drawn the region's renderer's picture. It holds no caret or selection: the
+ * view draws those, with its own blink and colours, at `caret` (a
+ * zero-width rect at the stop) and `selection`.
  */
 public struct EditPicture: Equatable, Hashable {
     public var svg: String
     public var width: Double
     public var height: Double
     public var depth: Double
+    public var caret: EditRect
+    public var selection: [EditRect]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(svg: String, width: Double, height: Double, depth: Double) {
+    public init(svg: String, width: Double, height: Double, depth: Double, caret: EditRect, selection: [EditRect]) {
         self.svg = svg
         self.width = width
         self.height = height
         self.depth = depth
+        self.caret = caret
+        self.selection = selection
     }
 
     
@@ -5656,7 +5661,9 @@ public struct FfiConverterTypeEditPicture: FfiConverterRustBuffer {
                 svg: FfiConverterString.read(from: &buf), 
                 width: FfiConverterDouble.read(from: &buf), 
                 height: FfiConverterDouble.read(from: &buf), 
-                depth: FfiConverterDouble.read(from: &buf)
+                depth: FfiConverterDouble.read(from: &buf), 
+                caret: FfiConverterTypeEditRect.read(from: &buf), 
+                selection: FfiConverterSequenceTypeEditRect.read(from: &buf)
         )
     }
 
@@ -5665,6 +5672,8 @@ public struct FfiConverterTypeEditPicture: FfiConverterRustBuffer {
         FfiConverterDouble.write(value.width, into: &buf)
         FfiConverterDouble.write(value.height, into: &buf)
         FfiConverterDouble.write(value.depth, into: &buf)
+        FfiConverterTypeEditRect.write(value.caret, into: &buf)
+        FfiConverterSequenceTypeEditRect.write(value.selection, into: &buf)
     }
 }
 
@@ -5681,6 +5690,71 @@ public func FfiConverterTypeEditPicture_lift(_ buf: RustBuffer) throws -> EditPi
 #endif
 public func FfiConverterTypeEditPicture_lower(_ value: EditPicture) -> RustBuffer {
     return FfiConverterTypeEditPicture.lower(value)
+}
+
+
+/**
+ * A rect on an [`EditPicture`], in em from its top left.
+ */
+public struct EditRect: Equatable, Hashable {
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(x: Double, y: Double, width: Double, height: Double) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EditRect: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEditRect: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EditRect {
+        return
+            try EditRect(
+                x: FfiConverterDouble.read(from: &buf), 
+                y: FfiConverterDouble.read(from: &buf), 
+                width: FfiConverterDouble.read(from: &buf), 
+                height: FfiConverterDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EditRect, into buf: inout [UInt8]) {
+        FfiConverterDouble.write(value.x, into: &buf)
+        FfiConverterDouble.write(value.y, into: &buf)
+        FfiConverterDouble.write(value.width, into: &buf)
+        FfiConverterDouble.write(value.height, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditRect_lift(_ buf: RustBuffer) throws -> EditRect {
+    return try FfiConverterTypeEditRect.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditRect_lower(_ value: EditRect) -> RustBuffer {
+    return FfiConverterTypeEditRect.lower(value)
 }
 
 
@@ -6807,7 +6881,8 @@ public struct RegionView: Equatable, Hashable {
      */
     public var kind: String
     /**
-     * An inline formula's atom, rather than a block on rows of its own.
+     * An atom in a line of text — an inline formula's, or an inline
+     * directive's (`:name[label]`) — rather than a block on rows of its own.
      */
     public var inline: Bool
     /**
@@ -6854,7 +6929,8 @@ public struct RegionView: Equatable, Hashable {
          * the leaf directive's name.
          */kind: String, 
         /**
-         * An inline formula's atom, rather than a block on rows of its own.
+         * An atom in a line of text — an inline formula's, or an inline
+         * directive's (`:name[label]`) — rather than a block on rows of its own.
          */inline: Bool, 
         /**
          * A formula set in display style (`$$…$$`, inline or not) rather than
@@ -10305,6 +10381,31 @@ fileprivate struct FfiConverterSequenceTypeDirectiveView: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeEditRect: FfiConverterRustBuffer {
+    typealias SwiftType = [EditRect]
+
+    public static func write(_ value: [EditRect], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeEditRect.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [EditRect] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [EditRect]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeEditRect.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeEditSplice: FfiConverterRustBuffer {
     typealias SwiftType = [EditSplice]
 
@@ -10736,7 +10837,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_editsession_paste() != 39625) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_editsession_picture() != 19665) {
+    if (uniffi_leaf_ffi_checksum_method_editsession_picture() != 35252) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_editsession_reload() != 10774) {

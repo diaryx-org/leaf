@@ -494,6 +494,42 @@ impl Layout {
         self.picture_selecting(f, style, caret, None)
     }
 
+    /// The formula drawn without its caret or selection, for a host that
+    /// draws those itself: the picture, and where the caret at `caret` and
+    /// the atoms `selection` names stand on it, in em from its top left,
+    /// margin included. The caret is a zero-width rect at the stop, as tall
+    /// as its row.
+    pub fn picture_marked(
+        &self,
+        f: &Formula,
+        style: &Style,
+        caret: Caret,
+        selection: Option<(usize, std::ops::Range<usize>)>,
+    ) -> (Picture, Mark, Vec<Mark>) {
+        let picture = self.picture_selecting(f, style, None, None);
+        let pad = style.pad / style.size;
+        let r = self.caret(f, caret);
+        let caret = Mark {
+            x: r.x + pad,
+            y: r.y0 + pad,
+            width: 0.0,
+            height: r.y1 - r.y0,
+        };
+        let selected = selection
+            .and_then(|(row, range)| {
+                f.rows[row].atoms[range]
+                    .iter()
+                    .fold(None, |acc, &a| Rect::merge(acc, self.atom_box[a]))
+            })
+            .map(|b| Mark {
+                x: b.x0 + pad,
+                y: b.y0 + pad,
+                width: b.x1 - b.x0,
+                height: b.y1 - b.y0,
+            });
+        (picture, caret, selected.into_iter().collect())
+    }
+
     /// [`picture`](Self::picture) with the atoms `selection` names — a row
     /// and a range of its atoms, [`Formula::selection`]'s answer — shaded in
     /// the accent behind the ink.
@@ -599,6 +635,16 @@ impl Default for Style {
             accent: [37, 99, 235, 255],
         }
     }
+}
+
+/// A rect on a drawn formula — the caret, or a selection — in em from the
+/// picture's top left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mark {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 /// A drawn formula: a standalone SVG and, in em, its advance width and its

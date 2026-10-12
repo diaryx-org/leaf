@@ -13,10 +13,12 @@
 //  `editSource` as one undo step — the web editor's behaviour, from the same
 //  Rust.
 //
-//  Leaf runs these sessions and draws them: the layout asks the open region
-//  for its picture (`RegionDrawing.picture`), with its caret and empty slots
-//  in it, in place of the kind's renderer's, and lays its row out again
-//  whenever the session's revision moves.
+//  They are leaf's own clients of the public picture session
+//  (`RegionPictureSession`), registered as `math`'s editor through the same
+//  door as a host's (`RegionSlot.leafEditors`), which a host may replace. The
+//  layout asks the open region for its picture, with its empty slots drawn,
+//  in place of the kind's renderer's; leaf draws the caret and the selection
+//  over it, where the session says they stand.
 
 import CoreGraphics
 import Foundation
@@ -28,15 +30,13 @@ final class LeafRegionSession: RegionPictureSession {
     static let kinds = Set(editSessionKinds())
 
     let session: EditSession
-    private let accent: LeafColor
 
     /// Open `region` with the caret at `entry`. `nil` when its content is
     /// beyond what the editor reads, and the region is left as it is.
-    init?(_ region: RegionView, entry: RegionEntry, accent: LeafColor) {
+    init?(_ region: RegionView, entry: RegionEntry) {
         guard let session = try? EditSession(kind: region.kind, content: region.content, display: region.display)
         else { return nil }
         self.session = session
-        self.accent = accent
         switch entry {
         case .home: session.home()
         case .end: session.end()
@@ -62,6 +62,9 @@ final class LeafRegionSession: RegionPictureSession {
         case .backspace: key = .backspace
         case .deleteForward: key = .delete
         case .selectAll: key = .selectAll
+        // A key the editor does not know leaves the formula and acts on the
+        // document, as it always has.
+        default: return .pass
         }
         return outcome(session.key(key: key))
     }
@@ -87,12 +90,9 @@ final class LeafRegionSession: RegionPictureSession {
 
     func paste(_ text: String) -> RegionOutcome { outcome(session.paste(text: text)) }
 
-    func picture(size: CGFloat, ink: LeafColor) -> RegionPicture? {
+    func picture(size: CGFloat, ink: LeafColor) -> RegionSessionPicture? {
         let rgba = ink.rgbaBytes
-        let accent = accent.rgbaBytes
-        guard let p = try? session.picture(size: Double(size),
-                                           ink: Data([rgba.0, rgba.1, rgba.2, rgba.3]),
-                                           accent: Data([accent.0, accent.1, accent.2, accent.3]))
+        guard let p = try? session.picture(size: Double(size), ink: Data([rgba.0, rgba.1, rgba.2, rgba.3]))
         else { return nil }
         let ascent = CGFloat(p.height) * size
         guard let picture = RegionPicture(svg: p.svg, width: CGFloat(p.width) * size,
@@ -100,7 +100,10 @@ final class LeafRegionSession: RegionPictureSession {
                                           baseline: ascent, systemFonts: false),
               picture.isDrawable
         else { return nil }
-        return picture
+        let rect = { (r: EditRect) in
+            CGRect(x: r.x * size, y: r.y * size, width: r.width * size, height: r.height * size)
+        }
+        return RegionSessionPicture(picture: picture, caret: rect(p.caret), selection: p.selection.map(rect))
     }
 
     private func outcome(_ splices: [EditSplice]) -> RegionOutcome {

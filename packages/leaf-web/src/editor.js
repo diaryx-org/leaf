@@ -479,7 +479,10 @@ export class LeafEditor {
 
   /** Give the editing surface keyboard focus. */
   focus() {
-    this.contentEl.focus({ preventScroll: true });
+    // While a region leaf draws is open, its keys arrive through the field
+    // under its caret (`imeEl`).
+    const s = this._session;
+    (s && !s.impl.element ? this.imeEl : this.contentEl).focus({ preventScroll: true });
   }
 
   /**
@@ -491,6 +494,7 @@ export class LeafEditor {
     this._destroyed = true;
     if (this._session) {
       const s = this._session;
+      this._endTyping();
       this._session = null;
       s.impl.close?.();
     }
@@ -525,8 +529,12 @@ export class LeafEditor {
     // core has yet to be told who edits them.
     if (this._session) {
       const s = this._session;
+      this._endTyping();
       this._session = null;
       this.contentEl.classList.remove("leaf-region-editing");
+      this._marked = null;
+      this._paintRegionOverlay();
+      if (document.activeElement === this.imeEl) this.contentEl.focus({ preventScroll: true });
       s.impl.close?.();
     }
     this._ownedKey = null;
@@ -1119,8 +1127,36 @@ export class LeafEditor {
     this.measureEl = el("span", "leaf-measure");
     this.measureEl.textContent = WIDTH_SAMPLE;
 
+    // What leaf draws over an open region's picture — the session's caret,
+    // its selection, and text an input method is composing — outside the
+    // editable surface, so no text walker ever meets it. Positioned in the
+    // scroller's own coordinates, so it scrolls with the picture.
+    this.overlayEl = el("div", "leaf-region-overlay");
+    this.overlayEl.hidden = true;
+    this.overlayEl.setAttribute("aria-hidden", "true");
+    // The focus while a picture session is open: a field no one sees, at the
+    // session's caret, so an input method composes into it — and puts its
+    // candidate window there — rather than into the projection. Leaf shows
+    // the composition itself (`_paintRegionOverlay`); the session is handed
+    // only what is committed.
+    this.imeEl = document.createElement("textarea");
+    this.imeEl.className = "leaf-ime";
+    this.imeEl.setAttribute("autocomplete", "off");
+    this.imeEl.setAttribute("autocorrect", "off");
+    this.imeEl.setAttribute("autocapitalize", "off");
+    this.imeEl.spellcheck = false;
+    this.imeEl.tabIndex = -1;
+    // Said politely when a region opens and after each edit in it: the
+    // session's `accessibilityValue()`, its content by default.
+    this.liveEl = el("div", "leaf-live");
+    this.liveEl.setAttribute("aria-live", "polite");
+    this.liveEl.setAttribute("role", "status");
+
     c.appendChild(this.contentEl);
     c.appendChild(this.measureEl);
+    c.appendChild(this.overlayEl);
+    c.appendChild(this.imeEl);
+    c.appendChild(this.liveEl);
   }
 
   _applyTheme() {
@@ -1269,6 +1305,16 @@ export class LeafEditor {
       if (this._mathEditing === "structure" && mathPolicy !== "off") loadMath().catch(() => {});
     }
     this._mathInline = mathInlineAt;
+    // Every other inline region — an inline directive the host draws or
+    // edits — the same way: core lays it out as a one-glyph atom whose run
+    // carries the region's start, and `_runEl` draws its picture there.
+    const inlineAt = new Map();
+    for (const r of view.regions || []) {
+      if (!r.inline || r.kind === "math") continue;
+      inlineAt.set(r.src, r);
+      mathRows.add(r.start_row);
+    }
+    this._inlineRegions = inlineAt;
     // Tables the same way, but replacing the *whole* span rather than the first
     // row of it: core draws a table as a monospace box-glyph picture, which is
     // exact on a fixed-cell surface and shears in a proportional font — the `│`
@@ -1305,7 +1351,8 @@ export class LeafEditor {
         this._keepPicture(r, size, n);
         at = { r, el: s.impl.element };
       } else {
-        const entry = this._picture(r, size, n);
+        // An open picture session draws the region from its own picture.
+        const entry = this._livePicture(r, size, n) ?? this._picture(r, size, n);
         if (entry.state !== "ready") continue;
         if (entry.pic.element && !this._standIn(entry.pic.element, drawn, r.kind)) continue;
         at = entry.pic.element ? { r, el: entry.pic.element } : { r, entry };
@@ -1357,7 +1404,7 @@ export class LeafEditor {
           ? mediaKey(media, row)
           : mathBlock
             ? mathBlockKey(mathBlock.m, mathBlock.entry, row)
-            : rowKey(row, runs, i, view.rows) + (mathRows.has(i) ? this._mathRowKey(runs, this._rowFontPx(row)) : "");
+            : rowKey(row, runs, i, view.rows) + (mathRows.has(i) ? this._inlineRowKey(runs, this._rowFontPx(row)) : "");
       let el = take(key);
       if (el) {
         this._adoptRow(el, runs);
@@ -1378,6 +1425,7 @@ export class LeafEditor {
     this._framePictures = null;
 
     this._restoreSelection(view);
+    this._paintRegionOverlay();
     this._scrollCaretIntoView(view);
     this._emitChange(view);
     this._checkFit();
@@ -1670,7 +1718,7 @@ export class LeafEditor {
     div.dataset.leafCoreLen = String((row?.runs || []).reduce((n, r) => n + r.text.length, 0));
     div.appendChild(document.createTextNode(ZWSP));
     const pic = entry.pic;
-    const img = el("img", "leaf-media leaf-math-block");
+    const img = el("img", "leaf-media leaf-math-block leaf-pic");
     img._math = m;
     img._mathPx = this.theme.fontSize;
     img.src = svgDataUrl(pic.svg);
@@ -1802,6 +1850,8 @@ export class LeafEditor {
   _runEl(run, fontPx = this.theme.fontSize) {
     const span = document.createElement("span");
     if (run.role === "math") return this._mathRunEl(span, run, fontPx);
+    const inline = this._inlineRegions?.get(run.src);
+    if (inline && [...run.text].length === 1) return this._inlineRegionRunEl(span, run, fontPx, inline);
     let cls = "leaf-run leaf-r-" + run.role;
     if (run.bold) cls += " leaf-b";
     if (run.italic) cls += " leaf-i";
@@ -1891,27 +1941,65 @@ export class LeafEditor {
     }
     // On its way, turned off, or nothing drawn: the atom stands.
     if (entry.state !== "ready") return span;
+    if (!this._drawInline(span, run, fontPx, entry, "math")) return span;
+    span.classList.add("leaf-math");
+    span._math = m;
+    if (!m.edit) span.title = m.tex.trim();
+    return span;
+  }
+
+  /**
+   * An inline region of any other kind — an inline directive — drawn as
+   * `_mathRunEl` draws a formula: the one atom glyph core laid out, stretched
+   * to its picture's width with the picture behind it. The picture is the open
+   * session's, or the kind's renderer's; with neither, the atom stands, as
+   * core drew it.
+   */
+  _inlineRegionRunEl(span, run, fontPx, r) {
+    span.className = "leaf-run leaf-r-" + run.role + (run.bold ? " leaf-b" : "") + (run.italic ? " leaf-i" : "");
+    span._src = run.src;
+    span.textContent = run.text;
+    const entry = this._livePicture(r, fontPx, 0) ?? this._picture(r, fontPx, 0);
+    if (entry.state === "fault") {
+      span.classList.add("leaf-region-error");
+      span.title = entry.error.message;
+      return span;
+    }
+    if (entry.state !== "ready") return span;
+    if (!this._drawInline(span, run, fontPx, entry, r.kind)) return span;
+    span.classList.add("leaf-inline-picture");
+    span.dataset.region = r.kind;
+    if (r.name) span.dataset.directive = r.name;
+    return span;
+  }
+
+  /**
+   * Paint `entry`'s `{svg}` picture over the atom `span`: the glyph made
+   * clear, its advance stretched to the picture's width, the span dropped by
+   * the picture's depth below the baseline. `false` for an element, which a
+   * line cannot hold — reported once.
+   */
+  _drawInline(span, run, fontPx, entry, kind) {
     const pic = entry.pic;
     if (pic.element) {
       // A line holds pictures, not views: an inline region is drawn from SVG.
       if (!entry.warned) {
         entry.warned = true;
-        console.error("leaf: the math renderer answered an inline formula with an element; inline regions take {svg}");
+        console.error(`leaf: the ${kind} renderer answered an inline region with an element; inline regions take {svg}`);
       }
-      return span;
+      return false;
     }
     const w = pic.width;
     const depth = pic.height - (pic.baseline ?? pic.height);
-    span.classList.add("leaf-math");
-    span._math = m;
-    span._mathPx = fontPx;
-    if (!m.edit) span.title = m.tex.trim();
+    span.classList.add("leaf-pic");
+    span._picInline = true;
+    span._picPx = fontPx;
     span.style.width = w.toFixed(2) + "px";
     span.style.height = pic.height.toFixed(2) + "px";
     span.style.verticalAlign = (-depth).toFixed(2) + "px";
-    span.style.letterSpacing = (w - this._atomAdvance(fontPx, run.bold)).toFixed(2) + "px";
+    span.style.letterSpacing = (w - this._atomAdvance(fontPx, run.bold, run.text)).toFixed(2) + "px";
     span.style.backgroundImage = "url(\"" + svgDataUrl(pic.svg) + "\")";
-    return span;
+    return true;
   }
 
   /**
@@ -1920,14 +2008,14 @@ export class LeafEditor {
    * that stretches the atom to it. Measured once per size on a canvas and
    * remembered: a frame with a dozen formulas measures nothing.
    */
-  _atomAdvance(fontPx, bold) {
-    const key = (bold ? "b" : "") + fontPx;
+  _atomAdvance(fontPx, bold, atom = MATH_ATOM) {
+    const key = atom + (bold ? "b" : "") + fontPx;
     this._atomWidths ??= new Map();
     let w = this._atomWidths.get(key);
     if (w === undefined) {
       const ctx = (this._measureCanvas ??= document.createElement("canvas")).getContext("2d");
       ctx.font = (bold ? "700 " : "") + fontPx + "px " + this.theme.fontFamily;
-      w = ctx.measureText(MATH_ATOM).width;
+      w = ctx.measureText(atom).width;
       this._atomWidths.set(key, w);
     }
     return w;
@@ -1987,35 +2075,64 @@ export class LeafEditor {
   _editMathAsStructure() {
     if (this._mathStructural || this._mathEditing !== "structure" || !mathModule?.EditSession) return null;
     this._mathStructural = true;
+    // A host's own `math` editor replaces leaf's, and owns formulas already.
+    if (this._regionEditors.has("math")) return null;
     this._regionEditors.set("math", leafRegionEditor());
     return this._ownRegions();
   }
 
   /**
-   * A formula's picture entry at `size`: the open one's from its session —
-   * its caret drawn in, its empty slots shown — and every other's from the
-   * `math` renderer (`_picture`). The session's picture is in ems, as the
-   * typesetter's is, and is turned into the same `RegionPicture` in pixels,
-   * so the row draws either the same way. Kept on the session for its
-   * revision, since a frame asks for it twice: for the row's key and to
-   * build the row.
+   * A formula's picture entry at `size`: the open one's from its session,
+   * and every other's from the `math` renderer (`_picture`).
    */
   _mathPicture(m, region, size, n) {
+    return this._livePicture(region, size, n) ?? this._picture(region, size, n);
+  }
+
+  /** `_sessionEntry`, keeping the region's own picture for when it closes. */
+  _livePicture(r, size, n) {
+    const live = this._sessionEntry(r, size);
+    if (live) this._keepPicture(r, size, n);
+    return live;
+  }
+
+  /**
+   * The open picture session's own picture of region `r` at `size`, as a
+   * `PictureEntry` carrying its `caret` and `selection` in CSS pixels — or
+   * null when `r` is not the open region, or its session draws no picture
+   * (a host view, or `picture` answered null), so the renderer's is drawn.
+   * Asked once per revision of the session — every key, click and edit is
+   * one — and kept on it, since a frame asks twice: for the row's key and to
+   * build the row. A picture whose SVG is what it was keeps its entry, so a
+   * caret move inside the region rebuilds no row: only the caret leaf draws
+   * over it moves (`_paintRegionOverlay`). A session that throws, or answers
+   * with something not a picture, is reported and drawn as the fault.
+   */
+  _sessionEntry(r, size) {
     const s = this._session;
-    if (s && s.kind === "math" && m.src === s.src && s.impl.picture) {
-      const accent = this._accentColor();
-      const memo = s.pictures?.get(size);
-      if (memo && memo.rev === s.rev && memo.ink === this._ink && memo.accent === accent) return memo.entry;
-      let entry;
-      try {
-        entry = readyEntry("math", emPicture(s.impl.picture(size, this._ink, accent), size));
-      } catch (e) {
-        entry = faultEntry("math", e);
-      }
-      (s.pictures ??= new Map()).set(size, { rev: s.rev, ink: this._ink, accent, entry });
-      return entry;
+    if (!s || s.impl.element || typeof s.impl.picture !== "function" || s.kind !== r.kind || s.src !== r.src) {
+      return null;
     }
-    return this._picture(region, size, n);
+    const memo = s.pictures?.get(size);
+    if (memo && memo.rev === s.rev && memo.ink === this._ink) return memo.entry;
+    let entry;
+    try {
+      const p = s.impl.picture(size, this._ink);
+      if (p == null) entry = null;
+      else entry = sessionPicture(s.kind, p);
+    } catch (e) {
+      console.error(`leaf: the ${s.kind} session threw drawing its picture`, e);
+      entry = faultEntry(s.kind, e);
+    }
+    const was = memo?.entry;
+    if (entry && was && entry.state === "ready" && was.state === "ready" && samePicture(was.pic, entry.pic)) {
+      was.caret = entry.caret;
+      was.selection = entry.selection;
+      entry = was;
+    }
+    (s.pictures ??= new Map()).set(size, { rev: s.rev, ink: this._ink, entry });
+    s.live = entry;
+    return entry;
   }
 
   /**
@@ -2127,50 +2244,68 @@ export class LeafEditor {
     return true;
   }
 
-  /** What an ordinary row's key leaves out when a formula stands on it: the
-   *  picture each inline one is drawn from, which the `∑` run itself does
-   *  not carry. A block's placeholder row is keyed by the typesetter's state
-   *  as well, so it is rebuilt when the typesetter lands. */
-  _mathRowKey(runs, fontPx) {
+  /** What an ordinary row's key leaves out when a formula or another inline
+   *  region stands on it: the picture each is drawn from, which the atom run
+   *  itself does not carry. A block's placeholder row is keyed by the
+   *  typesetter's state as well, so it is rebuilt when the typesetter lands. */
+  _inlineRowKey(runs, fontPx) {
     let key = "";
     for (const run of runs) {
-      if (run.role !== "math") continue;
-      const at = this._mathInline.get(run.src);
-      if (!at) continue;
-      const entry = this._mathPicture(at.m, at.region, fontPx, 0);
-      key += "\u0004" + entry.id + entry.state + (at.m.edit ?? "") + (at.m.display ? "D" : "T") + at.m.tex;
+      if (run.role === "math") {
+        const at = this._mathInline.get(run.src);
+        if (!at) continue;
+        const entry = this._mathPicture(at.m, at.region, fontPx, 0);
+        key += "\u0004" + entry.id + entry.state + (at.m.edit ?? "") + (at.m.display ? "D" : "T") + at.m.tex;
+        continue;
+      }
+      const r = this._inlineRegions?.get(run.src);
+      if (!r || [...run.text].length !== 1) continue;
+      const entry = this._livePicture(r, fontPx, 0) ?? this._picture(r, fontPx, 0);
+      key += "\u0005" + entry.id + entry.state + r.kind;
     }
     return key + "|" + this._ink + "|" + mathState();
-  }
-
-  /** The caret's colour, for the open formula's caret: `--leaf-caret`. */
-  _accentColor() {
-    const c = getComputedStyle(this.contentEl).getPropertyValue("--leaf-caret").trim();
-    return /^#[0-9a-f]{3,8}$/i.test(c) ? c : "#2563eb";
   }
 
   /**
    * Open `region` in its kind's editor, the caret entering at `entry` —
    * `{at: "home"}`, `{at: "end"}`, or `{at: "point", x, y, size}` in pixels
    * from the drawing's top left. Core's caret waits in front of the region,
-   * where the DOM can hold it. A session that draws its own picture
-   * (`picture`) has the keys routed to it and the browser's caret hidden; one
-   * with a view of its own (`element`) is placed over the region's rows and
-   * given the focus. `false` when there is no editor for the kind, or the
-   * editor declined, and the region stays as it was.
+   * where the DOM can hold it. The editor answers with one of two sessions:
+   *
+   * - a picture session (`picture`), which leaf runs: its keys are named and
+   *   routed to it (`_regionKey`), text is typed into it, its picture is
+   *   drawn where the region's was, and leaf draws its caret, its selection
+   *   and any composition over it. The focus goes to the field under its
+   *   caret (`imeEl`), and the browser's caret is hidden.
+   * - a host view (`element`), placed over a block region's rows and given
+   *   the focus. A line holds no view, so an inline region whose editor
+   *   answers with one is closed again, and the refusal reported.
+   *
+   * `false` when there is no editor for the kind, or the editor declined, and
+   * the region stays as it was.
    */
   _openRegion(region, entry) {
     const editor = this._regionEditors.get(region.kind);
     if (!editor || this.viewName() === "source") return false;
     if (this._session) this._closeRegion(null, false);
     const token = {};
+    const mine = () => this._session?.token === token;
     const host = {
-      edit: (splices) => this._session?.token === token && this._regionEdit(splices),
-      replace: (content) =>
-        this._session?.token === token && this._regionEdit(diffSplice(this._session.content, String(content))),
-      leave: (side) => this._session?.token === token && this._closeRegion(side === "before" ? "before" : "after"),
-      undo: () => this._session?.token === token && this._regionHistory(false),
-      redo: () => this._session?.token === token && this._regionHistory(true),
+      edit: (splices) => {
+        if (!mine()) return;
+        this._endTyping();
+        this._regionEdit(splices);
+      },
+      replace: (content) => {
+        if (!mine()) return;
+        this._endTyping();
+        this._regionEdit(diffSplice(this._session.content, String(content)));
+      },
+      leave: (side) => mine() && this._closeRegion(side === "before" ? "before" : "after"),
+      undo: () => mine() && this._regionHistory(false),
+      redo: () => mine() && this._regionHistory(true),
+      caretRect: () => (mine() ? this._sessionCaretRect() : null),
+      regionRect: () => (mine() ? this._sessionRegionRect() : null),
     };
     let impl;
     try {
@@ -2180,15 +2315,29 @@ export class LeafEditor {
       return false;
     }
     if (!impl) return false;
-    if (impl.element != null && !(impl.element instanceof HTMLElement)) {
-      console.error(`leaf: the ${region.kind} editor opened with an element that is not an HTMLElement`);
+    const refuse = (why) => {
+      console.error(`leaf: the ${region.kind} editor ${why}`);
+      try {
+        impl.close?.();
+      } catch (e) {
+        console.error(`leaf: the ${region.kind} editor threw on close`, e);
+      }
       return false;
+    };
+    if (impl.element != null) {
+      if (!(impl.element instanceof HTMLElement)) return refuse("opened with an element that is not an HTMLElement");
+      if (region.inline) return refuse("opened an inline region with an element; an inline region takes a picture session");
+    } else if (typeof impl.picture !== "function") {
+      return refuse("opened with neither an element nor a picture()");
     }
     const alike = (this._lastView?.regions || []).filter((r) => r.kind === region.kind);
     this._session = {
       token,
       impl,
+      host,
       kind: region.kind,
+      inline: !!region.inline,
+      row: region.start_row,
       ordinal: Math.max(0, alike.findIndex((r) => r.src === region.src)),
       siblings: alike.length,
       src: region.src,
@@ -2196,11 +2345,28 @@ export class LeafEditor {
       contentStart: region.content_start,
       content: region.content,
       rev: 1,
+      typing: false,
+      live: null,
     };
     if (!impl.element) this.contentEl.classList.add("leaf-region-editing");
+    const hadFocus = this._hasFocus();
     this.render(this.doc.select_range(region.src, region.src));
     if (impl.element) impl.focus?.();
+    else if (hadFocus || document.activeElement === document.body) this.imeEl.focus({ preventScroll: true });
+    this._announce();
     return true;
+  }
+
+  /** Whether a session leaf draws is open: a picture session, not a view. */
+  _pictureOpen() {
+    return !!this._session && !this._session.impl.element;
+  }
+
+  /** Whether the focus is the editor's: its surface or the field under an
+   *  open region's caret. */
+  _hasFocus() {
+    const a = document.activeElement;
+    return a === this.contentEl || a === this.imeEl;
   }
 
   /**
@@ -2211,17 +2377,22 @@ export class LeafEditor {
   _closeRegion(where, paint = true) {
     const s = this._session;
     if (!s) return;
+    this._endTyping();
     this._session = null;
+    this._marked = null;
     this.contentEl.classList.remove("leaf-region-editing");
-    const hadFocus = s.impl.element?.contains(document.activeElement);
+    const hadFocus = s.impl.element?.contains(document.activeElement) || document.activeElement === this.imeEl;
     try {
       s.impl.close?.();
     } catch (e) {
       console.error(`leaf: the ${s.kind} editor threw on close`, e);
     }
+    this.imeEl.value = "";
+    this.imeEl.removeAttribute("aria-label");
+    this._paintRegionOverlay();
     if (hadFocus || where !== null) this.focus();
     // The formula's picture is its renderer's again: its row key must not
-    // carry the session's revision into the next paint.
+    // carry the session into the next paint.
     for (const m of this._lastView?.math || []) delete m.edit;
     if (!paint) return;
     const at = where === "before" ? s.src : where === "after" ? s.end : null;
@@ -2229,9 +2400,22 @@ export class LeafEditor {
   }
 
   /**
+   * Close the undo group consecutive typing in the open region keeps open
+   * (`_regionAct`): every other key, a click, a paste, an edit of the host's
+   * own, leaving and closing end the step, as they do in the document.
+   */
+  _endTyping() {
+    const s = this._session;
+    if (!s?.typing) return;
+    s.typing = false;
+    this.doc.end_undo_group();
+  }
+
+  /**
    * Apply the open session's splices — each `{from, to, text}` in bytes of
    * its content as the splice before left it — through `edit_source`,
-   * written exactly, as one undo step. None moves the content's start.
+   * written exactly, as one undo step (or as part of the typing step open
+   * around it). None moves the content's start.
    */
   _regionEdit(splices) {
     const s = this._session;
@@ -2263,33 +2447,65 @@ export class LeafEditor {
     }
     this.doc.end_undo_group();
     this.render(this.doc.select_range(s.src, s.src));
+    if (this._session === s) this._announce();
   }
 
   /** Undo or redo for a session with a view of its own, which stays open: the
    *  change reaches it as a `reload`. */
   _regionHistory(redo) {
     const s = this._session;
+    this._endTyping();
     if (!(redo ? this._lastView?.can_redo : this._lastView?.can_undo)) return;
     this.render(redo ? this.doc.redo() : this.doc.undo());
     if (this._session === s) this.render(this.doc.select_range(s.src, s.src));
   }
 
-  /** Do what a session's answer asks. */
-  _regionAct(out) {
-    if (out.leave) this._closeRegion(out.leave === "before" ? "before" : "after");
-    else if (out.edit) this._regionEdit(out.edit);
-    else {
-      this._session.rev++;
+  /**
+   * Do what a session's answer asks: leave, write, or — anything else — show
+   * that something inside moved. `typing` marks an answer to typed text,
+   * whose edits join the undo step the typing before it opened; any other
+   * answer ends that step.
+   */
+  _regionAct(out, typing = false) {
+    const s = this._session;
+    if (!s) return;
+    if (!typing || out?.leave) this._endTyping();
+    if (out?.leave) {
+      this._closeRegion(out.leave === "before" ? "before" : "after");
+    } else if (Array.isArray(out?.edit)) {
+      if (typing && out.edit.length && !s.typing) {
+        this.doc.begin_undo_group();
+        s.typing = true;
+      }
+      this._regionEdit(out.edit);
+    } else {
+      s.rev++;
       this.render(this._lastView);
     }
   }
 
   /**
-   * Follow the open region into frame `view`: its end and content start,
-   * which its own edits move, and its content, which an undo can change
-   * under it — answered with `reload`. A frame without it, or a reload the
-   * session refuses, closes it. Marks the open formula's `MathView` with the
-   * session's revision, which its row key carries.
+   * Ask the open session `method` with `args`, and answer what it answered —
+   * null for "not mine", and for a session that threw, which is reported.
+   */
+  _ask(method, ...args) {
+    const s = this._session;
+    const fn = s?.impl[method];
+    if (typeof fn !== "function") return null;
+    try {
+      return fn.apply(s.impl, args) ?? null;
+    } catch (e) {
+      console.error(`leaf: the ${s.kind} session threw on ${method}`, e);
+      return null;
+    }
+  }
+
+  /**
+   * Follow the open region into frame `view`: its row, end and content
+   * start, which its own edits move, and its content, which an undo can
+   * change under it — answered with `reload`. A frame without it, or a
+   * reload the session refuses, closes it. Marks an open formula's
+   * `MathView`, which its row key carries.
    */
   _followRegion(view) {
     const s = this._session;
@@ -2305,6 +2521,7 @@ export class LeafEditor {
       s.siblings = alike.length;
       s.src = r.src;
       s.end = r.end;
+      s.row = r.start_row;
       s.contentStart = r.content_start;
       if (r.content !== s.content) {
         s.content = r.content;
@@ -2314,33 +2531,100 @@ export class LeafEditor {
         } catch {
           alive = false;
         }
+        if (alive) this._announce();
       }
     }
     if (!alive) {
       this._closeRegion(null, false);
       return;
     }
-    for (const m of view.math || []) if (m.src === s.src) m.edit = s.rev;
+    for (const m of view.math || []) if (m.src === s.src) m.edit = "open";
   }
 
   /**
-   * A key while a region is open and leaf has its keys — a session that draws
-   * its own picture. The session answers with an edit, a move, a leave, `{close:
-   * true}` for a key that leaves it and then runs (a shortcut), or `null` for
-   * one that is none of its business. Returns whether the key was handled.
+   * A key while a picture session is open: named (`regionKeyName`) and asked
+   * of its `key`, or — a printable character — typed through its `type`. The
+   * session answers with an edit, a move or a leave, or null for a key that
+   * is none of its business: leaf closes the region and lets the key run, so
+   * a shortcut (⌘Z among them) acts on the document. A key with no name is
+   * not asked at all, and does the same. Copy, cut and paste are left to
+   * their own events, modifier keys alone to nothing. Returns whether the key
+   * was handled.
    */
   _regionKey(e) {
     const s = this._session;
-    if (s.impl.element || !s.impl.key) return false;
-    const out = s.impl.key(e);
-    if (!out) return false;
-    if (out.close) {
+    if (s.impl.element) return false;
+    if (MODIFIER_KEYS.has(e.key)) return false;
+    if (primaryModifier(e) && !e.altKey && !e.shiftKey && ["c", "x", "v"].includes(e.key.toLowerCase())) return false;
+    const name = regionKeyName(e);
+    const text = name ? null : typedText(e);
+    let out = null;
+    if (name) out = this._ask("key", name);
+    else if (text != null) out = this._ask("type", text);
+    if (!out) {
       this._closeRegion(null);
       return false;
     }
     e.preventDefault();
-    this._regionAct(out);
+    this._regionAct(out, text != null);
     return true;
+  }
+
+  /**
+   * An input intent while a picture session is open — what a keyboard with
+   * no keydown of its own sends, an on-screen one or dictation: text is typed
+   * into the session, the deletions and Return are its keys, and the history
+   * closes it and runs on the document. Composition is not here: leaf shows
+   * it until it is committed (`compositionend`). Everything is prevented.
+   */
+  _regionInput(e) {
+    if (e.inputType === "insertCompositionText") {
+      this._marked = e.data ?? "";
+      this._paintRegionOverlay();
+      return;
+    }
+    e.preventDefault();
+    const named = {
+      deleteContentBackward: "Backspace",
+      deleteContentForward: "Delete",
+      insertParagraph: "Enter",
+      insertLineBreak: "Enter",
+    }[e.inputType];
+    if (e.inputType === "historyUndo" || e.inputType === "historyRedo") {
+      this._closeRegion(null);
+      this.render(e.inputType === "historyUndo" ? this.doc.undo() : this.doc.redo());
+      return;
+    }
+    let text = null;
+    if (e.inputType === "insertText" || e.inputType === "insertReplacementText") {
+      text = e.data ?? e.dataTransfer?.getData("text/plain") ?? "";
+      if (!text) return;
+    } else if (!named) {
+      return;
+    }
+    const out = text != null ? this._ask("type", text) : this._ask("key", named);
+    if (out) this._regionAct(out, text != null);
+  }
+
+  /**
+   * Text an input method committed while a picture session is open: typed
+   * into the session as one piece. Text the session will not take closes it
+   * and goes into the document, where the caret waits in front of it.
+   */
+  _regionCommit(data) {
+    this._marked = null;
+    this.imeEl.value = "";
+    if (!data) {
+      this._paintRegionOverlay();
+      return;
+    }
+    const out = this._ask("type", data);
+    if (out) {
+      this._regionAct(out, true);
+      return;
+    }
+    this._closeRegion(null);
+    this.render(this.doc.insert(data));
   }
 
   /**
@@ -2363,9 +2647,9 @@ export class LeafEditor {
 
   /**
    * The region a mousedown on `t` is on, and where on its drawing, in pixels
-   * from its top left: a formula's picture, or any other region's picture
-   * or open view. `null` for anything else, and for a region of a kind with
-   * no editor.
+   * from its top left: an inline region's picture, a formula's block, or any
+   * other region's picture or open view. `null` for anything else, and for a
+   * region of a kind with no editor.
    */
   _regionHit(t, e) {
     if (t?.nodeType !== 1) return null;
@@ -2373,25 +2657,162 @@ export class LeafEditor {
     let target = null;
     let region = null;
     let size = this.theme.fontSize;
-    if (t._math && (t.classList.contains("leaf-math") || t.classList.contains("leaf-math-block"))) {
+    if (t._picInline && t.classList.contains("leaf-pic")) {
+      // A reused row keeps the run it was built for; the run's offset is
+      // refreshed, and is what is current.
+      target = t;
+      size = t._picPx;
+      region = regions.find((r) => r.inline && r.src === t._src);
+    } else if (t._math && t.classList.contains("leaf-math-block")) {
       target = t;
       size = t._mathPx;
-      // A reused row keeps the formula it was built for; the run's offset,
-      // and a block's row, are what is current.
       const row = this.rowEls.indexOf(t.closest(".leaf-row"));
-      region = t._math.inline
-        ? regions.find((r) => r.kind === "math" && r.src === (t._src ?? t._math.src))
-        : regions.find((r) => r.kind === "math" && r.start_row === row);
+      region = regions.find((r) => r.kind === "math" && r.start_row === row);
     } else {
       // A reused row keeps the region it was built for, whose offsets an
       // edit above has moved since — so the row's place says which it is.
       target = t.closest(".leaf-region");
       const row = target ? this.rowEls.indexOf(target.parentElement) : -1;
-      region = row < 0 ? null : regions.find((r) => r.start_row === row);
+      region = row < 0 ? null : regions.find((r) => !r.inline && r.start_row === row);
     }
     if (!region || !this._regionEditors.has(region.kind)) return null;
     const box = target.getBoundingClientRect();
     return { region, point: { x: e.clientX - box.left, y: e.clientY - box.top, size } };
+  }
+
+  /**
+   * The element the open picture session's picture is drawn in this frame:
+   * the atom span of an inline region, found by the source offset its run
+   * carries, or the picture of a block one, on its first row. Null for a
+   * host view, or a session whose picture is not drawn.
+   */
+  _sessionPictureEl() {
+    const s = this._session;
+    if (!s || s.impl.element || !s.live || s.live.state !== "ready") return null;
+    if (s.inline) {
+      for (const p of this.contentEl.querySelectorAll(".leaf-pic")) {
+        if (p._picInline && p._src === s.src) return p;
+      }
+      return null;
+    }
+    return this.rowEls[s.row]?.querySelector(".leaf-pic") ?? null;
+  }
+
+  /** The open session's caret, in client coordinates: for a host anchoring
+   *  a popover there. Null with no caret drawn. */
+  _sessionCaretRect() {
+    const el = this._sessionPictureEl();
+    const c = this._session?.live?.caret;
+    if (!el || !c) return null;
+    const box = el.getBoundingClientRect();
+    const k = this._session.live.pic.width ? box.width / this._session.live.pic.width : 1;
+    return new DOMRect(box.left + c.x * k, box.top + c.y * k, c.width * k, c.height * k);
+  }
+
+  /** The open region's drawing, in client coordinates: its picture, or the
+   *  atom a host's view stands in. */
+  _sessionRegionRect() {
+    const s = this._session;
+    if (!s) return null;
+    const el = s.impl.element ? s.impl.element.closest(".leaf-region") ?? s.impl.element : this._sessionPictureEl();
+    if (!el?.isConnected) return null;
+    const b = el.getBoundingClientRect();
+    return new DOMRect(b.left, b.top, b.width, b.height);
+  }
+
+  /**
+   * Draw what leaf draws over an open picture session's picture: its caret —
+   * a bar in `--leaf-caret`, blinking, solid again after each change — its
+   * selection in `--leaf-sel`, and text an input method is composing,
+   * underlined at the caret. The field the input method composes into
+   * follows the caret, so its candidate window opens there. Hidden with no
+   * picture session open, or none drawn.
+   */
+  _paintRegionOverlay() {
+    const o = this.overlayEl;
+    if (!o) return;
+    const s = this._session;
+    const pic = s ? this._sessionPictureEl() : null;
+    if (!pic) {
+      if (!o.hidden) {
+        o.hidden = true;
+        o.replaceChildren();
+      }
+      this._overlayCaret = null;
+      return;
+    }
+    const live = s.live;
+    const c = this.container;
+    const cb = c.getBoundingClientRect();
+    const pb = pic.getBoundingClientRect();
+    const k = live.pic.width ? pb.width / live.pic.width : 1;
+    const left = pb.left - cb.left - c.clientLeft + c.scrollLeft;
+    const top = pb.top - cb.top - c.clientTop + c.scrollTop;
+    o.hidden = false;
+    o.style.left = left.toFixed(2) + "px";
+    o.style.top = top.toFixed(2) + "px";
+    o.style.width = pb.width.toFixed(2) + "px";
+    o.style.height = pb.height.toFixed(2) + "px";
+    const parts = [];
+    for (const r of live.selection || []) {
+      const sel = el("div", "leaf-region-selection");
+      placeBox(sel, r.x * k, r.y * k, r.width * k, r.height * k);
+      parts.push(sel);
+    }
+    const caret = live.caret;
+    if (caret) {
+      const x = caret.x * k;
+      const y = caret.y * k;
+      const h = caret.height * k;
+      if (this._marked) {
+        const marked = el("span", "leaf-region-marked");
+        marked.textContent = this._marked;
+        marked.style.left = x.toFixed(2) + "px";
+        marked.style.top = y.toFixed(2) + "px";
+        marked.style.height = h.toFixed(2) + "px";
+        marked.style.lineHeight = h.toFixed(2) + "px";
+        marked.style.fontSize = Math.max(8, h * 0.8).toFixed(2) + "px";
+        parts.push(marked);
+      }
+      // A new bar each time the caret moves or the content changes, so its
+      // blink starts over, solid, as a text caret's does.
+      const at = [x, y, h, s.rev].join();
+      let bar = this._overlayCaret?.at === at ? this._overlayCaret.el : null;
+      if (!bar) {
+        bar = el("div", "leaf-region-caret");
+        const w = Math.max(1.5, Math.min(2, caret.width * k || 2));
+        placeBox(bar, x - w / 2, y, w, h);
+        this._overlayCaret = { at, el: bar };
+      }
+      if (!this._marked) parts.push(bar);
+      const ime = this.imeEl;
+      ime.style.left = (left + x).toFixed(2) + "px";
+      ime.style.top = (top + y).toFixed(2) + "px";
+      ime.style.height = Math.max(1, h).toFixed(2) + "px";
+    }
+    o.replaceChildren(...parts);
+    // What a screen reader is told the open region holds.
+    const value = this._accessibilityValue();
+    if (value != null) {
+      pic.setAttribute("role", "img");
+      pic.setAttribute("aria-label", value);
+      this.imeEl.setAttribute("aria-label", value);
+    }
+  }
+
+  /** The open session's accessibility value: its own, or its content. */
+  _accessibilityValue() {
+    const s = this._session;
+    if (!s) return null;
+    const v = this._ask("accessibilityValue");
+    return typeof v === "string" ? v : s.content;
+  }
+
+  /** Say the open region's value, politely: on opening, and after each edit. */
+  _announce() {
+    if (!this.liveEl || !this._session || this._session.impl.element) return;
+    const v = this._accessibilityValue();
+    if (v != null) this.liveEl.textContent = v;
   }
 
   /**
@@ -2435,7 +2856,7 @@ export class LeafEditor {
     const div = this._regionRow(r, row);
     div.classList.add("leaf-picture-row");
     const pic = entry.pic;
-    const img = el("img", "leaf-region-picture");
+    const img = el("img", "leaf-region-picture leaf-pic");
     img.src = svgDataUrl(pic.svg);
     img.alt = r.kind;
     img.width = Math.max(1, Math.round(pic.width));
@@ -2481,8 +2902,10 @@ export class LeafEditor {
   _restoreSelection(view) {
     const sel = window.getSelection();
     if (!sel) return;
-    // An open region's own view has the focus, and keeps it.
+    // An open region's own view has the focus, and keeps it; so does the
+    // field under an open picture session's caret.
     if (this._session?.impl.element?.contains(document.activeElement)) return;
+    if (document.activeElement === this.imeEl) return;
     // Only where the selection already lives here. Putting a range into a
     // contenteditable focuses it, so restoring the caret on every repaint
     // would pull focus out of whatever the reader was typing in — a search
@@ -2890,14 +3313,46 @@ export class LeafEditor {
     // core op — the browser never mutates our projected DOM (IME excepted below).
     on(ce, "beforeinput", (e) => this._onBeforeInput(e));
 
+    // While a picture session is open the focus is the field under its caret
+    // (`imeEl`), and what it hears is handled as the surface's own would be.
+    const ime = this.imeEl;
+    on(ime, "beforeinput", (e) => this._onBeforeInput(e));
+    on(ime, "keydown", (e) => this._onKeyDown(e));
+    on(ime, "focus", () => this.container.classList.add("leaf-focus"));
+    on(ime, "blur", () => this.container.classList.remove("leaf-focus"));
+
     // IME: the browser *will* compose into the DOM (we can't prevent it), so we
-    // let it, freeze core's caret at the start, and reconcile on end.
-    on(ce, "compositionstart", () => {
+    // let it, freeze core's caret at the start, and reconcile on end. In an
+    // open picture session it composes into `imeEl` instead, and leaf shows
+    // the marked text over the picture until it is committed.
+    const compositionStart = () => {
       this._composing = true;
+      if (this._pictureOpen()) {
+        this._marked = "";
+        return;
+      }
       this._syncFromDom();
+    };
+    const compositionUpdate = (e) => {
+      if (!this._pictureOpen()) return;
+      this._marked = e.data || "";
+      this._paintRegionOverlay();
+    };
+    on(ce, "compositionstart", compositionStart);
+    on(ime, "compositionstart", compositionStart);
+    on(ce, "compositionupdate", compositionUpdate);
+    on(ime, "compositionupdate", compositionUpdate);
+    on(ime, "compositionend", (e) => {
+      this._composing = false;
+      if (this._pictureOpen()) this._regionCommit(e.data || "");
+      else this.imeEl.value = "";
     });
     on(ce, "compositionend", (e) => {
       this._composing = false;
+      if (this._pictureOpen()) {
+        this._regionCommit(e.data || "");
+        return;
+      }
       const data = e.data || "";
       // Rebuild from core (with the composed text inserted), replacing whatever
       // the browser left in the DOM during composition — all of it: the browser
@@ -2917,8 +3372,10 @@ export class LeafEditor {
     // while we're the ones setting the selection (our own restore).
     on(document, "selectionchange", () => {
       if (this._settingSelection || this._composing) return;
-      // Inside an open region's own view, the selection is its editor's.
+      // Inside an open region's own view, the selection is its editor's; in
+      // the field under an open picture session's caret, there is none.
       if (this._session?.impl.element?.contains(document.activeElement)) return;
+      if (document.activeElement === this.imeEl) return;
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) return;
       if (!this.contentEl.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
@@ -2960,7 +3417,7 @@ export class LeafEditor {
       e.preventDefault();
       this.focus();
       if (s && s.kind === hit.region.kind && s.src === hit.region.src) {
-        if (s.impl.click) this._regionAct(s.impl.click(hit.point.x, hit.point.y, hit.point.size) ?? { moved: true });
+        if (!s.impl.element) this._regionAct(this._ask("click", hit.point.x, hit.point.y, hit.point.size) ?? { moved: true });
         return;
       }
       this._openRegion(hit.region, { at: "point", ...hit.point });
@@ -3028,14 +3485,37 @@ export class LeafEditor {
 
     // Rich clipboard (mirrors leaf-tui / leaf-gpui): copy/cut write both the
     // plain source and twig's HTML; paste prefers the HTML flavor.
+    // An open picture session copies its own selection; cut is its copy and
+    // then its Delete; a paste is handed to it as text.
+    const regionCopy = (e) => {
+      const text = this._ask("copy");
+      if (typeof text === "string") e.clipboardData.setData("text/plain", text);
+      e.preventDefault();
+    };
+    const regionCut = (e) => {
+      e.preventDefault();
+      const text = this._ask("copy");
+      if (typeof text !== "string") return;
+      e.clipboardData.setData("text/plain", text);
+      this._endTyping();
+      const out = this._ask("key", "Delete");
+      if (out && !out.leave) this._regionAct(out);
+    };
+    const regionPaste = (e) => {
+      e.preventDefault();
+      this._endTyping();
+      const text = e.clipboardData.getData("text/plain");
+      if (!text) return;
+      const out = this._ask("paste", text);
+      if (out) this._regionAct(out);
+    };
+    on(ime, "copy", (e) => this._pictureOpen() && regionCopy(e));
+    on(ime, "cut", (e) => this._pictureOpen() && regionCut(e));
+    on(ime, "paste", (e) => this._pictureOpen() && regionPaste(e));
     on(ce, "copy", (e) => {
       if (this._fromDrawing(e)) return;
-      // An open region leaf runs copies its own selection.
-      const s = this._session;
-      if (s?.impl.copy && !s.impl.element) {
-        const text = s.impl.copy();
-        if (text != null) e.clipboardData.setData("text/plain", text);
-        e.preventDefault();
+      if (this._pictureOpen()) {
+        regionCopy(e);
         return;
       }
       const text = this.doc.selected_text();
@@ -3047,13 +3527,8 @@ export class LeafEditor {
     });
     on(ce, "cut", (e) => {
       if (this._fromDrawing(e)) return;
-      const s = this._session;
-      if (s?.impl.cut && !s.impl.element) {
-        const cut = s.impl.cut();
-        e.preventDefault();
-        if (!cut) return;
-        e.clipboardData.setData("text/plain", cut.text);
-        this._regionAct(cut.out);
+      if (this._pictureOpen()) {
+        regionCut(e);
         return;
       }
       const text = this.doc.selected_text();
@@ -3067,11 +3542,8 @@ export class LeafEditor {
     });
     on(ce, "paste", (e) => {
       if (this._fromDrawing(e)) return;
-      const s = this._session;
-      if (s?.impl.paste && !s.impl.element) {
-        e.preventDefault();
-        const text = e.clipboardData.getData("text/plain");
-        if (text) this._regionAct(s.impl.paste(text));
+      if (this._pictureOpen()) {
+        regionPaste(e);
         return;
       }
       const plain = this._plainPaste;
@@ -3402,6 +3874,10 @@ export class LeafEditor {
    */
   _onBeforeInput(e) {
     if (this._fromDrawing(e)) return;
+    if (this._pictureOpen()) {
+      this._regionInput(e);
+      return;
+    }
     if (this._composing || e.inputType === "insertCompositionText") return;
     const d = this.doc;
     // Act where the user is: sync core's selection from the DOM first.
@@ -3740,6 +4216,70 @@ function el(tag, cls) {
   return e;
 }
 
+/** Put absolutely positioned `e` at `x, y`, `w` × `h`, in CSS pixels. */
+function placeBox(e, x, y, w, h) {
+  e.style.left = x.toFixed(2) + "px";
+  e.style.top = y.toFixed(2) + "px";
+  e.style.width = Math.max(0, w).toFixed(2) + "px";
+  e.style.height = Math.max(0, h).toFixed(2) + "px";
+}
+
+/** Keys that are only modifiers, or an input method at work: never a
+ *  picture session's, and never a reason to close it. */
+const MODIFIER_KEYS = new Set([
+  "Shift", "Control", "Alt", "AltGraph", "Meta", "OS", "Hyper", "Super", "Fn", "FnLock",
+  "CapsLock", "NumLock", "ScrollLock", "Dead", "Process", "Unidentified", "Compose",
+]);
+
+/**
+ * The name a picture session is asked about a key by (`RegionKey`), or null
+ * for a key that has none — which is not asked about, and closes the region
+ * to run. The names are an open set: a new one can be added without a
+ * session noticing, since a session answers null to a name it does not know.
+ *
+ * - the arrows, unmodified, by their own names; with ⇧, `Extend…`
+ * - ⌥ ← / → on a Mac and Ctrl ← / → elsewhere: `WordLeft`, `WordRight`
+ * - ⌘ ← / → on a Mac, and Home / End elsewhere: `LineStart`, `LineEnd`;
+ *   Home / End on a Mac too
+ * - ⌘ ↑ / ↓ on a Mac, and Ctrl Home / End: `Home`, `End`
+ * - ⌘A (Ctrl A): `SelectAll`
+ * - Backspace, Delete, Escape, Enter and Tab, with ⇧ or without
+ */
+function regionKeyName(e) {
+  const k = e.key;
+  const shift = e.shiftKey;
+  const alt = e.altKey;
+  const ctrl = e.ctrlKey;
+  const meta = e.metaKey;
+  if (ARROWS.has(k)) {
+    const dir = k.slice(5);
+    const horizontal = dir === "Left" || dir === "Right";
+    if (!alt && !ctrl && !meta) return shift ? "Extend" + dir : k;
+    if (shift) return null;
+    if (horizontal && (IS_MAC ? alt && !ctrl && !meta : ctrl && !alt && !meta)) return "Word" + dir;
+    if (IS_MAC && meta && !alt && !ctrl) {
+      return { Left: "LineStart", Right: "LineEnd", Up: "Home", Down: "End" }[dir];
+    }
+    return null;
+  }
+  if (k === "Home" || k === "End") {
+    if (shift || alt) return null;
+    if (!ctrl && !meta) return k === "Home" ? "LineStart" : "LineEnd";
+    if (primaryModifier(e) || ctrl) return k;
+    return null;
+  }
+  if (primaryModifier(e) && !alt && !shift && k.toLowerCase() === "a") return "SelectAll";
+  if (ctrl || meta || alt) return null;
+  if (k === "Backspace" || k === "Delete" || k === "Escape" || k === "Enter" || k === "Tab") return k;
+  return null;
+}
+
+/** The text a key types, or null: one character, with no modifier but ⇧. */
+function typedText(e) {
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  return [...e.key].length === 1 ? e.key : null;
+}
+
 /**
  * A family the author named, as a `font-family` declaration wants it: quoted.
  *
@@ -3903,25 +4443,25 @@ function pictureRowKey(r, entry, row) {
 /** The prefix of a leaf directive's region kind, before its name. */
 const DIRECTIVE_KIND = "directive:";
 
-/** Whether `kind` names a block region a host may draw or edit: a fence of a
- *  language, or a leaf directive of a name other than `page-break`, which
- *  is leaf's own and never a region. */
+/** Whether `kind` names a region a host may draw or edit besides `math`: a
+ *  fence of a language, or a leaf directive — block or inline — of a name
+ *  other than `page-break`, which is leaf's own and never a region. */
 function hostBlockKind(kind) {
   return /^fence:\S+$/.test(kind) || (/^directive:\S+$/.test(kind) && kind !== DIRECTIVE_KIND + PAGE_BREAK);
 }
 
 /**
- * The host's region editors, by kind, checked: each kind is a fence's
- * (`fence:<language>`) or a directive's (`directive:<name>`) — formulas are
- * leaf's own — and each editor has an `open`, and no `view`, which went when
- * renderers came.
+ * The host's region editors, by kind, checked: each kind is `math` — which
+ * replaces leaf's own formula editor — a fence's (`fence:<language>`) or a
+ * directive's (`directive:<name>`), and each editor has an `open`, and no
+ * `view`, which went when renderers came.
  */
 function regionEditors(given) {
   const map = new Map();
   for (const [kind, editor] of Object.entries(given ?? {})) {
-    if (!hostBlockKind(kind)) {
+    if (kind !== "math" && !hostBlockKind(kind)) {
       throw new Error(
-        `regionEditors: ${JSON.stringify(kind)} is not a kind a host edits — name a fence, "fence:<language>", or a directive, "directive:<name>"`
+        `regionEditors: ${JSON.stringify(kind)} is not a kind a host edits — name "math", a fence, "fence:<language>", or a directive, "directive:<name>"`
       );
     }
     if (typeof editor?.open !== "function") throw new Error(`regionEditors[${JSON.stringify(kind)}] has no open()`);
@@ -4025,6 +4565,43 @@ function checkedEntry(kind, answer) {
   return faultEntry(kind, new Error(`the ${kind} renderer answered with something not a RegionPicture`));
 }
 
+/**
+ * A picture session's answer as an entry: an `{svg}` picture — a session is
+ * drawn in a line as readily as in a block, and a line takes no element —
+ * with its caret rect and selection rects, each checked, beside it. Anything
+ * else is reported and is the fault.
+ */
+function sessionPicture(kind, p) {
+  const num = (v) => typeof v === "number" && Number.isFinite(v);
+  const size = (v) => num(v) && v >= 0;
+  if (
+    !p ||
+    typeof p !== "object" ||
+    typeof p.svg !== "string" ||
+    !size(p.width) ||
+    !size(p.height) ||
+    !(p.baseline === undefined || p.baseline === null || size(p.baseline))
+  ) {
+    console.error(`leaf: the ${kind} session's picture is not a RegionSessionPicture`, p);
+    return faultEntry(kind, new Error(`the ${kind} session's picture is not a RegionSessionPicture`));
+  }
+  const rect = (r) =>
+    r && typeof r === "object" && num(r.x) && num(r.y) && size(r.width) && size(r.height)
+      ? { x: r.x, y: r.y, width: r.width, height: r.height }
+      : null;
+  const pic = { svg: p.svg, width: p.width, height: p.height };
+  if (p.baseline != null) pic.baseline = p.baseline;
+  const entry = readyEntry(kind, pic);
+  entry.caret = rect(p.caret);
+  entry.selection = Array.isArray(p.selection) ? p.selection.map(rect).filter(Boolean) : [];
+  return entry;
+}
+
+/** Whether two `{svg}` pictures draw the same. */
+function samePicture(a, b) {
+  return a.svg === b.svg && a.width === b.width && a.height === b.height && a.baseline === b.baseline;
+}
+
 /** Whether ink `hex` is light — a surface whose text is light is dark. */
 function isDarkInk(hex) {
   const n = parseInt(hex.slice(1, 7), 16);
@@ -4115,9 +4692,11 @@ function diffSplice(before, after) {
 /**
  * Leaf's own editor for a region kind its Rust editors take
  * (`edit_session_kinds()`, the `math` kind today): an `EditSession` from the
- * math module, which edits a formula as structure and draws it with its
- * caret. Leaf runs this session — keys, clicks and the picture go through
- * it — and what it writes is splices on the region's content.
+ * math module, which edits a formula as structure. It is registered through
+ * the same door as a host's editor (`regionEditors.math` replaces it) and
+ * answers with the same `RegionPictureSession`: keys by name, text through
+ * `type`, and a picture in CSS pixels with its caret and selection beside it,
+ * which leaf draws. What it writes is splices on the region's content.
  */
 function leafRegionEditor() {
   const splices = (list) => {
@@ -4125,6 +4704,21 @@ function leafRegionEditor() {
     for (const sp of list) sp.free?.();
     return out;
   };
+  // The names the Rust session reads, and what each is called there. ⇧↑ and
+  // ⇧↓ were ↑ and ↓ in a formula before keys had names, and still are.
+  const NAMES = new Map([
+    ["ArrowLeft", "ArrowLeft"],
+    ["ArrowRight", "ArrowRight"],
+    ["ArrowUp", "ArrowUp"],
+    ["ArrowDown", "ArrowDown"],
+    ["ExtendLeft", "ExtendLeft"],
+    ["ExtendRight", "ExtendRight"],
+    ["ExtendUp", "ArrowUp"],
+    ["ExtendDown", "ArrowDown"],
+    ["Backspace", "Backspace"],
+    ["Delete", "Delete"],
+    ["SelectAll", "SelectAll"],
+  ]);
   return {
     open(region, entry) {
       let session;
@@ -4136,41 +4730,36 @@ function leafRegionEditor() {
       if (entry.at === "home") session.home();
       else session.end();
       if (entry.at === "point") session.click(entry.x, entry.y, entry.size);
+      const run = (name) => {
+        const sp = splices(session.key(name));
+        return sp.length ? { edit: sp } : { moved: true };
+      };
+      const rect = (a, i, size) => ({ x: a[i] * size, y: a[i + 1] * size, width: a[i + 2] * size, height: a[i + 3] * size });
       return {
+        // Leaf's own handle on the Rust session, for its tests.
         session,
-        // Typing, Backspace and the arrows are the session's. ← at the first
-        // stop and → at the last leave the formula, as do Escape, Enter and
-        // Tab; a shortcut (⌘Z among them) leaves it and then runs.
-        key(e) {
-          const k = e.key;
-          const run = (name) => {
-            const sp = splices(session.key(name));
-            return sp.length ? { edit: sp } : { moved: true };
-          };
-          if (primaryModifier(e) && !e.altKey) {
-            const c = k.toLowerCase();
-            if (c === "a" && !e.shiftKey) return run("SelectAll");
-            // Copy, cut and paste arrive as clipboard events: `copy` below.
-            if ((c === "c" || c === "x" || c === "v") && !e.shiftKey) return null;
-            return { close: true };
-          }
-          if (e.altKey || primaryModifier(e)) return { close: true };
-          if (k === "Escape" || k === "Enter" || k === "Tab") return { leave: "after" };
-          if (e.shiftKey && (k === "ArrowLeft" || k === "ArrowRight")) {
-            return run(k === "ArrowLeft" ? "ExtendLeft" : "ExtendRight");
-          }
+        // The arrows, Backspace, Delete, ⇧← / ⇧→ and ⌘A are the session's. ←
+        // at the first stop and → at the last leave the formula, as do
+        // Escape, Enter and Tab. Any other name is not the formula's: leaf
+        // closes it and lets the key run, so ⌘Z undoes the last keystroke.
+        key(name) {
+          if (name === "Escape" || name === "Enter" || name === "Tab") return { leave: "after" };
+          const k = NAMES.get(name);
+          if (!k) return null;
           const selected = session.has_selection();
-          if (k === "ArrowLeft" && !selected && session.at_home()) return { leave: "before" };
+          if (k === "ArrowLeft" && name === "ArrowLeft" && !selected && session.at_home()) return { leave: "before" };
           if (k === "ArrowRight" && !selected && session.at_end()) return { leave: "after" };
-          if (!(k.length === 1 || k === "Backspace" || k === "Delete" || ARROWS.has(k))) return null;
           return run(k);
+        },
+        // Typed text, one character at a time: `/` makes a fraction, `^` a
+        // superscript, `sqrt` a root.
+        type(text) {
+          const out = [];
+          for (const ch of text) out.push(...splices(session.key(ch)));
+          return out.length ? { edit: out } : { moved: true };
         },
         // The selection, as the content's own text.
         copy: () => session.selected_text() ?? null,
-        cut() {
-          const text = session.selected_text();
-          return text == null ? null : { text, out: { edit: splices(session.key("Delete")) } };
-        },
         paste(text) {
           const sp = splices(session.paste(text));
           return sp.length ? { edit: sp } : { moved: true };
@@ -4179,7 +4768,25 @@ function leafRegionEditor() {
           session.click(x, y, size);
           return { moved: true };
         },
-        picture: (size, ink, accent) => session.picture(size, ink, accent),
+        // The typesetter's picture is in ems, from the baseline; leaf's is in
+        // pixels from the top left.
+        picture(size, ink) {
+          const p = session.picture(size, ink);
+          try {
+            const sel = [];
+            for (let i = 0; i + 3 < p.selection.length; i += 4) sel.push(rect(p.selection, i, size));
+            return {
+              svg: p.svg,
+              width: p.width * size,
+              height: (p.height + p.depth) * size,
+              baseline: p.height * size,
+              caret: p.caret.length >= 4 ? rect(p.caret, 0, size) : null,
+              selection: sel,
+            };
+          } finally {
+            p.free?.();
+          }
+        },
         reload(tex) {
           try {
             session.reload(tex);
@@ -4188,6 +4795,7 @@ function leafRegionEditor() {
             return false;
           }
         },
+        accessibilityValue: () => session.content(),
         close() {
           session.free?.();
         },
@@ -4824,9 +5432,53 @@ img.leaf-media, video.leaf-media { max-height: 60vh; }
 /* TeX the typesetter could not read: the atom, tinted, with the fault in its
    title. Also every math run before the surface has said it paints pictures. */
 .leaf-r-math { color: var(--leaf-muted); }
-/* A region open in a session leaf draws — a formula — draws its own caret;
-   the browser's, waiting in front of it, would be a second one. */
+/* A region open in a session leaf draws — a formula, a host's picture
+   session — has its caret drawn over its picture; the browser's, waiting in
+   front of it, would be a second one. */
 .leaf-content.leaf-region-editing { caret-color: transparent; }
+/* What leaf draws over an open picture session: its selection, its caret —
+   blinking as a text caret does — and text being composed, underlined at the
+   caret. Over the picture and never in the way of a click on it. */
+.leaf-region-overlay { position: absolute; pointer-events: none; z-index: 2; }
+.leaf-region-overlay[hidden] { display: none; }
+.leaf-region-selection { position: absolute; background: var(--leaf-sel); opacity: 0.55; border-radius: 1px; }
+.leaf-region-caret {
+  position: absolute; background: var(--leaf-caret); border-radius: 1px;
+  animation: leaf-region-blink 1.06s steps(1, end) infinite;
+}
+.leaf-editor:not(.leaf-focus) .leaf-region-caret { visibility: hidden; }
+@keyframes leaf-region-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+.leaf-region-marked {
+  position: absolute; white-space: pre; color: var(--leaf-text); background: var(--leaf-code-bg);
+  text-decoration: underline; text-underline-offset: 2px; padding: 0 1px; border-radius: 2px;
+}
+/* The field an input method composes into while a picture session is open:
+   at the caret, so the candidate window opens there, and never seen. */
+.leaf-ime {
+  position: absolute; left: 0; top: 0; width: 1px; height: 1em; padding: 0; margin: 0;
+  border: 0; outline: none; resize: none; overflow: hidden; opacity: 0;
+  color: transparent; background: transparent; caret-color: transparent;
+  pointer-events: none; z-index: -1; white-space: pre;
+}
+/* Said to a screen reader, and not drawn. */
+.leaf-live {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+/* Another inline region — an inline directive the host draws — is drawn as
+   an inline formula is: its atom stretched to the picture, the picture
+   behind it. */
+.leaf-inline-picture {
+  display: inline-block;
+  overflow: hidden;
+  -webkit-text-fill-color: transparent;
+  background-repeat: no-repeat;
+  background-position: left top;
+  background-size: 100% 100%;
+  white-space: pre;
+  cursor: default;
+}
+.leaf-region-error { color: #c0392b; text-decoration: underline wavy; }
 .leaf-r-math.leaf-math-error { color: #c0392b; text-decoration: underline wavy; }
 
 /* Didn't load: a missing file would otherwise leave the row blank, with nothing

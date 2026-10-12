@@ -64,10 +64,8 @@ final class RegionEditingTests: XCTestCase {
                     sessions.append(s)
                     return s
                 }),
-            // Not kinds a host may edit: leaf's own name, and formulas, which
-            // leaf's session edits inside a line.
+            // Not a kind a host may edit: leaf's own name.
             "directive:page-break": RegionEditor(open: { _, _, _ in nil }),
-            "math": RegionEditor(open: { _, _, _ in nil }),
         ]
         view.layout()
         return view

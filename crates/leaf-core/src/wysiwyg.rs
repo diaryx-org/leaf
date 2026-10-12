@@ -6526,7 +6526,8 @@ pub struct RegionInfo {
     /// [`MATH_REGION`], [`FENCE_REGION`] and a language (`fence:mermaid`), or
     /// [`DIRECTIVE_REGION`] and a name (`directive:embed`).
     pub kind: String,
-    /// An inline formula's atom, rather than a block on rows of its own.
+    /// An atom in a line of text — an inline formula's, or an inline
+    /// directive's — rather than a block on rows of its own.
     pub inline: bool,
     /// A formula set in display style rather than text style — see
     /// [`MathMark::display`]. False for every other kind.

@@ -468,6 +468,23 @@ impl Session {
         })
     }
 
+    /// The formula without its caret or selection, and where they stand on
+    /// it, in em — for a host that draws the caret and the selection itself.
+    /// See [`Layout::picture_marked`](crate::layout::Layout::picture_marked).
+    pub fn picture_marked(
+        &self,
+        style: &crate::layout::Style,
+    ) -> Result<
+        (
+            crate::layout::Picture,
+            crate::layout::Mark,
+            Vec<crate::layout::Mark>,
+        ),
+        String,
+    > {
+        self.with_layout(|l| l.picture_marked(&self.formula, style, self.caret, self.selection()))
+    }
+
     /// The selected atoms, as a row and a range of its atom indices.
     pub fn selection(&self) -> Option<(usize, Range<usize>)> {
         self.formula.selection(self.anchor?, self.caret)

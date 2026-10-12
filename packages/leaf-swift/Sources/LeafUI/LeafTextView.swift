@@ -988,6 +988,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // What Writing Tools is animating over: hidden under its preview, or
         // greyed while it waits. Nothing, and no work, the rest of the time.
         let effects = printing ? (hidden: [], dimmed: []) : writingToolsEffectRects()
+        // The open region's selection, behind its picture: leaf draws a
+        // picture session's selection, as it draws the document's.
+        if !printing, regionSlot.isOpen {
+            ctx.setFillColor(selColor.cgColor)
+            for r in regionSlot.selectionRects() { ctx.fill(r) }
+        }
 
         for rl in layoutEngine.rows {
             // Cull to the dirty band, so a scroll or a caret blink repaints only
@@ -1081,11 +1087,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             BlockChrome.drawPlaceholder(placeholder, in: box, theme: theme, in: ctx)
         }
 
-        if active, caretVisible, !usesSystemCaret, !regionSlot.isOpen,
-           let rect = layoutEngine.caretRect(docView, theme: theme) {
+        if active, caretVisible, !usesSystemCaret, let rect = shownCaretRect {
             ctx.setFillColor(theme.caretColor.cgColor)
             ctx.fill(rect)
         }
+        if !printing { drawRegionComposition(in: ctx) }
         drawDropIndicator(in: ctx)
 
         drawHighlightMarkers()
@@ -2566,6 +2572,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case #selector(moveDown(_:)): return .down
         case #selector(moveLeftAndModifySelection(_:)): return .extendLeft
         case #selector(moveRightAndModifySelection(_:)): return .extendRight
+        case #selector(moveUpAndModifySelection(_:)): return .extendUp
+        case #selector(moveDownAndModifySelection(_:)): return .extendDown
+        case #selector(moveWordLeft(_:)), #selector(moveWordBackward(_:)): return .wordLeft
+        case #selector(moveWordRight(_:)), #selector(moveWordForward(_:)): return .wordRight
+        case #selector(moveToLeftEndOfLine(_:)), #selector(moveToBeginningOfLine(_:)): return .lineStart
+        case #selector(moveToRightEndOfLine(_:)), #selector(moveToEndOfLine(_:)): return .lineEnd
+        case #selector(moveToBeginningOfDocument(_:)), #selector(scrollToBeginningOfDocument(_:)): return .home
+        case #selector(moveToEndOfDocument(_:)), #selector(scrollToEndOfDocument(_:)): return .end
         case #selector(deleteBackward(_:)): return .backspace
         case #selector(deleteForward(_:)): return .deleteForward
         case #selector(cancelOperation(_:)): return .cancel
@@ -4100,7 +4114,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public override func accessibilitySelectedText() -> String? {
-        doc.textInRange(from: UInt32(selLowByte), to: UInt32(selHighByte))
+        // An open region is what is selected: its session's value.
+        if let value = regionSlot.accessibilityValue { return value }
+        return doc.textInRange(from: UInt32(selLowByte), to: UInt32(selHighByte))
     }
 
     public override func accessibilitySelectedTextRange() -> NSRange {
@@ -4320,7 +4336,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.caretVisible.toggle()
-            if let r = self.layoutEngine.caretRect(self.docView, theme: self.theme) {
+            if let r = self.shownCaretRect {
                 self.setNeedsDisplay(self.viewRect(r))
             }
         }
@@ -4333,8 +4349,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private func placeSystemCaret() {
         guard #available(macOS 14, *), let indicator = insertionIndicator as? NSTextInsertionIndicator else { return }
         indicator.color = theme.caretColor
-        // An open formula draws its own caret, inside its picture.
-        if selectionIsActive, !regionSlot.isOpen, let rect = layoutEngine.caretRect(docView, theme: theme) {
+        // An open region leaf draws has its caret where its session says,
+        // over its picture; one with a view of its own has none of leaf's.
+        if selectionIsActive, let rect = shownCaretRect {
             indicator.frame = viewRect(rect)
             indicator.displayMode = .automatic
         } else {
@@ -5076,6 +5093,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         closeWritingToolsGroupForUserEdit()
         let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        // A composition in an open region leaf draws is shown by leaf and
+        // reaches the session only once committed.
+        if regionSlot.composes {
+            regionSlot.setMarked(text, selected: selectedRange)
+            return
+        }
         // Bytes to replace: the existing composition, else the proposed replacement,
         // else the current selection.
         let start: Int, end: Int
@@ -5104,7 +5127,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         needsDisplay = true
     }
 
-    public func unmarkText() { markedByteRange = nil; needsDisplay = true }
+    public func unmarkText() {
+        // A composition in an open region is the region's: committed, as the
+        // focus moving commits one.
+        if regionSlot.marked != nil { return regionSlot.commitMarked() }
+        markedByteRange = nil
+        needsDisplay = true
+    }
 
     /// Whether an underline style draws heavier than a single line. The style
     /// is a bitmask: its low byte is the line (single, thick, double), and the
@@ -5147,8 +5176,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             return (NSRange(location: from, length: length), selected)
         }
     }
-    public func hasMarkedText() -> Bool { markedByteRange != nil }
+    public func hasMarkedText() -> Bool { markedByteRange != nil || regionSlot.marked != nil }
     public func markedRange() -> NSRange {
+        // An open region's composition stands at core's caret, in front of
+        // the region, and holds no bytes of the document.
+        if let m = regionSlot.marked {
+            return NSRange(location: utf16Range(fromByte: selLowByte, toByte: selLowByte).location,
+                           length: (m.text as NSString).length)
+        }
         guard let m = markedByteRange else { return NSRange(location: NSNotFound, length: 0) }
         return utf16Range(fromByte: m.location, toByte: m.location + m.length)
     }
@@ -5159,7 +5194,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public func selectedRange() -> NSRange {
-        utf16Range(fromByte: selLowByte, toByte: selHighByte)
+        if let m = regionSlot.marked {
+            let at = utf16Range(fromByte: selLowByte, toByte: selLowByte).location
+            return NSRange(location: at + m.selected.location, length: m.selected.length)
+        }
+        return utf16Range(fromByte: selLowByte, toByte: selHighByte)
     }
 
     public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
@@ -5195,6 +5234,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// line at a time, as the protocol asks, and the caller comes back for
     /// the rest.
     public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        // In an open region leaf draws, the input method's window goes at its
+        // caret.
+        if regionSlot.composes, let caret = regionSlot.caretRect() {
+            actualRange?.pointee = range
+            return screenRect(fromView: viewRect(caret))
+        }
         let (from, to) = byteBounds(range)
         let s = doc.posForOffset(off: UInt32(from))
         guard to > from, let line = layoutEngine.visualLine(row: Int(s.row), ch: Int(s.ch)),
@@ -5502,7 +5547,48 @@ final class LeafWritingToolsDelegate: NSObject, NSWritingToolsCoordinator.Delega
 }
 extension LeafTextView: RegionSlotOwner {
     var shownFrame: DocView { docView }
-    var regionAccent: LeafColor { theme.caretColor }
+    var regionLayout: EditorLayout { layoutEngine }
+    var regionTheme: EditorTheme { theme }
+    func regionViewRect(_ rect: CGRect) -> CGRect { viewRect(rect) }
+
+    func regionMarksChanged() {
+        needsDisplay = true
+        resetBlink()
+        inputContext?.invalidateCharacterCoordinates()
+    }
+
+    func regionAnnounce(_ value: String) {
+        NSAccessibility.post(element: self, notification: .announcementRequested, userInfo: [
+            .announcement: value,
+            .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+        ])
+    }
+
+    /// The caret leaf shows, in layout coordinates: an open picture session's,
+    /// where it says; none for a region with a view of its own; else the
+    /// document's.
+    var shownCaretRect: CGRect? {
+        regionSlot.isOpen ? regionSlot.caretRect() : layoutEngine.caretRect(docView, theme: theme)
+    }
+
+    /// An input method's composition in the open region, drawn at its caret
+    /// over the picture: the marked text on the page's colour, underlined.
+    func drawRegionComposition(in ctx: CGContext) {
+        guard let marked = regionSlot.marked, let caret = regionSlot.caretRect() else { return }
+        let font = NSFont.systemFont(ofSize: max(8, caret.height * 0.8))
+        let text = NSAttributedString(string: marked.text, attributes: [
+            .font: font, .foregroundColor: theme.textColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ])
+        let size = text.size()
+        let box = CGRect(x: caret.minX, y: caret.midY - size.height / 2, width: size.width, height: size.height)
+        ctx.setFillColor(theme.pageColor.cgColor)
+        ctx.fill(box.insetBy(dx: -2, dy: 0))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        text.draw(at: box.origin)
+        NSGraphicsContext.restoreGraphicsState()
+    }
     func regionRender(_ frame: DocView) { render(frame) }
     func focusDocument() { window?.makeFirstResponder(self) }
     func regionHistory(redo: Bool) {

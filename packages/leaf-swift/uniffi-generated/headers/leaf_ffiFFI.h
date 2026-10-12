@@ -305,7 +305,7 @@ RustBuffer uniffi_leaf_ffi_fn_method_editsession_paste(uint64_t ptr, RustBuffer 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_PICTURE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_PICTURE
-RustBuffer uniffi_leaf_ffi_fn_method_editsession_picture(uint64_t ptr, double size, RustBuffer ink, RustBuffer accent, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_editsession_picture(uint64_t ptr, double size, RustBuffer ink, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_EDITSESSION_RELOAD

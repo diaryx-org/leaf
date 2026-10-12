@@ -1895,9 +1895,11 @@ await test("→ onto a formula opens it, and what is typed there is TeX in the d
   assert(ed.contentEl.classList.contains("leaf-region-editing"), "the browser's caret is still shown");
   for (const k of ["ArrowRight", "^", "2", "ArrowRight", "+", "1", "/", "2"]) press(ed, k);
   eq(ed.source(), "say $x^{2}+\\frac{1}{2}$ here\n");
-  // The open formula is drawn from its session: the caret is in the picture.
+  // The open formula is drawn from its session, and leaf draws its caret
+  // over the picture.
   const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
-  assert(decodeURIComponent(atom.style.backgroundImage).includes("<rect"), "no caret in the picture");
+  assert(atom, "the open formula is not a picture");
+  assert(ed.overlayEl.querySelector(".leaf-region-caret"), "no caret over the picture");
   // Out of the denominator, then out of the formula, behind it.
   press(ed, "ArrowRight");
   assert(ed._session, "left the formula a stop early");
@@ -1936,7 +1938,7 @@ await test("a click on a formula's picture opens it at the stop under the pointe
   return ed;
 });
 
-await test("a keystroke in a formula is one undo step, and ⌘Z leaves the formula to undo it", async () => {
+await test("typing in a formula is one undo step, and ⌘Z leaves the formula to undo it", async () => {
   await LeafEditor.loadMath();
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   const ed = editor("say $x$ here\n");
@@ -1944,12 +1946,13 @@ await test("a keystroke in a formula is one undo step, and ⌘Z leaves the formu
   ed.render(ed.doc.select_range(m.end, m.end));
   press(ed, "ArrowLeft");
   // `sqrt` is four keystrokes, the last of which makes two splices: the `t`,
-  // then the letters becoming `\sqrt{}`. Both are one step.
+  // then the letters becoming `\sqrt{}`. Typed one after another, they are
+  // one step with the `+` before them, as typing in the document is.
   for (const k of "+sqrt") press(ed, k);
   eq(ed.source(), "say $x+\\sqrt{}$ here\n");
   press(ed, "z", mac ? { metaKey: true } : { ctrlKey: true });
   assert(!ed._session, "⌘Z did not close the formula");
-  eq(ed.source(), "say $x+sqr$ here\n");
+  eq(ed.source(), "say $x$ here\n");
   return ed;
 });
 
@@ -1964,7 +1967,8 @@ await test("a display block opens, and its TeX stays between its own lines", asy
   press(ed, "1");
   eq(ed.source(), "intro\n\n$$\n\\int_0^1 x+1\n$$\n\nend\n");
   const img = ed.contentEl.querySelector(".leaf-math-block");
-  assert(decodeURIComponent(img.src).includes("<rect"), "no caret in the block's picture");
+  assert(img, "the open block is not a picture");
+  assert(ed.overlayEl.querySelector(".leaf-region-caret"), "no caret over the block's picture");
   return ed;
 });
 
@@ -1980,9 +1984,8 @@ await test("in a formula, ⇧← selects whole structures, and typing, Delete an
   press(ed, "ArrowLeft", { shiftKey: true });
   eq(ed._session.impl.copy(), "\\frac{a}{b}");
   assert(ed._session, "⇧← at a selection's edge left the formula");
-  // The selection is drawn in the picture.
-  const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
-  assert(decodeURIComponent(atom.style.backgroundImage).includes("fill-opacity"), "no selection in the picture");
+  // Leaf draws the selection over the picture.
+  assert(ed.overlayEl.querySelector(".leaf-region-selection"), "no selection over the picture");
   press(ed, "x");
   eq(ed.source(), "say $1+x$ here\n");
   // ⌘A selects the whole formula, not the document; / makes it a numerator.
@@ -2256,15 +2259,16 @@ await test("a click on a formula after an edit above it opens that formula", asy
     bubbles: true, cancelable: true, button: 0, detail: 1, clientX: fb.left + 2, clientY: fb.top + 2,
   }));
   assert(!ed._session);
+  assert(ed.overlayEl.hidden, "the closed formula still has leaf's caret over it");
   assert(!decodeURIComponent(atoms[1].isConnected ? atoms[1].style.backgroundImage : ed.contentEl.querySelectorAll(".leaf-r-math.leaf-math")[1].style.backgroundImage).includes("<rect"),
     "the closed formula still draws its caret");
   return ed;
 });
 
-await test("regionEditors takes fences and directives, each with an open() and no view()", async () => {
+await test("regionEditors takes math, fences and directives, each with an open() and no view()", async () => {
   let threw = 0;
   const bad = [
-    { math: { open() {} } },
+    { code: { open() {} } },
     { "fence:": { open() {} } },
     { "fence:demo": {} },
     { "directive:page-break": { open() {} } },
@@ -2274,7 +2278,7 @@ await test("regionEditors takes fences and directives, each with an open() and n
     try { editor("x", { regionEditors: b }); } catch { threw++; }
   }
   eq(threw, bad.length);
-  return editor("x", { regionEditors: { "fence:demo": { open() {} }, "directive:embed": { open() {} } } });
+  return editor("x", { regionEditors: { math: { open() {} }, "fence:demo": { open() {} }, "directive:embed": { open() {} } } });
 });
 
 await test("regionRenderers takes math, fences and directives, each a function; the directive hook is gone", async () => {
@@ -2453,7 +2457,7 @@ await test("a renderer for math replaces leaf's, inline and in a block", async (
   press(ed, "ArrowRight");
   assert(ed._session?.kind === "math", "the formula did not open");
   const open = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
-  assert(decodeURIComponent(open.style.backgroundImage).includes("<rect"), "the open formula is not its session's picture");
+  assert(ed.overlayEl.querySelector(".leaf-region-caret"), "no caret over the open formula");
   assert(!decodeURIComponent(open.style.backgroundImage).includes("#888"), "the open formula is the renderer's picture");
   press(ed, "Escape");
   assert(decodeURIComponent(ed.contentEl.querySelector(".leaf-r-math.leaf-math").style.backgroundImage).includes("#888"),
@@ -2538,6 +2542,335 @@ await test("a directive's editor writes its source through splices, and its rend
     bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 2, clientY: b.top + 2,
   }));
   eq(log.filter((l) => typeof l === "string" && l.startsWith("open")), ["open home", "open point"]);
+  return ed;
+});
+
+/**
+ * A host's picture session for `directive:date`, the stand-in for the demo's
+ * date chip: three stops, 20px apart, on a 60 × 16 picture, the caret at the
+ * middle of each and the middle stop selected. ← at the first stop and → at
+ * the last leave; any other name is not its own. Typed text goes in at the
+ * end of the label. Records what leaf asked of it in `log`.
+ */
+function chipEditor(log) {
+  return {
+    open(r, entry, host) {
+      log.push(["open", entry.at, r.inline, r.label]);
+      let at = entry.at === "home" ? 0 : entry.at === "end" ? 2 : Math.max(0, Math.min(2, Math.floor(entry.x / 20)));
+      let content = r.content;
+      return {
+        host,
+        get at() { return at; },
+        picture(size, ink) {
+          log.push(["picture", size, typeof ink]);
+          return {
+            svg: svgOf(content, 60, 16), width: 60, height: 16, baseline: 12,
+            caret: { x: at * 20 + 10, y: 2, width: 0, height: 12 },
+            selection: at === 1 ? [{ x: 20, y: 2, width: 20, height: 12 }] : [],
+          };
+        },
+        key(name) {
+          log.push(["key", name]);
+          if (name === "ArrowLeft") return at === 0 ? { leave: "before" } : (at--, { moved: true });
+          if (name === "ArrowRight") return at === 2 ? { leave: "after" } : (at++, { moved: true });
+          if (name === "Escape") return { leave: "after" };
+          return null;
+        },
+        type(text) {
+          log.push(["type", text]);
+          const end = content.indexOf("]");
+          const at = new TextEncoder().encode(content.slice(0, end)).length;
+          content = content.slice(0, end) + text + content.slice(end);
+          return { edit: [{ from: at, to: at, text }] };
+        },
+        click(x, y, size) {
+          at = Math.max(0, Math.min(2, Math.floor(x / 20)));
+          log.push(["click", at, size]);
+          return { moved: true };
+        },
+        reload(c) {
+          content = c;
+          return true;
+        },
+        close: () => log.push(["close"]),
+      };
+    },
+  };
+}
+const CHIP_DOC = "on :date[2026-10-12] we met\n\nnext\n";
+const chipOpts = (log) => ({
+  regionRenderers: {
+    "directive:date": (r) => ({ svg: svgOf(r.label, 50, 16), width: 50, height: 16, baseline: 12 }),
+  },
+  regionEditors: { "directive:date": chipEditor(log) },
+});
+/** Open the chip in `ed` by → from in front of it. */
+function openChip(ed) {
+  const r = ed._lastView.regions.find((r) => r.kind === "directive:date");
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  assert(ed._session?.kind === "directive:date", "→ in front of the chip did not open it");
+  return r;
+}
+/** A mousedown at `x, y` from `el`'s top left. */
+function clickAt(el, x, y) {
+  const b = el.getBoundingClientRect();
+  return el.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + x, clientY: b.top + y,
+  }));
+}
+const near = (a, b, what) => assert(Math.abs(a - b) < 0.75, `${what}: ${a} is not ${b}`);
+
+await test("an inline directive a host draws is its picture in the line, and opens by arrows and click", async () => {
+  const log = [];
+  const ed = editor(CHIP_DOC, chipOpts(log));
+  const r = ed._lastView.regions[0];
+  eq([r.kind, r.inline, r.name, r.label, r.content], ["directive:date", true, "date", "2026-10-12", ":date[2026-10-12]"]);
+  const pic = ed.contentEl.querySelector(".leaf-inline-picture");
+  assert(pic, "the directive is not drawn as a picture in its line");
+  eq(pic.style.width, "50px");
+  eq(pic.dataset.directive, "date");
+  assert(ed.rowEls[0].textContent.startsWith("on "), "the text around it is gone");
+  // → from in front opens it at its first stop; → walks it, and leaves it
+  // behind at the last.
+  openChip(ed);
+  eq(log[0], ["open", "home", true, "2026-10-12"]);
+  eq(document.activeElement, ed.imeEl, "the field under the caret does not have the focus");
+  assert(ed.contentEl.classList.contains("leaf-region-editing"), "the browser's caret is still shown");
+  eq(ed.contentEl.querySelector(".leaf-inline-picture").style.width, "60px", "the open chip is not its session's picture");
+  press(ed, "ArrowRight");
+  press(ed, "ArrowRight");
+  assert(ed._session, "left a stop early");
+  press(ed, "ArrowRight");
+  assert(!ed._session, "→ at the last stop did not leave");
+  eq(ed._lastView.caret_src, r.end);
+  eq(document.activeElement, ed.contentEl, "leaving did not give the document the focus back");
+  eq(ed.contentEl.querySelector(".leaf-inline-picture").style.width, "50px", "closed, the chip is not its renderer's picture");
+  // ← from behind opens it at its last stop, and ← walks out in front.
+  press(ed, "ArrowLeft");
+  assert(ed._session?.impl.at === 2, "← behind the chip did not open it at its end");
+  for (let i = 0; i < 3; i++) press(ed, "ArrowLeft");
+  assert(!ed._session, "← at the first stop did not leave");
+  eq(ed._lastView.caret_src, r.src);
+  // A click opens it at the point, and a click on it moves its caret.
+  clickAt(ed.contentEl.querySelector(".leaf-inline-picture"), 45, 8);
+  eq(log.filter((l) => l[0] === "open").at(-1), ["open", "point", true, "2026-10-12"]);
+  eq(ed._session?.impl.at, 2, "the click did not open it at the stop under the pointer");
+  clickAt(ed.contentEl.querySelector(".leaf-inline-picture"), 5, 8);
+  eq(ed._session?.impl.at, 0, "a click on the open chip did not move its caret");
+  eq(log.at(-1)[0] === "picture" ? log.filter((l) => l[0] === "click").at(-1) : log.at(-1), ["click", 0, ed.theme.fontSize]);
+  // A click elsewhere closes it.
+  clickAt(ed.rowEls[2], 2, 2);
+  assert(!ed._session, "a click elsewhere left it open");
+  eq(log.at(-1), ["close"]);
+  eq(ed.source(), CHIP_DOC, "walking the chip wrote something");
+  return ed;
+});
+
+await test("an inline region whose editor answers with a view is refused", async () => {
+  const quiet = console.error;
+  let reported = 0;
+  console.error = () => reported++;
+  let closed = 0;
+  let ed;
+  try {
+    ed = editor(CHIP_DOC, {
+      regionRenderers: chipOpts([]).regionRenderers,
+      regionEditors: {
+        "directive:date": { open: () => ({ element: document.createElement("input"), close: () => closed++ }) },
+      },
+    });
+    const r = ed._lastView.regions[0];
+    ed.render(ed.doc.select_range(r.src, r.src));
+    press(ed, "ArrowRight");
+  } finally {
+    console.error = quiet;
+  }
+  assert(!ed._session, "an inline region opened as a view");
+  eq([reported, closed], [1, 1], "the refusal was not reported, or the view not closed");
+  return ed;
+});
+
+await test("leaf draws a picture session's caret and selection where it says, and the host can find them", async () => {
+  const log = [];
+  const ed = editor(CHIP_DOC, chipOpts(log));
+  openChip(ed);
+  press(ed, "ArrowRight");
+  const pic = ed.contentEl.querySelector(".leaf-inline-picture").getBoundingClientRect();
+  assert(!ed.overlayEl.hidden, "nothing is drawn over the open picture");
+  const bar = ed.overlayEl.querySelector(".leaf-region-caret");
+  assert(bar, "no caret over the picture");
+  const cb = bar.getBoundingClientRect();
+  near(cb.left + cb.width / 2, pic.left + 30, "the caret's x");
+  near(cb.top, pic.top + 2, "the caret's top");
+  near(cb.height, 12, "the caret's height");
+  assert(cb.width >= 1.5 && cb.width <= 2, `the caret is ${cb.width}px wide`);
+  const sel = ed.overlayEl.querySelectorAll(".leaf-region-selection");
+  eq(sel.length, 1, "the selection is not drawn");
+  const sb = sel[0].getBoundingClientRect();
+  near(sb.left, pic.left + 20, "the selection's x");
+  near(sb.top, pic.top + 2, "the selection's top");
+  near(sb.width, 20, "the selection's width");
+  // The host's rects, in client coordinates: the caret inside the picture.
+  const { host } = ed._session.impl;
+  const caret = host.caretRect();
+  const region = host.regionRect();
+  assert(caret instanceof DOMRect && region instanceof DOMRect, "the host's rects are not DOMRects");
+  near(caret.x, pic.left + 30, "caretRect's x");
+  near(caret.height, 12, "caretRect's height");
+  assert(caret.left >= pic.left - 0.5 && caret.right <= pic.right + 0.5 && caret.top >= pic.top - 0.5 && caret.bottom <= pic.bottom + 0.5,
+    "caretRect is not inside the picture");
+  near(region.left, pic.left, "regionRect's x");
+  near(region.width, pic.width, "regionRect's width");
+  // A move redraws the caret, not the line.
+  const row = ed.rowEls[0];
+  press(ed, "ArrowRight");
+  eq(ed.rowEls[0], row, "a caret move rebuilt the row");
+  near(ed.overlayEl.querySelector(".leaf-region-caret").getBoundingClientRect().left + 1, pic.left + 50, "the moved caret");
+  eq(ed.overlayEl.querySelectorAll(".leaf-region-selection").length, 0, "a selection that went is still drawn");
+  // What a screen reader hears: the region's content, by default.
+  eq(ed.liveEl.getAttribute("aria-live"), "polite");
+  eq(ed.liveEl.textContent, ":date[2026-10-12]");
+  eq(ed.contentEl.querySelector(".leaf-inline-picture").getAttribute("aria-label"), ":date[2026-10-12]");
+  // Closed, nothing is drawn over it, and the host's rects are gone.
+  press(ed, "Escape");
+  assert(ed.overlayEl.hidden, "the overlay outlived the session");
+  eq(host.caretRect(), null);
+  return ed;
+});
+
+await test("consecutive typing in a picture session is one undo step, and a key in between splits it", async () => {
+  const log = [];
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  const ed = editor(CHIP_DOC, chipOpts(log));
+  openChip(ed);
+  press(ed, "a");
+  press(ed, "b");
+  eq(ed.source(), CHIP_DOC.replace("12]", "12ab]"));
+  eq(ed.liveEl.textContent, ":date[2026-10-12ab]", "an edit was not announced");
+  press(ed, "ArrowRight");
+  press(ed, "c");
+  eq(ed.source(), CHIP_DOC.replace("12]", "12abc]"));
+  eq(log.filter((l) => l[0] === "type").map((l) => l[1]), ["a", "b", "c"]);
+  // ⌘Z is no name: the chip closes, and the document undoes.
+  press(ed, "z", mac ? { metaKey: true } : { ctrlKey: true });
+  assert(!ed._session, "⌘Z did not close the chip");
+  eq(ed.source(), CHIP_DOC.replace("12]", "12ab]"), "the typing after the key was not a step of its own");
+  press(ed, "z", mac ? { metaKey: true } : { ctrlKey: true });
+  eq(ed.source(), CHIP_DOC, "the typing before the key was not one step");
+  return ed;
+});
+
+await test("a key a session does not know closes it and runs, and keys reach it by name", async () => {
+  const log = [];
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  const ed = editor(CHIP_DOC, chipOpts(log));
+  const named = [
+    [{ key: "ArrowRight", shiftKey: true }, "ExtendRight"],
+    [{ key: "ArrowUp", shiftKey: true }, "ExtendUp"],
+    [{ key: "ArrowRight", ...(mac ? { altKey: true } : { ctrlKey: true }) }, "WordRight"],
+    [{ key: "ArrowLeft", ...(mac ? { altKey: true } : { ctrlKey: true }) }, "WordLeft"],
+    [mac ? { key: "ArrowLeft", metaKey: true } : { key: "Home" }, "LineStart"],
+    [mac ? { key: "ArrowRight", metaKey: true } : { key: "End" }, "LineEnd"],
+    [mac ? { key: "ArrowUp", metaKey: true } : { key: "Home", ctrlKey: true }, "Home"],
+    [mac ? { key: "ArrowDown", metaKey: true } : { key: "End", ctrlKey: true }, "End"],
+    [{ key: "a", ...(mac ? { metaKey: true } : { ctrlKey: true }) }, "SelectAll"],
+    [{ key: "Backspace" }, "Backspace"],
+    [{ key: "Delete" }, "Delete"],
+    [{ key: "Enter" }, "Enter"],
+    [{ key: "Tab" }, "Tab"],
+  ];
+  for (const [init, name] of named) {
+    openChip(ed);
+    const ran = ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    eq(log.filter((l) => l[0] === "key").at(-1), ["key", name], JSON.stringify(init));
+    assert(!ed._session, `${name}, unknown to the session, left it open`);
+    // Tab runs as leaf's own indent, which is prevented as it always is.
+    if (name !== "Tab") assert(ran, `${name}, unknown to the session, was kept from running`);
+  }
+  // A key with no name is not asked about, and closes it too; a modifier
+  // alone does nothing.
+  openChip(ed);
+  const asked = log.filter((l) => l[0] === "key").length;
+  press(ed, "Shift", { shiftKey: true });
+  assert(ed._session, "a modifier alone closed the session");
+  press(ed, "F5");
+  assert(!ed._session, "a key with no name left the session open");
+  eq(log.filter((l) => l[0] === "key").length, asked, "a key with no name was asked about");
+  // Tab, the chip's no more than F5, ran as leaf's indent once it closed.
+  eq(ed.source(), "  " + CHIP_DOC);
+  return ed;
+});
+
+await test("a composition in a picture session is shown by leaf, and only what is committed is typed", async () => {
+  const log = [];
+  const ed = editor(CHIP_DOC, chipOpts(log));
+  openChip(ed);
+  const ime = ed.imeEl;
+  ime.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+  ime.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "に" }));
+  let marked = ed.overlayEl.querySelector(".leaf-region-marked");
+  assert(marked, "the composition is not shown");
+  eq(marked.textContent, "に");
+  const pic = ed.contentEl.querySelector(".leaf-inline-picture").getBoundingClientRect();
+  near(marked.getBoundingClientRect().left, pic.left + 10, "the marked text is not at the caret");
+  ime.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertCompositionText", data: "にほ" }));
+  eq(ed.overlayEl.querySelector(".leaf-region-marked")?.textContent, "にほ");
+  // A key while composing is the input method's.
+  ime.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true, isComposing: true }));
+  eq(ed._session?.impl.at, 0, "a key while composing reached the session");
+  eq(log.filter((l) => l[0] === "type"), [], "the composition was typed before it was committed");
+  eq(ed.source(), CHIP_DOC);
+  ime.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "日本" }));
+  eq(log.filter((l) => l[0] === "type"), [["type", "日本"]]);
+  eq(ed.source(), CHIP_DOC.replace("12]", "12日本]"));
+  assert(!ed.overlayEl.querySelector(".leaf-region-marked"), "the marked text outlived the composition");
+  assert(ed._session, "committing closed the session");
+  // Text from a keyboard with no keydown of its own is typed too.
+  const ev = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: "!" });
+  ime.dispatchEvent(ev);
+  eq(ed.source(), CHIP_DOC.replace("12]", "12日本!]"));
+  assert(ev.defaultPrevented, "the input reached the field");
+  return ed;
+});
+
+await test("a host's math editor replaces leaf's, through the same door", async () => {
+  await LeafEditor.loadMath();
+  const log = [];
+  const hostMath = {
+    open(r, entry, host) {
+      log.push(["open", r.kind, r.content, entry.at]);
+      let content = r.content;
+      return {
+        picture: () => ({ svg: svgOf(content, 40, 14), width: 40, height: 14, baseline: 10, caret: { x: 40, y: 1, width: 0, height: 12 } }),
+        key: (name) => (name === "ArrowRight" || name === "Escape" ? { leave: "after" } : null),
+        type(text) {
+          const at = new TextEncoder().encode(content).length;
+          content += text;
+          return { edit: [{ from: at, to: at, text }] };
+        },
+        accessibilityValue: () => "formula " + content,
+      };
+    },
+  };
+  const ed = editor("say $x$ here\n", { regionEditors: { math: hostMath } });
+  assert(ed._regionEditors.get("math") === hostMath, "leaf's math editor took the host's place");
+  const m = ed._lastView.regions.find((r) => r.kind === "math");
+  assert(m, "a formula with a host's editor is not a region");
+  ed.focus();
+  ed.render(ed.doc.select_range(m.src, m.src));
+  press(ed, "ArrowRight");
+  eq(log, [["open", "math", "x", "home"]]);
+  assert(!ed._session.impl.session, "leaf's own session opened");
+  const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  eq(atom.style.width, "40px", "the open formula is not the host's picture");
+  press(ed, "y");
+  eq(ed.source(), "say $xy$ here\n");
+  eq(ed.liveEl.textContent, "formula xy", "the session's accessibility value was not said");
+  press(ed, "ArrowRight");
+  assert(!ed._session, "the host's leave did not close it");
+  eq(ed._lastView.caret_src, ed._lastView.regions[0].end);
   return ed;
 });
 

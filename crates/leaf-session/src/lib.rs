@@ -44,23 +44,36 @@ pub struct Splice {
     pub text: String,
 }
 
-/// How a session draws its picture: `size` pixels (or points) per em, the
-/// ink, and the caret's colour, as RGBA bytes.
+/// How a session draws its picture: `size` pixels (or points) per em, and
+/// the ink, as RGBA bytes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Style {
     pub size: f64,
     pub ink: [u8; 4],
-    pub accent: [u8; 4],
+}
+
+/// A rect on a session's picture, in em from its top left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 /// A session's picture: a standalone SVG, and its advance, its rise above
-/// the baseline and its reach below it, in em of the size it was drawn at.
+/// the baseline and its reach below it, in em of the size it was drawn at —
+/// with no caret or selection in it. Those are the frontend's to draw, with
+/// its own blink and colours, at `caret` (a zero-width rect at the stop, as
+/// tall as the line it is on) and `selection`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Picture {
     pub svg: String,
     pub width: f64,
     pub height: f64,
     pub depth: f64,
+    pub caret: Rect,
+    pub selection: Vec<Rect>,
 }
 
 /// Why a session could not open, take new content, or draw: what went wrong,
@@ -103,7 +116,7 @@ pub trait Editor: Send {
     fn reload(&mut self, content: &str) -> Result<(), Error>;
     /// The content as the session holds it.
     fn content(&self) -> String;
-    /// The region with its caret and selection drawn in.
+    /// The region drawn, and where its caret and selection stand on it.
     fn picture(&self, style: &Style) -> Result<Picture, Error>;
 }
 
@@ -210,17 +223,25 @@ impl Editor for Math {
             pad: 0.0,
             ink,
             faint: [ink[0], ink[1], ink[2], ink[3] / 3],
-            accent: style.accent,
+            accent: ink,
         };
-        let p = self
+        let (p, caret, selection) = self
             .0
-            .picture(&style)
+            .picture_marked(&style)
             .map_err(|message| Error { message, at: None })?;
+        let rect = |m: leaf_math_edit::layout::Mark| Rect {
+            x: m.x,
+            y: m.y,
+            width: m.width,
+            height: m.height,
+        };
         Ok(Picture {
             svg: p.svg,
             width: p.width,
             height: p.height,
             depth: p.depth,
+            caret: rect(caret),
+            selection: selection.into_iter().map(rect).collect(),
         })
     }
 }
@@ -232,7 +253,6 @@ mod tests {
     const STYLE: Style = Style {
         size: 16.0,
         ink: [0, 0, 0, 255],
-        accent: [0, 0, 255, 255],
     };
 
     #[test]
@@ -247,14 +267,30 @@ mod tests {
         assert_eq!(s.content(), "\\frac{x}{}");
         s.end();
         assert!(s.at_end() && !s.at_home());
+        // The caret is the frontend's to draw: a place, not ink.
+        let p = s.picture(&STYLE).unwrap();
+        s.home();
+        let at_home = s.picture(&STYLE).unwrap();
+        assert_eq!(p.svg, at_home.svg, "the caret is drawn into the picture");
+        assert!(at_home.caret.x < p.caret.x);
+        s.end();
+        assert!(p.caret.height > 0.0 && p.caret.width == 0.0);
         assert!(
-            s.picture(&STYLE).unwrap().svg.contains("<rect"),
-            "the caret is drawn"
+            p.caret.x > 0.0 && p.caret.x <= p.width + 1e-9,
+            "the caret at the end is not at the end"
         );
-        // A selection: copied as TeX, pasted over, shaded in the picture.
+        assert!(p.selection.is_empty());
+        // A selection: copied as TeX, pasted over, given as a rect.
         assert!(s.key(Key::SelectAll).is_empty());
         assert_eq!(s.selected().as_deref(), Some("\\frac{x}{}"));
-        assert!(s.picture(&STYLE).unwrap().svg.contains("fill-opacity"));
+        let selected = s.picture(&STYLE).unwrap();
+        assert_eq!(
+            selected.svg, at_home.svg,
+            "the selection is drawn into the picture"
+        );
+        let p = selected;
+        assert_eq!(p.selection.len(), 1);
+        assert!(p.selection[0].width > 0.0);
         assert_eq!(
             s.paste("y").len(),
             2,

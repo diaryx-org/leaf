@@ -767,7 +767,8 @@ pub struct RegionView {
     /// `"math"`, `"fence:"` and the fence's language, or `"directive:"` and
     /// the leaf directive's name.
     kind: String,
-    /// An inline formula's atom, rather than a block on rows of its own.
+    /// An atom in a line of text — an inline formula's, or an inline
+    /// directive's (`:name[label]`) — rather than a block on rows of its own.
     inline: bool,
     /// A formula set in display style (`$$…$$`, inline or not) rather than
     /// text style. False for every other kind.
