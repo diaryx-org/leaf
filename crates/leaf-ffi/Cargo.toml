@@ -71,3 +71,6 @@ leaf-math.workspace = true
 # The structural formula editor behind `MathSession`: a formula opened in
 # place, edited as fractions and scripts, written back as splices on its TeX.
 leaf-math-edit.workspace = true
+# Mermaid to SVG with its size, for a host's fence editor to draw: the
+# leaf-editor app's, as `render_mermaid`. Nothing in leaf's own views calls it.
+leaf-mermaid.workspace = true

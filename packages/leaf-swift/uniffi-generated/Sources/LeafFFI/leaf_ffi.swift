@@ -460,7 +460,13 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 
 
 // Public interface members begin here.
-
+// Magic number for the Rust proxy to call using the same mechanism as every other method,
+// to free the callback once it's dropped by Rust.
+private let IDX_CALLBACK_FREE: Int32 = 0
+// Callback return codes
+private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
+private let UNIFFI_CALLBACK_ERROR: Int32 = 1
+private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -523,6 +529,22 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterFloat: FfiConverterPrimitive {
+    typealias FfiType = Float
+    typealias SwiftType = Float
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Float {
+        return try lift(readFloat(&buf))
+    }
+
+    public static func write(_ value: Float, into buf: inout [UInt8]) {
+        writeFloat(&buf, lower(value))
     }
 }
 
@@ -4361,6 +4383,223 @@ public func FfiConverterTypeMathSession_lower(_ value: MathSession) -> UInt64 {
 
 
 
+
+
+/**
+ * How a host measures text for [`render_mermaid`]: the advance width of
+ * `text` at `size` points in the first face of the comma-separated `family`
+ * list it can draw, or `None` to leave it to the renderer's estimate. On
+ * Apple, Core Text — the faces the picture will be drawn in.
+ */
+public protocol MermaidMeasure: AnyObject, Sendable {
+    
+    func width(text: String, size: Float, family: String)  -> Float?
+    
+}
+/**
+ * How a host measures text for [`render_mermaid`]: the advance width of
+ * `text` at `size` points in the first face of the comma-separated `family`
+ * list it can draw, or `None` to leave it to the renderer's estimate. On
+ * Apple, Core Text — the faces the picture will be drawn in.
+ */
+open class MermaidMeasureImpl: MermaidMeasure, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_leaf_ffi_fn_clone_mermaidmeasure(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_leaf_ffi_fn_free_mermaidmeasure(handle, $0) }
+    }
+
+    
+
+    
+open func width(text: String, size: Float, family: String) -> Float?  {
+    return try!  FfiConverterOptionFloat.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mermaidmeasure_width(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(text),
+        FfiConverterFloat.lower(size),
+        FfiConverterString.lower(family),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceMermaidMeasure {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceMermaidMeasure = UniffiVTableCallbackInterfaceMermaidMeasure(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeMermaidMeasure.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface MermaidMeasure: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeMermaidMeasure.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface MermaidMeasure: handle missing in uniffiClone")
+            }
+        },
+        width: { (
+            uniffiHandle: UInt64,
+            text: RustBuffer,
+            size: Float,
+            family: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> Float? in
+                guard let uniffiObj = try? FfiConverterTypeMermaidMeasure.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.width(
+                     text: try FfiConverterString.lift(text),
+                     size: try FfiConverterFloat.lift(size),
+                     family: try FfiConverterString.lift(family)
+                )
+            }
+
+            
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterOptionFloat.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMermaidMeasure> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMermaidMeasure>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitMermaidMeasure() {
+    uniffi_leaf_ffi_fn_init_callback_vtable_mermaidmeasure(UniffiCallbackInterfaceMermaidMeasure.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMermaidMeasure: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<MermaidMeasure>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = MermaidMeasure
+
+    public static func lift(_ handle: UInt64) throws -> MermaidMeasure {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return MermaidMeasureImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: MermaidMeasure) -> UInt64 {
+         if let rustImpl = value as? MermaidMeasureImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MermaidMeasure {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MermaidMeasure, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMermaidMeasure_lift(_ handle: UInt64) throws -> MermaidMeasure {
+    return try FfiConverterTypeMermaidMeasure.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMermaidMeasure_lower(_ value: MermaidMeasure) -> UInt64 {
+    return FfiConverterTypeMermaidMeasure.lower(value)
+}
+
+
+
+
 /**
  * What a drawn block boundary separates. The FFI mirror of
  * [`leaf_core::Boundary`].
@@ -6715,6 +6954,67 @@ public func FfiConverterTypeMediaView_lower(_ value: MediaView) -> RustBuffer {
 
 
 /**
+ * A rendered Mermaid diagram: a standalone SVG and its size in points.
+ */
+public struct MermaidPicture: Equatable, Hashable {
+    public var svg: String
+    public var width: Double
+    public var height: Double
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(svg: String, width: Double, height: Double) {
+        self.svg = svg
+        self.width = width
+        self.height = height
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MermaidPicture: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMermaidPicture: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MermaidPicture {
+        return
+            try MermaidPicture(
+                svg: FfiConverterString.read(from: &buf), 
+                width: FfiConverterDouble.read(from: &buf), 
+                height: FfiConverterDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MermaidPicture, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.svg, into: &buf)
+        FfiConverterDouble.write(value.width, into: &buf)
+        FfiConverterDouble.write(value.height, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMermaidPicture_lift(_ buf: RustBuffer) throws -> MermaidPicture {
+    return try FfiConverterTypeMermaidPicture.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMermaidPicture_lower(_ value: MermaidPicture) -> RustBuffer {
+    return FfiConverterTypeMermaidPicture.lower(value)
+}
+
+
+/**
  * A part of the document the view edits itself, as it asked through
  * [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), or a fenced
  * block of a language it named (`"fence:mermaid"`). The view opens one in an
@@ -8575,6 +8875,11 @@ enum LeafError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case Math(message: String, position: UInt32?
     )
+    /**
+     * [`render_mermaid`] could not read a diagram: what the parser said.
+     */
+    case Mermaid(message: String
+    )
 
     
 
@@ -8614,6 +8919,9 @@ public struct FfiConverterTypeLeafError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf), 
             position: try FfiConverterOptionUInt32.read(from: &buf)
             )
+        case 4: return .Mermaid(
+            message: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -8640,6 +8948,11 @@ public struct FfiConverterTypeLeafError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(3))
             FfiConverterString.write(message, into: &buf)
             FfiConverterOptionUInt32.write(position, into: &buf)
+            
+        
+        case let .Mermaid(message):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(message, into: &buf)
             
         }
     }
@@ -9644,6 +9957,30 @@ fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionFloat: FfiConverterRustBuffer {
+    typealias SwiftType = Float?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterFloat.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterFloat.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
     typealias SwiftType = Bool?
 
@@ -9684,6 +10021,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeMermaidMeasure: FfiConverterRustBuffer {
+    typealias SwiftType = MermaidMeasure?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMermaidMeasure.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMermaidMeasure.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -10524,6 +10885,23 @@ fileprivate struct FfiConverterSequenceTypeTableView: FfiConverterRustBuffer {
     }
 }
 /**
+ * Render a Mermaid diagram — a ```` ```mermaid ```` fence's content — to SVG,
+ * in Mermaid's light theme or its dark one, measuring text through
+ * `measure`. For a host's fence editor (`fence:mermaid`); leaf's own views
+ * draw no diagrams. A diagram that does not parse is a
+ * [`LeafError::Mermaid`] with the parser's message.
+ */
+public func renderMermaid(source: String, dark: Bool, measure: MermaidMeasure?)throws  -> MermaidPicture  {
+    return try  FfiConverterTypeMermaidPicture_lift(try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_func_render_mermaid(
+        FfiConverterString.lower(source),
+        FfiConverterBool.lower(dark),
+        FfiConverterOptionTypeMermaidMeasure.lower(measure),uniffiCallStatus
+    )
+})
+}
+/**
  * Typeset `tex` — the text between a formula's delimiters, as a [`MathView`]
  * hands it over — to a picture. `display` is the view's `display`; `size` is
  * the font size in points the formula is set at (an inline formula takes the
@@ -10564,6 +10942,9 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_leaf_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_func_render_mermaid() != 22343) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_func_typeset_math() != 60617) {
         return InitializationResult.apiChecksumMismatch
@@ -11045,6 +11426,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_mathsession_tex() != 36275) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_mermaidmeasure_width() != 41984) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_constructor_leafdoc_new() != 63804) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -11052,6 +11436,7 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
 
+    uniffiCallbackInitMermaidMeasure()
     return InitializationResult.ok
 }()
 

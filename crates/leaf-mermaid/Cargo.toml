@@ -1,0 +1,16 @@
+[package]
+name = "leaf-mermaid"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Mermaid diagrams to a self-contained SVG picture with its size, for a leaf host to draw a fence by. A thin door onto mmdr."
+
+[dependencies]
+# mmdr, a Mermaid renderer in Rust: parse, lay out, write SVG, with no
+# browser. From a fork carrying upstream's open PRs #155 (web-time, so it
+# runs on wasm32) and #151 (host text metrics) until they merge. See
+# spikes/mermaid-native/README.md.
+mermaid-rs-renderer = { git = "https://github.com/adammharris/mermaid-rs-renderer", branch = "diaryx", default-features = false }

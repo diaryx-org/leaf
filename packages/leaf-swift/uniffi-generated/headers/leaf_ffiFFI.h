@@ -243,6 +243,22 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureRes
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_MERMAID_MEASURE_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_MERMAID_MEASURE_METHOD0
+typedef void (*UniffiCallbackInterfaceMermaidMeasureMethod0)(uint64_t, RustBuffer, float, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MERMAID_MEASURE
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MERMAID_MEASURE
+typedef struct UniffiVTableCallbackInterfaceMermaidMeasure {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceMermaidMeasureMethod0 _Nonnull width;
+} UniffiVTableCallbackInterfaceMermaidMeasure;
+
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CLONE_LEAFDOC
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CLONE_LEAFDOC
 uint64_t uniffi_leaf_ffi_fn_clone_leafdoc(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -1068,6 +1084,31 @@ RustBuffer uniffi_leaf_ffi_fn_method_mathsession_selected_tex(uint64_t ptr, Rust
 RustBuffer uniffi_leaf_ffi_fn_method_mathsession_tex(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CLONE_MERMAIDMEASURE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CLONE_MERMAIDMEASURE
+uint64_t uniffi_leaf_ffi_fn_clone_mermaidmeasure(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FREE_MERMAIDMEASURE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FREE_MERMAIDMEASURE
+void uniffi_leaf_ffi_fn_free_mermaidmeasure(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_INIT_CALLBACK_VTABLE_MERMAIDMEASURE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_INIT_CALLBACK_VTABLE_MERMAIDMEASURE
+void uniffi_leaf_ffi_fn_init_callback_vtable_mermaidmeasure(const UniffiVTableCallbackInterfaceMermaidMeasure* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MERMAIDMEASURE_WIDTH
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MERMAIDMEASURE_WIDTH
+RustBuffer uniffi_leaf_ffi_fn_method_mermaidmeasure_width(uint64_t ptr, RustBuffer text, float size, RustBuffer family, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_RENDER_MERMAID
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_RENDER_MERMAID
+RustBuffer uniffi_leaf_ffi_fn_func_render_mermaid(RustBuffer source, int8_t dark, RustBuffer measure, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_TYPESET_MATH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_TYPESET_MATH
 RustBuffer uniffi_leaf_ffi_fn_func_typeset_math(RustBuffer tex, int8_t display, double size, uint8_t r, uint8_t g, uint8_t b, uint8_t a, RustCallStatus *_Nonnull out_status
@@ -1331,6 +1372,12 @@ void ffi_leaf_ffi_rust_future_free_void(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_COMPLETE_VOID
 void ffi_leaf_ffi_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_FUNC_RENDER_MERMAID
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_FUNC_RENDER_MERMAID
+uint16_t uniffi_leaf_ffi_checksum_func_render_mermaid(void
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_FUNC_TYPESET_MATH
@@ -2290,6 +2337,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_mathsession_selected_tex(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_TEX
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_TEX
 uint16_t uniffi_leaf_ffi_checksum_method_mathsession_tex(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MERMAIDMEASURE_WIDTH
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MERMAIDMEASURE_WIDTH
+uint16_t uniffi_leaf_ffi_checksum_method_mermaidmeasure_width(void
     
 );
 #endif

@@ -122,6 +122,8 @@ const ISOLATED: &[&[&str]] = &[
     &["-p", "leaf-math-wasm"],
     &["-p", "leaf-math-edit"],
     &["-p", "leaf-math-edit", "--features", "wasm"],
+    &["-p", "leaf-mermaid"],
+    &["-p", "leaf-mermaid-wasm"],
     &["-p", "leaf-tui"],
     &["-p", "xtask"],
 ];

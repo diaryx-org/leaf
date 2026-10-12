@@ -55,6 +55,9 @@ leaf-math = { path = "crates/leaf-math", version = "0.5.1" }
 # The structural formula editor — keys in, splices on the TeX out — without
 # its twig half, which only its own demo needs.
 leaf-math-edit = { path = "crates/leaf-math-edit", version = "0.5.1", default-features = false }
+# Mermaid diagrams to SVG, through mmdr, for a host's fence editor to draw.
+# leaf's frontends never draw a diagram themselves; the bindings carry it.
+leaf-mermaid = { path = "crates/leaf-mermaid", version = "0.5.1" }
 
 # The profile the wasm binding ships under (`wasm-pack build --profile wasm`).
 # `release` is left as cargo defines it, because the TUI and the Swift
