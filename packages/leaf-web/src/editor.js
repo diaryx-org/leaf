@@ -54,14 +54,15 @@ import init, { LeafDoc } from "../pkg/leaf_wasm.js";
 /**
  * The presentation knobs, mirroring `leaf-gpui`'s `EditorStyle`. Everything here
  * is *look*, never model. Any subset can be passed to the constructor; omitted
- * fields keep the defaults below (which match gpui's: Helvetica-class body,
- * Menlo-class mono, 16/24, the same heading ramp). Colours default from the
+ * fields keep the defaults below (a book serif for the body — Iowan Old Style
+ * where the platform has it, as leaf-swift sets — Menlo-class mono, 16/24, the
+ * same heading ramp as gpui). Colours default from the
  * stylesheet (light/dark aware) unless overridden here.
  */
 export const DEFAULT_THEME = {
   /** Proportional body family — prose and headings shape with this. */
   fontFamily:
-    '-apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif',
+    '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, ui-serif, serif',
   /** Monospace family — inline `code` and fenced blocks, so columns line up. */
   monoFamily: 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace',
   /** Body font size in px. A heading is this scaled by `headingScale`. */
@@ -5518,6 +5519,10 @@ img.leaf-media, video.leaf-media { max-height: 60vh; }
    stay in the same text node the offset mapping counts through. */
 .leaf-sup { vertical-align: super; font-size: 0.75em; }
 .leaf-sub { vertical-align: sub; font-size: 0.75em; }
+/* A footnote reference is a raised link. Raised, it already reads as one, and
+   an underline under a letter that size is a smudge: set it the way a book
+   sets a note's letter, italic in the link's ink. */
+.leaf-r-link.leaf-sup { font-style: italic; text-decoration: none; }
 
 .leaf-measure {
   position: absolute; visibility: hidden; white-space: pre; top: -9999px; left: 0;

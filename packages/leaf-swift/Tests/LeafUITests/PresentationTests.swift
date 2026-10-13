@@ -48,14 +48,15 @@ final class PresentationTests: XCTestCase {
             XCTAssertNotNil(theme.fontName(face.name), "\(face.name) has no face")
         }
         XCTAssertEqual(theme.fontName("monospace"), theme.monoFontName)
-        XCTAssertEqual(theme.fontName("sans-serif"), theme.bodyFontName,
-                       "sans-serif in a theme set in the system face is that face")
+        XCTAssertEqual(theme.fontName("serif"), theme.bodyFontName,
+                       "serif in a theme set in a serif is that serif")
+        XCTAssertEqual(theme.fontName("sans-serif"), EditorTheme.systemFontName)
         XCTAssertNil(theme.fontName(nil))
         XCTAssertNil(theme.fontName("blackletter"))
         XCTAssertEqual(theme.font(family: nil, size: 16, bold: false, italic: false),
                        theme.proportionalFont(size: 16, bold: false, italic: false))
         XCTAssertEqual(theme.font(family: "serif", size: 16, bold: false, italic: false).familyName,
-                       "Georgia")
+                       "Iowan Old Style")
     }
 
     func testEveryColourNameHasAnInkAndItIsNotTheOrdinaryOne() {
@@ -148,7 +149,7 @@ final class PresentationTests: XCTestCase {
 
     func testAFaceChangesTheFamilyAndCodeKeepsItsOwn() throws {
         let serif = try XCTUnwrap(attributes(mkRun("x", font: "serif"))[.font] as? LeafFont)
-        XCTAssertEqual(serif.familyName, "Georgia")
+        XCTAssertEqual(serif.familyName, "Iowan Old Style")
         let mono = try XCTUnwrap(attributes(mkRun("x", font: "monospace"))[.font] as? LeafFont)
         XCTAssertEqual(mono, theme.monospaceFont(size: theme.fontSize, bold: false, italic: false))
         // A `code` run is monospaced whatever face it names: the role is what the
@@ -156,6 +157,24 @@ final class PresentationTests: XCTestCase {
         let code = try XCTUnwrap(
             attributes(mkRun("x", role: "code", font: "cursive"))[.font] as? LeafFont)
         XCTAssertEqual(code, theme.monospaceFont(size: theme.fontSize, bold: false, italic: false))
+    }
+
+    func testAFootnoteReferenceIsItalicAndNotUnderlined() throws {
+        // A raised link is a footnote reference: set as a book sets a note's
+        // letter, in the link's ink, italic, with no rule under it.
+        let ref = attributes(mkRun("a", role: "link", sup: true))
+        XCTAssertEqual(ref[.foregroundColor] as? LeafColor, theme.linkColor)
+        XCTAssertNil(ref[.underlineStyle])
+        #if canImport(UIKit)
+        let italic = UIFontDescriptor.SymbolicTraits.traitItalic
+        #else
+        let italic = NSFontDescriptor.SymbolicTraits.italic
+        #endif
+        let font = try XCTUnwrap(ref[.font] as? LeafFont)
+        XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(italic))
+        // An author's own `^x^` is raised and not a link: left upright.
+        let sup = try XCTUnwrap(attributes(mkRun("x", sup: true))[.font] as? LeafFont)
+        XCTAssertFalse(sup.fontDescriptor.symbolicTraits.contains(italic))
     }
 
     func testAColouredRunIsInkedAndKeepsWhatItsRoleGaveIt() {

@@ -22,7 +22,8 @@ import AppKit
 
 public struct EditorTheme {
     /// Proportional body family — prose and headings shape with this. A family
-    /// name, or `systemFontName` for the system's own face (the default).
+    /// name — `serifFontName` by default — or `systemFontName` for the system's
+    /// own face.
     public var bodyFontName: String
     /// Monospace family — inline `code` and fenced blocks. A family name, or
     /// `systemMonospacedFontName` (the default).
@@ -186,10 +187,14 @@ public struct EditorTheme {
 
     /// The name that asks for the system's own text face — San Francisco on
     /// every Apple platform today, and whatever the OS chooses tomorrow, at the
-    /// optical size the OS picks for the point size. The default body face, so a
-    /// document reads in the same type as the window around it. Any real family
-    /// name (`"Helvetica Neue"`, `"Georgia"`) is a fine substitute.
+    /// optical size the OS picks for the point size. Any real family name
+    /// (`"Helvetica Neue"`, `"Georgia"`) is a fine substitute.
     public static let systemFontName = "system"
+    /// The default body face: Iowan Old Style, a book face drawn for reading
+    /// at length, which every Apple platform has shipped since iOS 9 and OS X
+    /// El Capitan. A document is something read, and reads in a serif; the
+    /// window around it keeps the system's face.
+    public static let serifFontName = "Iowan Old Style"
     /// The system's monospaced face — SF Mono — sized to sit with the body type.
     public static let systemMonospacedFontName = "system-monospaced"
 
@@ -211,15 +216,16 @@ public struct EditorTheme {
 
     /// The face this platform sets each generic family in.
     ///
-    /// `sans-serif` is the system's own text face — the body's default, so a run
-    /// that asks for sans-serif in a theme that already sets in one is a no-op
-    /// rather than a jump to some other grotesque. `serif` is Georgia and
-    /// `cursive` is Snell Roundhand because both have shipped on macOS *and* iOS
-    /// for as long as either has had fonts, which a document opened on a phone
-    /// depends on; a theme with a licence to a better pair should say so here.
-    /// `monospace` is absent on purpose — it resolves to `monoFontName`.
+    /// `serif` is the body's default face, so a run that asks for a serif in a
+    /// theme that already sets in one is a no-op rather than a jump to some
+    /// other serif. `sans-serif` is the system's own text face, which needs no
+    /// font shipped at all. `cursive` is Snell Roundhand because it has shipped
+    /// on macOS *and* iOS for as long as either has had fonts, which a document
+    /// opened on a phone depends on; a theme with a licence to a better face
+    /// should say so here. `monospace` is absent on purpose — it resolves to
+    /// `monoFontName`.
     public static let defaultFontFamilies: [String: String] = [
-        "serif": "Georgia",
+        "serif": EditorTheme.serifFontName,
         "sans-serif": EditorTheme.systemFontName,
         "cursive": "Snell Roundhand",
     ]
@@ -234,7 +240,7 @@ public struct EditorTheme {
     ]
 
     public init(
-        bodyFontName: String = EditorTheme.systemFontName,
+        bodyFontName: String = EditorTheme.serifFontName,
         monoFontName: String = EditorTheme.systemMonospacedFontName,
         fontSize: CGFloat = 16,
         lineHeight: CGFloat = 24,
@@ -375,7 +381,7 @@ public struct EditorTheme {
     /// hairlines (`quoteBarWidth`, `ruleThickness`) are rules, which stay a
     /// rule's thickness at any text size. `measure` needs nothing done to it — it
     /// is already counted in characters, so it tracks the type for free.
-    func scaled(by factor: CGFloat) -> EditorTheme {
+    public func scaled(by factor: CGFloat) -> EditorTheme {
         guard factor != 1 else { return self }
         var t = self
         t.fontSize = fontSize * factor

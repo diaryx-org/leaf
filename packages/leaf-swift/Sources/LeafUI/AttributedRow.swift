@@ -199,9 +199,12 @@ enum AttributedRow {
         // glyphs *are*, and a face named on top of that is a face for the prose
         // around them. Everything else takes the generic family the run names
         // (`serif`, `cursive`, `monospace`…) and the body face when it names none.
+        // A footnote reference — a raised link — is set the way a book sets a
+        // note's letter: italic, and not underlined (see below).
+        let reference = run.sup && run.role == "link"
         attrs[.font] = isCode || source
             ? theme.monospaceFont(size: runSize, bold: bold, italic: italic)
-            : theme.font(family: run.font, size: runSize, bold: bold, italic: run.italic)
+            : theme.font(family: run.font, size: runSize, bold: bold, italic: run.italic || reference)
         if run.sup {
             attrs[.baselineOffset] = runSize * theme.baselineSuperShift
         } else if run.sub {
@@ -277,7 +280,9 @@ enum AttributedRow {
         }
 
         // A link is underlined; the author's own `{+ins+}` underline adds to it.
-        if run.underline || run.role == "link" {
+        // Not a footnote reference: raised, it already reads as one, and a
+        // rule under a letter that small is a smudge.
+        if run.underline || (run.role == "link" && !reference) {
             attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
         }
         if run.strike {
