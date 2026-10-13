@@ -43,7 +43,7 @@ import SwiftUI
 /// the same chord isn't registered twice by two views of one list — and so a
 /// chord registered by a view doesn't fire while the focus is elsewhere.
 struct AlignmentRows: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
     var shortcuts = false
 
     var body: some View {
@@ -79,7 +79,7 @@ struct AlignmentRows: View {
 /// this; the chord is ⌘⇧+ and ⌘- on a US keyboard, which is how the system
 /// draws them).
 struct TextSizeRows: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
     var shortcuts = false
 
     var body: some View {
@@ -117,7 +117,7 @@ struct TextSizeRows: View {
 /// kind of face, never a family, so it opens the same way on a machine that has
 /// none of the same fonts.
 struct FontFamilyRows: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     var body: some View {
         Group {
@@ -143,7 +143,7 @@ struct FontFamilyRows: View {
 /// The word processor's spacing menu: single (which is clearing the key), 1.15,
 /// 1.5, and double.
 struct LineSpacingRows: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     var body: some View {
         Group {
@@ -169,7 +169,7 @@ struct LineSpacingRows: View {
 /// swatches — a highlight's wash is spelled with. Beside `HighlightColourRows`
 /// in every menu that offers both, because "red" should mean one red.
 struct TextColourRows: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     var body: some View {
         Group {
@@ -203,7 +203,7 @@ struct TextColourRows: View {
 /// seeded with that value, which is the only sensible thing a ticked row can do
 /// — it is already what is in force, so there is nothing to apply.
 struct OtherRow: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
     let field: PresentationOther
     /// The value at the caret, spelled, or nil when it is a name or nothing.
     let exact: String?

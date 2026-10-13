@@ -177,7 +177,7 @@ public struct LeafFormattingToolbar: View {
         }
     }
 
-    @ObservedObject private var editor: LeafEditorModel
+    private let editor: LeafEditorModel
     private let style: Style
     private let hostTools: [Tool]
 
@@ -1014,7 +1014,7 @@ struct ToolbarPaging: Equatable {
 /// caret from a red highlight into a blue one moves the tick, and nothing else
 /// in the published state would have told the menu to redraw.
 struct HighlightColourRows: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     var body: some View {
         Group {
@@ -1060,7 +1060,7 @@ struct HighlightColourRows: View {
 /// Public because a host app's own menus — `apps/leaf-editor`'s toolbar, a
 /// consumer's Format menu — put the same rows behind their own button.
 public struct TableRows: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     public init(editor: LeafEditorModel) {
         self.editor = editor

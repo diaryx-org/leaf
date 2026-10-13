@@ -76,7 +76,7 @@ import SwiftUI
 import LeafUI
 
 struct ContentView: View {
-    @StateObject private var editor =
+    @State private var editor =
         try! LeafEditorModel(source: "# Hello\n\nSome *text*.", format: "markdown")
 
     var body: some View {

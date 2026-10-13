@@ -160,7 +160,7 @@ public struct LeafEditorCommands: Commands {
 /// is disabled in the source view as it happens — read straight off the
 /// focused value, the menu kept whatever it showed when it was first built.
 private struct SpellingToggles: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     var body: some View {
         Toggle(loc("menu.checkSpellingWhileTyping", "Check Spelling While Typing"),
@@ -173,7 +173,7 @@ private struct SpellingToggles: View {
 
 /// Edit ▸ Substitutions.
 private struct SubstitutionToggles: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     var body: some View {
         SubstitutionToggle(editor: editor, substitution: .smartQuotes,
@@ -189,7 +189,7 @@ private struct SubstitutionToggles: View {
 /// where nothing is substituted — the source view, where a straight quote or
 /// a `--` is markup, and a reader.
 private struct SubstitutionToggle: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
     let substitution: LeafSubstitution
     let title: String
 
@@ -202,7 +202,7 @@ private struct SubstitutionToggle: View {
 #endif
 
 private struct FormatMenuItems: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     private var editable: Bool { !editor.isReadOnly }
 
@@ -448,7 +448,7 @@ private struct FormatMenuItems: View {
 /// Text Size on every frontend: ⌘> and ⌘< step the stops, ⌘0 is actual size,
 /// and the two fits are ticked while they are the rule in force.
 private struct ViewMenuItems: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     var body: some View {
         Toggle(loc("menu.sourceView", "Source View"),

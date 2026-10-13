@@ -143,7 +143,7 @@ extension View {
 /// the presentation is driven by a `@Published` on the model, and a binding to
 /// one needs a view that is actually observing it.
 private struct PresentationOtherHost<Content: View>: View {
-    @ObservedObject var editor: LeafEditorModel
+    @Bindable var editor: LeafEditorModel
     let content: Content
 
     var body: some View {
@@ -165,7 +165,7 @@ private struct PresentationOtherHost<Content: View>: View {
 
 /// The field or picker itself, whichever of the four was asked for.
 struct PresentationOtherView: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
     let field: PresentationOther
 
     /// What the author has typed, for the two numeric fields — seeded with the

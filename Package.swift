@@ -32,7 +32,7 @@ import PackageDescription
 
 let package = Package(
     name: "LeafFFI",
-    platforms: [.macOS(.v13), .iOS(.v16)],
+    platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         // The low-level binding: `LeafDoc` + the `DocView`/`Row`/`Run` value types.
         .library(name: "LeafFFI", targets: ["LeafFFI"]),

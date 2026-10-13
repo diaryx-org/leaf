@@ -1,13 +1,13 @@
 //  LeafEditorView.swift
 //
 //  The SwiftUI face of the editor, shared across macOS and iOS. `LeafEditorModel`
-//  is a platform-neutral `ObservableObject` that owns the `LeafDoc` and exposes
+//  is a platform-neutral `@Observable` model that owns the `LeafDoc` and exposes
 //  leaf-core's commands + the live toolbar state. `LeafEditor` is the
 //  representable that hosts the platform `LeafTextView` and keeps the model's
 //  `state` in step after every repaint.
 //
 //  Usage:
-//      @StateObject private var editor = try! LeafEditorModel(
+//      @State private var editor = try! LeafEditorModel(
 //          source: "# Hello\n\nSome *text*.", format: "markdown")
 //
 //      var body: some View {
@@ -52,11 +52,20 @@ public struct EditorCounts: Equatable {
     }
 }
 
-/// The observable owner of a document. Hold it with `@StateObject`; bind a
-/// toolbar to `state` and call the command methods from buttons.
-public final class LeafEditorModel: ObservableObject {
+/// The observable owner of a document. Hold it with `@State` (or keep it on a
+/// model of your own); bind a toolbar to `state` and call the command methods
+/// from buttons.
+///
+/// A view tracks only what it reads. The handful of queries answered by the
+/// document itself rather than by a stored property — `fontSize`,
+/// `capabilities`, `markupMode`… — read `state` and `settingsTick` as they ask,
+/// so a view that shows one is redrawn when a repaint or a preference could
+/// have changed the answer. Callbacks, the document and the text view are not
+/// observed: nothing draws them.
+@Observable
+public final class LeafEditorModel {
     /// Live toolbar/footer state, refreshed after every edit, motion, and click.
-    @Published public private(set) var state: EditorState
+    public private(set) var state: EditorState
 
     /// Called when the reader activates a link — ⌘-click, or "Open Link" from the
     /// context menu (macOS) or the long-press edit menu (iOS) — with the link's
@@ -78,7 +87,7 @@ public final class LeafEditorModel: ObservableObject {
     /// Called on the main actor, during the event that activated the link.
     /// Resolution that has to go to disk should return `true` and continue
     /// asynchronously — the destination is the host's now either way.
-    public var onOpenLink: ((String) -> Bool)?
+    @ObservationIgnored public var onOpenLink: ((String) -> Bool)?
 
     /// Asked for a link destination, seeded with the current one. Set it by
     /// calling `insertLink(_:)`, which repoints the link the caret stands in —
@@ -103,7 +112,7 @@ public final class LeafEditorModel: ObservableObject {
     /// URL, an autolink). A wikilink is literal text with no node behind it — it
     /// can be followed, but there is nothing to repoint — so it gets no
     /// "Edit Link…".
-    public var onEditLink: ((String) -> Void)? {
+    @ObservationIgnored public var onEditLink: ((String) -> Void)? {
         didSet { textView?.onEditLink = editBridge }
     }
 
@@ -129,7 +138,7 @@ public final class LeafEditorModel: ObservableObject {
     /// Leaving this nil is the old behaviour: a link shows nothing on hover.
     /// Nothing here is followable in either case — see `FootnotePeekContent`'s
     /// peeking initializer for why a foreign document's links stay inert.
-    public var onPeekLink: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)? {
+    @ObservationIgnored public var onPeekLink: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)? {
         didSet { textView?.onPeekLink = peekBridge }
     }
 
@@ -149,12 +158,12 @@ public final class LeafEditorModel: ObservableObject {
     /// whenever that changes. The view gets both properties: read-through when
     /// there is something to read through to, and honestly absent when there
     /// isn't.
-    fileprivate var editBridge: ((String) -> Void)? {
+    @ObservationIgnored fileprivate var editBridge: ((String) -> Void)? {
         guard onEditLink != nil else { return nil }
         return { [weak self] destination in self?.onEditLink?(destination) }
     }
 
-    fileprivate var peekBridge: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)? {
+    @ObservationIgnored fileprivate var peekBridge: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)? {
         guard onPeekLink != nil else { return nil }
         return { [weak self] destination, done in
             guard let peek = self?.onPeekLink else { return done(nil) }
@@ -193,13 +202,13 @@ public final class LeafEditorModel: ObservableObject {
     /// action to learn what the verbs apply to. iOS-only for now: the macOS
     /// selection menu is a context menu with its own extension point, still to
     /// be wired.
-    public var selectionMenuActions: (() -> [UIMenuElement])? {
+    @ObservationIgnored public var selectionMenuActions: (() -> [UIMenuElement])? {
         didSet { textView?.selectionMenuActions = selectionMenuBridge }
     }
 
     /// The read-through wrapper `selectionMenuActions` reaches the view as —
     /// nil exactly when the host's is, for the reason `editBridge` exists.
-    fileprivate var selectionMenuBridge: (() -> [UIMenuElement])? {
+    @ObservationIgnored fileprivate var selectionMenuBridge: (() -> [UIMenuElement])? {
         guard selectionMenuActions != nil else { return nil }
         return { [weak self] in self?.selectionMenuActions?() ?? [] }
     }
@@ -212,7 +221,7 @@ public final class LeafEditorModel: ObservableObject {
     ///
     /// False again whenever the editor stops being first responder: the next
     /// tap into the text brings the keyboard, not the panel.
-    @Published public private(set) var isFormattingPanelShown = false
+    public private(set) var isFormattingPanelShown = false
 
     /// Show the formatting panel in the keyboard's place, or put the keyboard
     /// back. The editor stays first responder throughout, so the caret, the
@@ -260,7 +269,7 @@ public final class LeafEditorModel: ObservableObject {
     /// The Link fallback's destination, seed and all, while the field is up;
     /// nil otherwise. Set by `beginLinkInSheet`, and `LeafEditor` raises the
     /// field as a sheet while it is.
-    @Published var pendingLinkDestination: String?
+    var pendingLinkDestination: String?
 
     /// Link, from the iOS row or the panel: the host's `onEditLink` first
     /// (`beginLink(fallback:)`), and otherwise leaf's own field, raised by
@@ -321,13 +330,13 @@ public final class LeafEditorModel: ObservableObject {
     /// ids it has nothing to open for. Long press and double tap still select
     /// through a wash in a reader. On the Mac a click on the wash places the
     /// caret, as it always has.
-    public var onTapHighlight: ((String) -> Void)? {
+    @ObservationIgnored public var onTapHighlight: ((String) -> Void)? {
         didSet { textView?.onTapHighlight = tapHighlightBridge }
     }
 
     /// The read-through wrapper `onTapHighlight` reaches the view as — nil
     /// exactly when the host's is, for the reason `editBridge` exists.
-    fileprivate var tapHighlightBridge: ((String) -> Void)? {
+    @ObservationIgnored fileprivate var tapHighlightBridge: ((String) -> Void)? {
         guard onTapHighlight != nil else { return nil }
         return { [weak self] id in self?.onTapHighlight?(id) }
     }
@@ -373,7 +382,7 @@ public final class LeafEditorModel: ObservableObject {
     /// asked, with no trip through `onResolveMedia`. Answer `nil` to have no
     /// opinion and leave the editor's own resolution — the document's
     /// directory for a relative path — in force.
-    public var onLocateMedia: ((String) -> URL?)? {
+    @ObservationIgnored public var onLocateMedia: ((String) -> URL?)? {
         didSet { textView?.onLocateMedia = onLocateMedia }
     }
 
@@ -392,7 +401,7 @@ public final class LeafEditorModel: ObservableObject {
     /// thread; the completion is safe to call from anywhere.
     ///
     /// `data:` sources need none of this — the editor decodes those itself.
-    public var onResolveMedia: ((String, @escaping (URL?) -> Void) -> Void)? {
+    @ObservationIgnored public var onResolveMedia: ((String, @escaping (URL?) -> Void) -> Void)? {
         didSet { textView?.onResolveMedia = onResolveMedia }
     }
 
@@ -411,7 +420,7 @@ public final class LeafEditorModel: ObservableObject {
     /// should return `true` and continue asynchronously — the clipboard is the
     /// host's now either way. The same division `onOpenLink` and `onResolveMedia`
     /// draw.
-    public var onPaste: (() -> Bool)?
+    @ObservationIgnored public var onPaste: (() -> Bool)?
 
     #if canImport(AppKit) && !targetEnvironment(macCatalyst)
     /// Gets first refusal on a drop, handed the drag's own pasteboard — the
@@ -425,7 +434,7 @@ public final class LeafEditorModel: ObservableObject {
     /// A closure over the pasteboard rather than the general one because a drag
     /// carries its own — reading `NSPasteboard.general` here would find
     /// whatever was last copied, not what was dropped.
-    public var onDrop: ((NSPasteboard) -> Bool)?
+    @ObservationIgnored public var onDrop: ((NSPasteboard) -> Bool)?
     #endif
 
     /// Have `source` resolved again on the next draw — or every source, when it
@@ -455,7 +464,7 @@ public final class LeafEditorModel: ObservableObject {
     ///
     /// The same division `onOpenLink` draws: the editor renders the document
     /// surface and leaves what it can't reach to the app around it.
-    public var onOpenMedia: ((String) -> Void)?
+    @ObservationIgnored public var onOpenMedia: ((String) -> Void)?
 
     /// Called after every edit that changed the document's text — a keystroke,
     /// a paste, a mark toggled, an undo — and not after a caret step, a reflow,
@@ -472,7 +481,7 @@ public final class LeafEditorModel: ObservableObject {
     /// The editor's own history is twig's, reached through the responder chain's
     /// undo manager (see `UndoBridge.swift`); nothing here registers with it.
     /// Called on the main actor, after the surface has repainted.
-    public var onEdit: (() -> Void)?
+    @ObservationIgnored public var onEdit: (() -> Void)?
 
     /// Called when the reader asks to be taken to an attachment itself, with its
     /// raw `src` — the contextual menu's "Show Attachment" (macOS) or the edit
@@ -494,14 +503,14 @@ public final class LeafEditorModel: ObservableObject {
     /// ⌘-click on a picture goes on placing the caret, which is what it did
     /// before this existed. The rule `onEditLink` follows, for its reason: a
     /// menu item that calls nobody is worse than no menu item.
-    public var onShowMedia: ((String) -> Void)? {
+    @ObservationIgnored public var onShowMedia: ((String) -> Void)? {
         didSet { textView?.onShowMedia = showMediaBridge }
     }
 
     /// `onShowMedia` as the views want it: nil while the host has set nothing, so
     /// `onShowMedia != nil` inside a view is still "is a host listening?" after
     /// the closure is read through to the model. Same shape as `editBridge`.
-    var showMediaBridge: ((String) -> Void)? {
+    @ObservationIgnored var showMediaBridge: ((String) -> Void)? {
         guard onShowMedia != nil else { return nil }
         return { [weak self] src in self?.onShowMedia?(src) }
     }
@@ -511,7 +520,7 @@ public final class LeafEditorModel: ObservableObject {
     /// rather than private to the file, like `doc` above it: it is the model's
     /// half of a pair, and a caller inside the module may stand the two up
     /// without going through a representable.
-    weak var textView: LeafTextView?
+    @ObservationIgnored weak var textView: LeafTextView?
 
     /// Parse `source` as `format` (`"markdown"`, `"djot"`, `"html"`, `"xml"`).
     public init(source: String, format: String = "markdown") throws {
@@ -584,7 +593,7 @@ public final class LeafEditorModel: ObservableObject {
     /// later. Worse, dropping it silently is invisible: the reader lands at the
     /// top of the right document, which is precisely what the old behaviour
     /// looked like. `prefer` solves the same problem for rendering modes.
-    fileprivate var pendingLanding: (offset: UInt32, end: UInt32?)?
+    @ObservationIgnored fileprivate var pendingLanding: (offset: UInt32, end: UInt32?)?
 
     /// Take the pending landing, if there is one — called once by the view that
     /// has just been made. Taken rather than read, so a later relayout doesn't
@@ -618,7 +627,7 @@ public final class LeafEditorModel: ObservableObject {
     /// Asked of the document rather than read off `state`, the way
     /// `caretInTable` is — a menu is built when it opens, so it sees the caret
     /// where it is now.
-    public var caretInMark: Bool { doc.caretInMark() }
+    public var caretInMark: Bool { observeDoc(); return doc.caretInMark() }
 
     /// The colour of the highlight at the caret, or nil — the swatch a menu
     /// ticks. Rides the published state, because moving between two coloured
@@ -642,7 +651,7 @@ public final class LeafEditorModel: ObservableObject {
     /// button, for chrome that dims rather than fails. Read per use rather than
     /// held: it is a static table lookup per flag, and a document can be handed a
     /// new source (and so a new format) under the same model.
-    public var capabilities: Capabilities { doc.capabilities() }
+    public var capabilities: Capabilities { observeDoc(); return doc.capabilities() }
 
     /// One press of a colour swatch: colour the highlight the caret is in, or —
     /// with a selection and no highlight yet — make one and colour it, as **one**
@@ -698,7 +707,7 @@ public final class LeafEditorModel: ObservableObject {
     public func setLineSpacing(_ spacing: LineHeight?) {
         run { $0.setLineSpacing(spacing: spacing) }
     }
-    public var lineSpacing: LineHeight? { doc.lineSpacingAtCaret() }
+    public var lineSpacing: LineHeight? { observeDoc(); return doc.lineSpacingAtCaret() }
 
     /// Set the size of the selection — or of the caret's whole block, with
     /// nothing selected — or clear it with nil.
@@ -710,7 +719,7 @@ public final class LeafEditorModel: ObservableObject {
     public func setFontSize(_ size: FontSize?) {
         run { $0.setFontSize(size: size) }
     }
-    public var fontSize: FontSize? { doc.fontSizeAtCaret() }
+    public var fontSize: FontSize? { observeDoc(); return doc.fontSizeAtCaret() }
 
     /// One rung up or down from whatever is at the caret — ⌘⇧+ and ⌘⇧-, the
     /// pair every Mac text editor binds. The same single gesture (and the same
@@ -737,7 +746,7 @@ public final class LeafEditorModel: ObservableObject {
     public func setFontFamily(_ font: FontFace?) {
         run { $0.setFontFamily(font: font) }
     }
-    public var fontFamily: FontFace? { doc.fontFamilyAtCaret() }
+    public var fontFamily: FontFace? { observeDoc(); return doc.fontFamilyAtCaret() }
 
     /// Colour the selection's text — or the caret's whole block — by name
     /// (`.named(.red)`) or by triple (`.rgb(r:g:b:)`), or clear it with nil
@@ -750,7 +759,7 @@ public final class LeafEditorModel: ObservableObject {
     public func setTextColor(_ color: TextColor?) {
         run { $0.setTextColor(color: color) }
     }
-    public var textColor: TextColor? { doc.textColorAtCaret() }
+    public var textColor: TextColor? { observeDoc(); return doc.textColorAtCaret() }
 
     /// Which *Other…* row a menu has just pressed, and so which field or picker
     /// the editing surface should raise — nil when none is open.
@@ -761,7 +770,7 @@ public final class LeafEditorModel: ObservableObject {
     /// it. The rows set this, `LeafEditor` watches it, and both surfaces that
     /// show the rows — the formatting bar's menus and the app's Format menu —
     /// therefore open the same field over the same document.
-    @Published public var pendingOther: PresentationOther?
+    public var pendingOther: PresentationOther?
 
     /// Write a page break at the caret — `::page-break`, a leaf directive with no
     /// label. The paginated view opens a new sheet there and the continuous one
@@ -781,12 +790,12 @@ public final class LeafEditorModel: ObservableObject {
     /// Format menu in the menu bar. Each is dimmed where the document's format
     /// cannot write a directive of the host's (`capabilities.directives`).
     /// Empty, the default, adds no row anywhere.
-    @Published public var directiveCatalogue: [DirectiveItem] = []
+    public var directiveCatalogue: [DirectiveItem] = []
 
     /// The host's editors, by region kind — `"fence:"` and a language, or
     /// `"directive:"` and a name. See `LeafTextView.regionEditors`, which this
     /// reaches; leaf ships none, and depends on nothing one uses.
-    public var regionEditors: [String: RegionEditor] = [:] {
+    @ObservationIgnored public var regionEditors: [String: RegionEditor] = [:] {
         didSet { textView?.regionEditors = regionEditors }
     }
 
@@ -794,7 +803,7 @@ public final class LeafEditorModel: ObservableObject {
     /// `LeafTextView.regionRenderers`, which this reaches. A region of a kind
     /// with a renderer is drawn as its picture, on screen, on paper and in a
     /// PDF alike.
-    public var regionRenderers: [String: RegionRenderer] = [:] {
+    @ObservationIgnored public var regionRenderers: [String: RegionRenderer] = [:] {
         didSet { textView?.regionRenderers = regionRenderers }
     }
 
@@ -931,7 +940,7 @@ public final class LeafEditorModel: ObservableObject {
 
     // ── table editing ─────────────────────────────────────────────────────────
 
-    public var caretInTable: Bool { doc.caretInTable() }
+    public var caretInTable: Bool { observeDoc(); return doc.caretInTable() }
     public func tableInsertRow(below: Bool = true) { run { $0.tableInsertRow(below: below) } }
     public func tableDeleteRow() { run { $0.tableDeleteRow() } }
     public func tableInsertColumn(right: Bool = true) { run { $0.tableInsertColumn(right: right) } }
@@ -960,12 +969,13 @@ public final class LeafEditorModel: ObservableObject {
     /// Whether the macOS editor checks prose with the system dictionaries as it
     /// is typed.
     public var isContinuousSpellCheckingEnabled: Bool {
-        textView?.isContinuousSpellCheckingEnabled ?? true
+        observeDoc()
+        return textView?.isContinuousSpellCheckingEnabled ?? true
     }
 
     public func toggleContinuousSpellChecking() {
         textView?.toggleContinuousSpellChecking(nil)
-        objectWillChange.send()
+        settingsTick &+= 1
     }
 
     public func checkSpelling() { textView?.checkSpelling(nil) }
@@ -987,6 +997,7 @@ public final class LeafEditorModel: ObservableObject {
     /// per-view toggles under Edit ▸ Substitutions and Correct Spelling
     /// Automatically, seeded from the user's system settings.
     public func isSubstitutionEnabled(_ substitution: LeafSubstitution) -> Bool {
+        observeDoc()
         guard let textView else {
             switch substitution {
             case .spellingCorrection: return NSSpellChecker.isAutomaticSpellingCorrectionEnabled
@@ -1010,7 +1021,7 @@ public final class LeafEditorModel: ObservableObject {
         case .smartQuotes: textView?.toggleAutomaticQuoteSubstitution(nil)
         case .smartDashes: textView?.toggleAutomaticDashSubstitution(nil)
         }
-        objectWillChange.send()
+        settingsTick &+= 1
     }
     #elseif canImport(UIKit)
     /// Drive the system find panel: show it, with or without its replace
@@ -1029,13 +1040,13 @@ public final class LeafEditorModel: ObservableObject {
 
     /// How large the document is on screen — see `Zoom`. Set it to move the
     /// view; read `zoomScale` for the number it currently is.
-    @Published public var zoom: Zoom = .fitWidth {
+    public var zoom: Zoom = .fitWidth {
         didSet { textView?.zoom = zoom }
     }
 
     /// The scale `zoom` resolves to on the current viewport, `1` being actual
     /// size. Published, so a "125%" label follows a pinch and a resize.
-    @Published public private(set) var zoomScale: CGFloat = 1
+    public private(set) var zoomScale: CGFloat = 1
 
     /// To the next stop up `Zoom.stops` from wherever the view is — View ▸ Zoom In.
     public func zoomIn() { zoom = .scale(Zoom.stepUp(from: zoomScale) / zoomFactor) }
@@ -1062,8 +1073,8 @@ public final class LeafEditorModel: ObservableObject {
     /// The sheet in view, and how many there are; `0` and `0` off paper or
     /// before there is a surface. Published, so a host's "2 of 5" follows a
     /// scroll, a turn, and the caret typed on to the next sheet.
-    @Published public private(set) var sheet = 0
-    @Published public private(set) var sheetCount = 0
+    public private(set) var sheet = 0
+    public private(set) var sheetCount = 0
 
     /// Whether the surface holds the sheet in view, scrolling no further than
     /// its edges — for a host that turns the sheets itself (`showSheet`). A
@@ -1085,9 +1096,9 @@ public final class LeafEditorModel: ObservableObject {
     /// by default, which suits an editor opened to write in; off for a page
     /// shown among others — a leaf of a book — that is written on when the
     /// reader taps into it.
-    public var focusesWhenShown = true
+    @ObservationIgnored public var focusesWhenShown = true
 
-    private var pendingSheet: Int?
+    @ObservationIgnored private var pendingSheet: Int?
 
     fileprivate func takePendingSheet() -> Int? {
         defer { pendingSheet = nil }
@@ -1147,11 +1158,11 @@ public final class LeafEditorModel: ObservableObject {
     /// The live statistics: nil while `countsEnabled` is off, and until the
     /// first count lands. Republished only when a number moved — see
     /// `EditorCounts`.
-    @Published public private(set) var counts: EditorCounts?
+    public private(set) var counts: EditorCounts?
 
     /// The recount waiting on the typing to settle, cancelled and replaced by
     /// each repaint — which is what makes a burst of keystrokes one count.
-    private var countsWork: DispatchWorkItem?
+    @ObservationIgnored private var countsWork: DispatchWorkItem?
 
     /// How long "settled" is. Long enough that a fast typist's word is one
     /// count rather than six, short enough that the pill has caught up before
@@ -1224,7 +1235,7 @@ public final class LeafEditorModel: ObservableObject {
     // type — is deliberately absent; source view (`toggleView`) is what serves
     // reading raw markup without authoring it.
 
-    public var markupMode: MarkupMode { doc.markupMode() }
+    public var markupMode: MarkupMode { observeDoc(); return doc.markupMode() }
     public func setMarkupMode(_ mode: MarkupMode) { prefer { $0.setMarkupMode(mode: mode) } }
 
     // ── soft-break flow preference ────────────────────────────────────────────
@@ -1232,7 +1243,7 @@ public final class LeafEditorModel: ObservableObject {
     // each where it was written, so a source laid out in semantic line breaks
     // shows that structure.
 
-    public var lineFlow: LineFlow { doc.lineFlow() }
+    public var lineFlow: LineFlow { observeDoc(); return doc.lineFlow() }
     public func setLineFlow(_ mode: LineFlow) { prefer { $0.setLineFlow(mode: mode) } }
 
     // ── convenience toolbar queries ───────────────────────────────────────────
@@ -1285,6 +1296,7 @@ public final class LeafEditorModel: ObservableObject {
     /// because a preference is not an edit: it moves no dirty flag and is
     /// nothing to tell `onEdit` about.
     private func prefer(_ op: @escaping (LeafDoc) -> DocView) {
+        settingsTick &+= 1
         guard let textView else {
             _ = op(doc)
             // Nothing is going to repaint, and a repaint is what normally puts
@@ -1309,6 +1321,19 @@ public final class LeafEditorModel: ObservableObject {
     }
 
     private func updateState(_ s: EditorState) { if s != state { state = s } }
+
+    /// Moved by every preference (`prefer`) and every toggle that lives on the
+    /// text view rather than in `state` — spelling, substitutions — so that a
+    /// view showing one is redrawn when it flips.
+    private var settingsTick = 0
+
+    /// Make the caller's view depend on what the document's own answers can
+    /// change with: the chrome state a repaint reports, and the preferences.
+    /// The document is a UniFFI object, which Observation cannot see into.
+    private func observeDoc() {
+        _ = state
+        _ = settingsTick
+    }
 }
 
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
@@ -1349,7 +1374,7 @@ public struct LeafEditor: View {
 
 /// The `NSViewRepresentable` under `LeafEditor`.
 struct LeafEditorSurface: NSViewRepresentable {
-    @ObservedObject private var model: LeafEditorModel
+    private let model: LeafEditorModel
     private let theme: EditorTheme
     private let placeholder: String?
     private let page: PageSetup?
@@ -1877,7 +1902,7 @@ final class LeafEditorController: UIViewController {
 
 /// The `UIViewControllerRepresentable` under `LeafEditor`.
 struct LeafEditorSurface: UIViewControllerRepresentable {
-    @ObservedObject private var model: LeafEditorModel
+    private let model: LeafEditorModel
     private let theme: EditorTheme
     private let placeholder: String?
     private let page: PageSetup?
@@ -1912,7 +1937,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         /// The view the accessory hangs off, so a resize can ask *it* to re-read
         /// its input views — `reloadInputViews()` is the first responder's call,
         /// and the hosting controller isn't one.
-        weak var textView: LeafTextView?
+        @ObservationIgnored weak var textView: LeafTextView?
         private var sizeObserver: NSObjectProtocol?
 
         /// Re-measure the accessory whenever the reader changes their text size.

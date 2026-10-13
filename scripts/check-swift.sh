@@ -73,7 +73,7 @@ echo "  ✓ macOS"
 # specific, so emit a fresh LeafFFI for the iOS-simulator triple and check the
 # UIKit path against it.
 SDK_IOS="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-TARGET_IOS="arm64-apple-ios16.0-simulator"
+TARGET_IOS="arm64-apple-ios17.0-simulator"
 mkdir -p "$WORK/ios"
 echo "▸ Type-checking LeafUI (iOS / UIKit)…"
 swiftc -emit-module -module-name LeafFFI \

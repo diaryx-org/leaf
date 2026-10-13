@@ -144,7 +144,7 @@ final class FormattingPanelHost: UIInputView, UIInputViewAudioFeedback {
 /// The grid, over one editor. Every key is a `ToolCatalogue` tool, apart from
 /// the three that type.
 struct FormattingPanelView: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     /// Dynamic Type, as the row reads it: the glyphs grow with the reader's
     /// text size up to the row's cap. The keys themselves don't, because the
@@ -451,7 +451,7 @@ private struct TypingKey: View {
 /// the panel's alike. Seeded with the caret link's
 /// destination, so it re-points a link as readily as it makes one.
 struct LinkPromptHost: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
 
     var body: some View {
         Color.clear.sheet(isPresented: Binding(
@@ -464,7 +464,7 @@ struct LinkPromptHost: View {
 }
 
 private struct LinkPromptSheet: View {
-    @ObservedObject var editor: LeafEditorModel
+    let editor: LeafEditorModel
     @State var typed: String
     @FocusState private var focused: Bool
 

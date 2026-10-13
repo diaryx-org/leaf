@@ -15,7 +15,7 @@ import UIKit
 struct ContentView: View {
     /// The document's model, owned by its `LeafDocument`; this view wires the
     /// host hooks onto it and shows it.
-    @ObservedObject var model: LeafEditorModel
+    let model: LeafEditorModel
     /// Where the file is, or nil until it is first saved. Relative images and
     /// media resolve against its folder.
     let fileURL: URL?

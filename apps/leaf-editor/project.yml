@@ -2,8 +2,8 @@ name: Leaf
 options:
   bundleIdPrefix: org.diaryx
   deploymentTarget:
-    iOS: "16.0"
-    macOS: "13.0"
+    iOS: "17.0"
+    macOS: "14.0"
   createIntermediateGroups: true
 
 # Leaf, the document app — one cross-platform host for the `LeafUI` editor. The
