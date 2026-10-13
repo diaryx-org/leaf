@@ -637,6 +637,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // Said before frames become changes: the frame it answers with is
         // dropped, and `setUnwrapped`'s below must be whole.
         _ = doc.setOwnedRegions(kinds: regionSlot.ownedKinds)
+        // A `sup` run is set raised and smaller (`AttributedRow`), so a
+        // footnote's label is told from the prose by where it sits and core
+        // can drop the brackets a terminal needs. Said here as well as by the
+        // model, for a host that builds the view over a document of its own.
+        _ = doc.setRaisedSuperscripts(on: true)
         // Every frame after the first is the change since the frame before —
         // the rows that differ, and where they go — which `render` splices
         // into `docView`. Lifting every row of a long document into Swift

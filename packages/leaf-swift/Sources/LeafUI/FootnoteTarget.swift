@@ -49,10 +49,12 @@ enum FootnoteAction: Equatable {
 /// `EditorTheme`, and leans on a WebKit-backed importer far too slow to hang a
 /// hover on.)
 struct FootnotePeekContent {
-    /// The note as the document draws it, marker and all — `[1] Moby-Dick, ch.
-    /// 42`. The marker rides along because it is part of the rendered row, and
-    /// it earns its place: it says which note answered, which a reader hovering
-    /// the third `[3]` of a paragraph would otherwise have to take on trust.
+    /// The note as the document draws it, marker and all — `¹ Moby-Dick, ch.
+    /// 42`, the label raised as its reference is (`[1]` over a document that
+    /// was never told its superscripts are raised). The marker rides along
+    /// because it is part of the rendered row, and it earns its place: it says
+    /// which note answered, which a reader hovering the third reference of a
+    /// paragraph would otherwise have to take on trust.
     ///
     /// For a reference nothing defines this is leaf's own sentence instead —
     /// see `isDefined`.

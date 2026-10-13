@@ -1807,6 +1807,17 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
     func setParagraph()  -> DocView
     
     /**
+     * Say whether the renderer sets a raised run raised — a `sup` run drawn
+     * above the line and smaller, rather than inline at body size. When it
+     * does, a footnote reference arrives as its bare label, the raise being
+     * what tells it from the prose, and its note's marker as the same raised
+     * label; when it does not, both keep the brackets that otherwise would
+     * have to. Off until called, so a host that has not caught up sees what
+     * it saw. See `Doc::set_raised_superscripts`.
+     */
+    func setRaisedSuperscripts(on: Bool)  -> DocView
+    
+    /**
      * Turn the read-only gate on or off — a *reading* surface over the same
      * rendering, selection and navigation the editor has. Enforced in core at
      * the three doors every mutation goes through, so a host that also quiets
@@ -3763,6 +3774,25 @@ open func setParagraph() -> DocView  {
         uniffiCallStatus in
     uniffi_leaf_ffi_fn_method_leafdoc_set_paragraph(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Say whether the renderer sets a raised run raised — a `sup` run drawn
+     * above the line and smaller, rather than inline at body size. When it
+     * does, a footnote reference arrives as its bare label, the raise being
+     * what tells it from the prose, and its note's marker as the same raised
+     * label; when it does not, both keep the brackets that otherwise would
+     * have to. Off until called, so a host that has not caught up sees what
+     * it saw. See `Doc::set_raised_superscripts`.
+     */
+open func setRaisedSuperscripts(on: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_raised_superscripts(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(on),uniffiCallStatus
     )
 })
 }
@@ -11165,6 +11195,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_paragraph() != 35833) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_raised_superscripts() != 22517) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_read_only() != 45340) {

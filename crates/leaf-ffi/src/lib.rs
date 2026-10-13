@@ -2615,6 +2615,19 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// Say whether the renderer sets a raised run raised — a `sup` run drawn
+    /// above the line and smaller, rather than inline at body size. When it
+    /// does, a footnote reference arrives as its bare label, the raise being
+    /// what tells it from the prose, and its note's marker as the same raised
+    /// label; when it does not, both keep the brackets that otherwise would
+    /// have to. Off until called, so a host that has not caught up sees what
+    /// it saw. See `Doc::set_raised_superscripts`.
+    pub fn set_raised_superscripts(&self, on: bool) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_raised_superscripts(on);
+        g.frame()
+    }
+
     /// Insert a block-level image, video, or audio at the caret. Any selection
     /// becomes the alt / fallback text. See [`leaf_core::Doc::insert_media`] for
     /// the markup each kind spells.

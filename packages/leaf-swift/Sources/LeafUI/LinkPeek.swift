@@ -77,6 +77,8 @@ extension FootnotePeekContent {
         // Unwrapped, like the on-screen editor: one row per block, which the
         // popover then wraps at its own width. Wrapping here would wrap to a
         // column count that has nothing to do with how wide the popover is.
+        // Its footnotes drawn as the page's are: raised, without brackets.
+        _ = doc.setRaisedSuperscripts(on: true)
         let view = doc.setUnwrapped()
         self.init(rows: Self.rows(of: view, in: doc, at: document.locator), theme: theme)
     }

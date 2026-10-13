@@ -854,6 +854,8 @@ await test("a footnote goes down to its note and back up to its reference", () =
   const ed = editor("text[^1] more\n\n[^1]: the note\n");
   const sup = ed.contentEl.querySelector(".leaf-sup");
   assert(sup, "no footnote reference was drawn");
+  // A browser sets a raised run raised, so the reference is its bare label.
+  eq(sup.textContent, "1", "the reference kept its brackets");
   const note = ed.footnoteAt(sup._src);
   assert(note && note.offset != null, "the reference does not know its note");
   sup.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));

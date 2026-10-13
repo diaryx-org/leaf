@@ -1853,6 +1853,15 @@ pub struct Surface {
     /// composite an image over one cell, and leaves this off to keep an inline
     /// formula as the code-styled TeX it always showed. Off by default.
     pub inline_pictures: bool,
+    /// Whether the surface sets a [`Baseline::Super`] glyph raised and
+    /// smaller, rather than inline at body size. When it does, a footnote's
+    /// label is set off from the prose by where it sits, and needs no
+    /// brackets to be read as a reference: a reference draws as its bare
+    /// raised label (`claim¹`), and a definition's marker as the same raised
+    /// label, so the two still pair by eye. A terminal sets every glyph on the
+    /// one baseline, where a bare `1` reads as `claim1`, a typo; it leaves
+    /// this off and keeps the brackets. Off by default.
+    pub raised_superscripts: bool,
     /// The region kinds the frontend edits itself
     /// ([`crate::Doc::set_owned_regions`]): [`MATH_REGION`], and
     /// [`FENCE_REGION`] with a language. A formula of an owned kind keeps its
@@ -4151,12 +4160,39 @@ impl Builder<'_> {
             // is synthetic decoration (one shared offset, never a caret stop) —
             // the `[^1]: ` that spells it in the source is markup, hidden like a
             // heading's `# `.
+            //
+            // On a surface that raises a superscript
+            // ([`Surface::raised_superscripts`]) the marker is the label alone,
+            // raised as its reference is, and a space: `¹ the note`, pairing
+            // with the bare raised `¹` in the prose. The continuation indent
+            // is raised the same, glyph for glyph — the indent is spelled with
+            // the marker's characters so it is exactly the marker's width, and
+            // a raised label is set smaller, so an indent set at body size
+            // would hang the body further right than the marker it hangs under.
             "footnote" => {
                 let (start, end) = (node.span.start, node.span.end);
                 let source = self.source;
-                let marker = format!("[{}] ", footnote_label(source, start).unwrap_or(""));
-                let f = concat(pf, &synth(&marker, Role::ListMarker, start));
-                let c = concat(pc, &synth(&marker, Role::ListIndent, start));
+                let label = footnote_label(source, start).unwrap_or("");
+                let (f, c) = if self.surface.raised_superscripts {
+                    let marker = |role: Role| {
+                        let mut g = synth(label, role, start);
+                        for g in &mut g {
+                            g.style = g.style.baseline(Baseline::Super);
+                        }
+                        g.extend(synth(" ", role, start));
+                        g
+                    };
+                    (
+                        concat(pf, &marker(Role::ListMarker)),
+                        concat(pc, &marker(Role::ListIndent)),
+                    )
+                } else {
+                    let marker = format!("[{label}] ");
+                    (
+                        concat(pf, &synth(&marker, Role::ListMarker, start)),
+                        concat(pc, &synth(&marker, Role::ListIndent, start)),
+                    )
+                };
                 if self.children(id).is_empty() {
                     // A definition with no body yet — the instant `[^1]: ` has
                     // been typed and nothing after it. `blocks` would emit
@@ -5704,6 +5740,13 @@ impl Builder<'_> {
             // Raised, though, because that a reference is *set* differently from
             // the prose it interrupts is exactly what makes it read as a
             // reference. `[1]` at body size reads as bracketed text.
+            //
+            // And on a surface that does raise it
+            // ([`Surface::raised_superscripts`]), the brackets go: the raise
+            // is already what sets the label apart from the prose, which was
+            // their whole job, and a bracketed superscript is an editor's
+            // tell, not a book's. Where every glyph sits on the one baseline —
+            // a terminal — they stay, since there `claim1` is a typo.
             "footnote_reference" => {
                 let style = base.role(Role::Link);
                 // Revealed, the reference is just its source bytes: the `^` that
@@ -5735,19 +5778,24 @@ impl Builder<'_> {
                     .and_then(|n| label.strip_prefix(n))
                     .filter(|rest| !rest.is_empty() && rest.chars().all(char::is_alphabetic))
                     .unwrap_or(label);
-                out.push(Glyph {
-                    ch: '[',
-                    style,
-                    src: node.span.start,
-                    stop: false,
-                });
+                let bracketed = !self.surface.raised_superscripts;
+                if bracketed {
+                    out.push(Glyph {
+                        ch: '[',
+                        style,
+                        src: node.span.start,
+                        stop: false,
+                    });
+                }
                 push_text(out, shown, at + (label.len() - shown.len()), style);
-                out.push(Glyph {
-                    ch: ']',
-                    style,
-                    src: node.span.end.saturating_sub(1),
-                    stop: false,
-                });
+                if bracketed {
+                    out.push(Glyph {
+                        ch: ']',
+                        style,
+                        src: node.span.end.saturating_sub(1),
+                        stop: false,
+                    });
+                }
             }
             "link" | "url" | "email" => {
                 let style = base.role(Role::Link);
@@ -9408,6 +9456,128 @@ mod tests {
             lines[2]
         );
         assert_eq!(lines[2].trim(), "five six seven");
+    }
+
+    /// [`map`] on a surface that raises a superscript — a pixel frontend's.
+    fn map_raised(src: &str, wrap: Option<usize>) -> VisualMap {
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        let surface = Surface {
+            raised_superscripts: true,
+            ..Default::default()
+        };
+        build(&ed.nodes().unwrap(), src, wrap, false, &surface, None)
+    }
+
+    #[test]
+    fn a_surface_that_raises_draws_a_reference_as_its_bare_label() {
+        // The raise is what sets it apart, so the brackets have nothing left
+        // to do; the label is still raised, still a link, still its own bytes.
+        let src = "A claim[^12] and more.\n";
+        let m = map_raised(src, Some(80));
+        assert_eq!(rendered(&m).trim_end(), "A claim12 and more.");
+        assert_eq!(baselines_of(&m, '1'), vec![Baseline::Super]);
+        assert_eq!(baselines_of(&m, '2'), vec![Baseline::Super]);
+        assert_eq!(role_of(&m, '1'), Role::Link);
+        let label = src.find("12").unwrap();
+        let stops: Vec<usize> = m
+            .rows
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .filter(|g| g.stop)
+            .map(|g| g.src)
+            .collect();
+        assert!(stops.contains(&label) && stops.contains(&(label + 1)));
+        // The `[^` and `]` are stepped over as hidden markup, as ever: the
+        // stop after the label is the prose that follows the reference.
+        for off in [label - 2, label - 1, label + 2] {
+            assert!(!stops.contains(&off), "markup byte {off} is a stop");
+        }
+        assert!(stops.contains(&(label + 3)), "the space after it");
+    }
+
+    #[test]
+    fn a_plain_surface_keeps_the_brackets_a_terminal_needs() {
+        // The default is today's: on one baseline, `claim1` reads as a typo.
+        let m = map("A claim[^1].\n\n[^1]: note\n");
+        assert!(rendered(&m).contains("claim[1]."), "{}", rendered(&m));
+        assert!(rendered(&m).contains("[1] note"), "{}", rendered(&m));
+    }
+
+    #[test]
+    fn a_surface_that_raises_keeps_dropping_a_verses_number() {
+        let src =
+            "{#v20}\n*20* And they did plead[^20a] wept[^20].\n\n[^20a]: note.\n\n[^20]: note.\n";
+        let mut ed = Editor::new_str(src, Format::Djot).unwrap();
+        let surface = Surface {
+            raised_superscripts: true,
+            ..Default::default()
+        };
+        let m = build(&ed.nodes().unwrap(), src, Some(80), false, &surface, None);
+        let first = rendered(&m).lines().next().unwrap().to_string();
+        assert_eq!(first, "20 And they did pleada wept20.");
+    }
+
+    #[test]
+    fn a_surface_that_raises_marks_a_note_with_its_raised_label() {
+        // The marker pairs with its reference by eye: the same label, raised
+        // the same way, and a space before the body — no brackets on either.
+        let src = "x[^src]\n\n[^src]: one two three four five six seven\n";
+        let m = map_raised(src, Some(24));
+        let text = rendered(&m);
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines[0], "xsrc");
+        assert_eq!(lines[1].trim_end(), "src one two three four");
+        let note = &m
+            .rows
+            .iter()
+            .find(|r| {
+                r.glyphs
+                    .first()
+                    .is_some_and(|g| g.ch == 's' && g.style.role == Role::ListMarker)
+            })
+            .expect("the marker row")
+            .glyphs;
+        assert!(
+            note[..3]
+                .iter()
+                .all(|g| g.style.baseline == Baseline::Super && !g.stop)
+        );
+        assert_eq!(
+            (note[3].ch, note[3].style.baseline),
+            (' ', Baseline::Normal)
+        );
+        // The wrapped body hangs under the marker, and the indent is spelled
+        // and raised exactly as the marker is, so a frontend that sets a raised
+        // glyph smaller measures the two the same.
+        let cont = m
+            .rows
+            .iter()
+            .find(|r| r.glyphs.iter().any(|g| g.ch == 'v' && g.stop))
+            .expect("a continuation row");
+        let indent: Vec<(char, Role, Baseline)> = cont.glyphs[..4]
+            .iter()
+            .map(|g| (g.ch, g.style.role, g.style.baseline))
+            .collect();
+        assert_eq!(
+            indent,
+            [
+                ('s', Role::ListIndent, Baseline::Super),
+                ('r', Role::ListIndent, Baseline::Super),
+                ('c', Role::ListIndent, Baseline::Super),
+                (' ', Role::ListIndent, Baseline::Normal),
+            ]
+        );
+        assert_eq!(lines[2].trim(), "five six seven");
+    }
+
+    #[test]
+    fn a_surface_that_raises_still_marks_an_empty_note() {
+        let m = map_raised("x[^1]\n\n[^1]:\n", Some(80));
+        assert!(
+            rendered(&m).lines().any(|l| l == "1 "),
+            "{:?}",
+            rendered(&m)
+        );
     }
 
     #[test]

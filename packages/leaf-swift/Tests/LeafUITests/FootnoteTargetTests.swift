@@ -159,6 +159,23 @@ final class FootnoteTargetTests: XCTestCase {
         XCTAssertTrue(content.body.string.hasPrefix("[a]"), "got \(content.body.string)")
     }
 
+    /// The same over a document told its superscripts are raised, as both
+    /// views tell theirs: the marker is the bare label, set raised as the
+    /// reference that asked for it is, so the two still pair by eye.
+    func testPeekCarriesTheNotesRaisedMarkerWithoutBrackets() throws {
+        let src = "Claim[^a].\n\n[^a]: the note.\n"
+        let d = try doc(src, caret: offset(of: "^a]", in: src))
+        _ = d.setRaisedSuperscripts(on: true)
+        let view = d.setUnwrapped()
+        let content = try XCTUnwrap(d.footnotePeekContent(
+            at: offset(of: "^a]", in: src), in: view, theme: .default))
+        XCTAssertEqual(content.body.string, "a the note.")
+        let marker = try XCTUnwrap(content.body.attribute(.baselineOffset, at: 0, effectiveRange: nil) as? CGFloat)
+        XCTAssertGreaterThan(marker, 0, "the marker is raised")
+        XCTAssertTrue(view.rows.contains { $0.runs.map(\.text).joined() == "Claima." },
+                      "the reference is its bare label")
+    }
+
     /// A note written across two source lines is one paragraph, and the peek
     /// shows it as one — the continuation's newline and indent are markup
     /// holding the note together, not text the reader wrote.

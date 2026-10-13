@@ -454,6 +454,9 @@ export class LeafEditor {
     // A browser paints a picture in a line, so an inline formula arrives as an
     // atom to draw over rather than as its TeX — see _mathRunEl.
     this.doc.set_inline_pictures(true);
+    // …and sets a `sup` run raised (`.leaf-sup`), so a footnote reference
+    // arrives as its bare label, not in the brackets a terminal needs.
+    this.doc.set_raised_superscripts(true);
     // The host's region kinds are owned from the first frame; with the math
     // module already here so are formulas, and otherwise from when it lands
     // (`_mathSettled`).
@@ -523,6 +526,7 @@ export class LeafEditor {
     doc.set_line_flow(old.line_flow());
     doc.set_read_only(old.read_only());
     doc.set_inline_pictures(true);
+    doc.set_raised_superscripts(true);
     doc.set_incremental_frames(true);
     if (this._darkQuery) doc.set_color_scheme(this._darkQuery.matches ? "dark" : "light");
     this.doc = doc;

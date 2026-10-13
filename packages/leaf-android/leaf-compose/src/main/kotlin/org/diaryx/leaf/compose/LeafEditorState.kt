@@ -125,6 +125,9 @@ class LeafEditorState(val doc: LeafDoc) {
     init {
         // One row per block: soft wrapping is this frontend's, done in pixels.
         doc.setUnwrapped()
+        // A `sup` run is set raised and smaller (`EditorLayout`), so a
+        // footnote's label needs no brackets to be told from the prose.
+        doc.setRaisedSuperscripts(true)
         doc.setIncrementalFrames(true)
         frame = doc.view()
         chrome = LeafEditorChrome.of(frame)

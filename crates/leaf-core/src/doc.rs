@@ -1535,6 +1535,25 @@ impl Doc {
         self.surface_changed();
     }
 
+    /// Tell the model whether the frontend sets a raised glyph raised — a
+    /// superscript drawn above the line and smaller, as a pixel-laid-out
+    /// frontend does, rather than inline at body size, as a terminal must.
+    ///
+    /// What turns on it is a footnote's brackets. They are there to tell a
+    /// reference from the prose it interrupts, and a raised label already
+    /// says that by where it sits: on a surface that raises, `[^1]` draws as a
+    /// bare raised `1`, and its note's marker as the same raised `1` rather
+    /// than `[1]`. On one that cannot, the brackets are all that keeps
+    /// `claim[1]` from reading as `claim1`, so they stay. Off until a frontend
+    /// says otherwise, so a host that has not caught up sees what it saw.
+    pub fn set_raised_superscripts(&mut self, on: bool) {
+        if self.surface.raised_superscripts == on {
+            return;
+        }
+        self.surface.raised_superscripts = on;
+        self.surface_changed();
+    }
+
     /// Name the regions the frontend edits itself rather than as their
     /// source: [`MATH_REGION`](wysiwyg::MATH_REGION) for formulas,
     /// [`FENCE_REGION`](wysiwyg::FENCE_REGION) with a language for that
@@ -14773,6 +14792,59 @@ mod tests {
         assert_eq!(
             d.footnote_at_caret().expect("back on the reference").label,
             "1"
+        );
+    }
+
+    #[test]
+    fn footnote_navigation_survives_a_surface_that_drops_the_brackets() {
+        // With the brackets gone the label is the whole of what is drawn, so
+        // everything that finds a reference — the round trip, a caret walking
+        // through it, the reveal — has only the label's own glyphs to go by.
+        let src = "A claim[^1] and more.\n\n[^1]: the note\n";
+        let mut d = doc_in(View::Wysiwyg, "fn_round_raised", src);
+        d.set_raised_superscripts(true);
+        d.build_visual(80);
+        assert!(drawn_rows(&d).iter().any(|r| r == "A claim1 and more."));
+        assert!(drawn_rows(&d).iter().any(|r| r == "1 the note"));
+
+        d.place_caret(9, false);
+        assert_eq!(d.caret, 9, "the label is a stop");
+        let down = d
+            .footnote_at_caret()
+            .expect("a reference")
+            .offset
+            .expect("a note");
+        d.place_caret(down, false);
+        let up = d
+            .footnote_definition_at_caret()
+            .expect("a definition")
+            .offset
+            .expect("a reference");
+        d.place_caret(up, false);
+        assert_eq!(d.caret, up);
+        assert_eq!(
+            d.footnote_at_caret().expect("back on the reference").label,
+            "1"
+        );
+
+        // The caret walks prose, label, prose, never resting on the markup
+        // either side: from before the `m`, onto the label, past it, and past
+        // the space — `claim|1| and`, with the `[^` and `]` stepped over.
+        d.place_caret(src.find("m[").unwrap(), false);
+        let mut walk = vec![];
+        for _ in 0..3 {
+            d.move_right(false);
+            walk.push(d.caret);
+        }
+        assert_eq!(walk, [9, 11, 12], "{walk:?}");
+
+        // Revealed, the reference is its source, brackets and all, raised or not.
+        d.set_markup_mode(MarkupMode::Full);
+        caret_at(&mut d, "claim");
+        assert!(
+            drawn_rows(&d).iter().any(|r| r == "A claim[^1] and more."),
+            "{:?}",
+            drawn_rows(&d)
         );
     }
 

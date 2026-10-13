@@ -1094,6 +1094,9 @@ public final class LeafTextView: UIView, UITextInput {
         // on the caret's line it stays its picture rather than revealing TeX.
         // Said before frames become changes, as the AppKit peer does.
         _ = doc.setOwnedRegions(kinds: regionSlot.ownedKinds)
+        // A raised run is set raised, so a footnote's label needs no brackets
+        // — the AppKit peer's reason.
+        _ = doc.setRaisedSuperscripts(on: true)
         // Every frame after the first is the change since the frame before,
         // spliced into `docView` by `render` — the AppKit peer's rule.
         doc.setIncrementalFrames(on: true)

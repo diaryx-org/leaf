@@ -510,6 +510,9 @@ public final class LeafEditorModel: ObservableObject {
         // The views paint a picture in a line, so an inline formula arrives as
         // one `math` run to draw its typeset picture over — see `MathLayout`.
         _ = doc.setInlinePictures(on: true)
+        // …and set a raised run raised, so a footnote reference arrives as its
+        // bare label rather than in the brackets a terminal needs.
+        _ = doc.setRaisedSuperscripts(on: true)
         self.doc = doc
         self.state = EditorState(doc.view())
     }

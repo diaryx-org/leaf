@@ -868,6 +868,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_owned_regions(uint64_t ptr, Rus
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_paragraph(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_RAISED_SUPERSCRIPTS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_RAISED_SUPERSCRIPTS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_raised_superscripts(uint64_t ptr, int8_t on, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_READ_ONLY
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_READ_ONLY
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_read_only(uint64_t ptr, int8_t on, RustCallStatus *_Nonnull out_status
@@ -2062,6 +2067,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_owned_regions(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_PARAGRAPH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_PARAGRAPH
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_paragraph(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_RAISED_SUPERSCRIPTS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_RAISED_SUPERSCRIPTS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_raised_superscripts(void
     
 );
 #endif
