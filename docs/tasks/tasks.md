@@ -17,6 +17,7 @@ contents:
 - '[Handoff of an open document between the Mac and iOS apps](handoff.md)'
 - '[A force click on a date shows no Calendar card](date-event-popover.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
+- '[Following a fragment lands before its heading](/docs/tasks/fragment-lands-before-heading.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks
