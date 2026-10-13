@@ -3502,6 +3502,37 @@ impl Builder<'_> {
         out
     }
 
+    /// How many lists the list `id` sits inside: 0 for a top-level list, 1 for
+    /// one nested in an item, and so on. Counted over list *items*, not lists,
+    /// so a block twig hangs straight off a list (see the list arm's de-nested
+    /// child) doesn't make a list inside it look nested. A block quote between
+    /// two lists neither resets nor adds to the count: `- a` / `  > - b` draws
+    /// `b` as the second level it is in the outline.
+    fn list_depth(&self, id: usize) -> usize {
+        let mut depth = 0;
+        let mut p = self.nodes[id].parent;
+        while let Some(pid) = p {
+            let n = &self.nodes[pid.0 as usize];
+            if matches!(n.kind, Kind::ListItem | Kind::TaskListItem) {
+                depth += 1;
+            }
+            p = n.parent;
+        }
+        depth
+    }
+
+    /// The number an ordered list's first item spells (`5.` → 5), 1 when its
+    /// marker has none to read — an HTML `<li>` has no marker text at all.
+    fn list_start(&self, kids: &[usize]) -> usize {
+        kids.iter()
+            .find_map(|&k| self.nodes[k].marker_span.clone())
+            .and_then(|m| self.source.get(m))
+            .map(|t| t.trim_start_matches(|c: char| !c.is_ascii_digit()))
+            .map(|t| &t[..t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len())])
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or(1)
+    }
+
     /// Render a node's block children, a blank separator between each. `tight`
     /// suppresses the *fabricated* separator between adjacent children that share
     /// a source line boundary — a tight list item and the sub-list nested in it —
@@ -4073,8 +4104,20 @@ impl Builder<'_> {
             }
             "bullet_list" | "ordered_list" | "task_list" => {
                 let ordered = node.kind == Kind::OrderedList;
-                let mut item_no = 0usize;
+                // The marker's *style* follows the list's nesting depth, the
+                // word-processor / HTML convention: `•` `◦` `▪` and `1.` `a.`
+                // `i.`, then round again. Display only — the source keeps its
+                // `-` and `1.`.
+                let depth = self.list_depth(id);
                 let kids = self.children(id);
+                // Numbering starts where the source's first item says it does
+                // (`5.` counts on from 5), which twig keeps only as the
+                // marker's own text.
+                let mut item_no = if ordered {
+                    self.list_start(&kids).saturating_sub(1)
+                } else {
+                    0
+                };
                 for (i, child) in kids.iter().copied().enumerate() {
                     let kind = &self.nodes[child].kind;
                     if *kind == Kind::ListItem || *kind == Kind::TaskListItem {
@@ -4092,8 +4135,8 @@ impl Builder<'_> {
                         let marker = match (checked, ordered) {
                             (Some(true), _) => "☑ ".to_string(),
                             (Some(false), _) => "☐ ".to_string(),
-                            (None, true) => format!("{item_no}. "),
-                            (None, false) => "• ".to_string(),
+                            (None, true) => format!("{}. ", ordinal(item_no, depth)),
+                            (None, false) => format!("{} ", bullet(depth)),
                         };
                         let bullet = synth(&marker, Role::ListMarker, start);
                         // The item's later rows wear the marker's own
@@ -7138,6 +7181,59 @@ pub fn em_space_at(source: &str, at: usize) -> Option<usize> {
         .map(str::len)
 }
 
+/// The bullet a list `depth` levels deep draws: `•`, `◦`, `▪`, then round again.
+fn bullet(depth: usize) -> char {
+    ['•', '◦', '▪'][depth % 3]
+}
+
+/// How item `n` of an ordered list `depth` levels deep is numbered: decimal,
+/// then lower-alpha, then lower-roman, then round again — CSS's `decimal`,
+/// `lower-alpha` and `lower-roman`, down to their fallbacks. Alpha counts on
+/// past `z` to `aa`; roman has no zero and nothing past 3999, so those (and an
+/// alpha zero) fall back to decimal, as a browser does.
+fn ordinal(n: usize, depth: usize) -> String {
+    match depth % 3 {
+        1 if n > 0 => {
+            let mut out = Vec::new();
+            let mut n = n;
+            while n > 0 {
+                n -= 1;
+                out.push(b'a' + (n % 26) as u8);
+                n /= 26;
+            }
+            out.reverse();
+            String::from_utf8(out).unwrap_or_default()
+        }
+        2 if (1..4000).contains(&n) => {
+            const NUMERALS: [(usize, &str); 13] = [
+                (1000, "m"),
+                (900, "cm"),
+                (500, "d"),
+                (400, "cd"),
+                (100, "c"),
+                (90, "xc"),
+                (50, "l"),
+                (40, "xl"),
+                (10, "x"),
+                (9, "ix"),
+                (5, "v"),
+                (4, "iv"),
+                (1, "i"),
+            ];
+            let mut out = String::new();
+            let mut n = n;
+            for (value, numeral) in NUMERALS {
+                while n >= value {
+                    out.push_str(numeral);
+                    n -= value;
+                }
+            }
+            out
+        }
+        _ => n.to_string(),
+    }
+}
+
 /// Build synthetic decoration glyphs (a bullet, a gutter) all pointing at `src`,
 /// each carrying `role` so the frontend can style it (`Role::Body` for plain
 /// padding). Synthetic glyphs are never caret stops — they share one offset, so
@@ -8233,8 +8329,8 @@ mod tests {
         // A list item's own text and the sub-list nested under it are written on
         // adjacent source lines, so the rich view butts them together — no
         // fabricated blank row. Regression: the synthetic "breathe" separator
-        // used to open a gap between `• a` and its `  • b`.
-        assert_eq!(rendered(&map("- a\n  - b\n")), "• a\n  • b");
+        // used to open a gap between `• a` and its `  ◦ b`.
+        assert_eq!(rendered(&map("- a\n  - b\n")), "• a\n  ◦ b");
     }
 
     #[test]
@@ -8243,7 +8339,7 @@ mod tests {
         // its sub-list — only the *fabricated* separator is suppressed, never a
         // real one the author typed. The gap row wears the item's continuation
         // prefix (the two-space indent), so it renders as "  ", not empty.
-        assert_eq!(rendered(&map("- a\n\n  - b\n")), "• a\n  \n  • b");
+        assert_eq!(rendered(&map("- a\n\n  - b\n")), "• a\n  \n  ◦ b");
     }
 
     #[test]
@@ -10334,6 +10430,129 @@ mod tests {
             (1, 2),
             "caret sits after '• '"
         );
+    }
+
+    #[test]
+    fn bullets_change_shape_with_nesting_depth_and_come_round_again() {
+        let m = map("- a\n  - b\n    - c\n      - d\n- e\n");
+        let rows = row_texts(&m);
+        assert_eq!(rows[0], "• a");
+        assert!(rows[1].ends_with("◦ b"), "{rows:?}");
+        assert!(rows[2].ends_with("▪ c"), "{rows:?}");
+        assert!(
+            rows[3].ends_with("• d"),
+            "the fourth level starts over: {rows:?}"
+        );
+        assert_eq!(rows[4], "• e", "back at the top level");
+    }
+
+    #[test]
+    fn ordered_items_count_in_decimal_then_alpha_then_roman() {
+        let m = map("1. a\n   1. b\n   2. c\n      1. d\n      2. e\n      3. f\n      4. g\n");
+        let rows = row_texts(&m);
+        assert_eq!(rows[0], "1. a");
+        assert!(rows[1].ends_with("a. b"), "{rows:?}");
+        assert!(rows[2].ends_with("b. c"), "{rows:?}");
+        assert!(rows[3].ends_with("i. d"), "{rows:?}");
+        assert!(rows[4].ends_with("ii. e"), "{rows:?}");
+        assert!(rows[5].ends_with("iii. f"), "{rows:?}");
+        assert!(rows[6].ends_with("iv. g"), "{rows:?}");
+        // Display only: the source keeps its own markers.
+        assert!(
+            !m.rows
+                .iter()
+                .flat_map(|r| &r.glyphs)
+                .any(|g| g.stop && g.ch == 'i')
+        );
+    }
+
+    #[test]
+    fn an_ordered_list_counts_from_its_first_items_number() {
+        let rows = row_texts(&map("5. a\n6. b\n"));
+        assert_eq!(rows, ["5. a", "6. b"]);
+        // The source's later numbers don't matter, only where it starts.
+        let rows = row_texts(&map("3. a\n3. b\n"));
+        assert_eq!(rows, ["3. a", "4. b"]);
+        // A nested list starting at 3 is lettered from `c`.
+        let rows = row_texts(&map("1. a\n   3. b\n   4. c\n"));
+        assert!(
+            rows[1].ends_with("c. b") && rows[2].ends_with("d. c"),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_lists_share_one_depth_and_task_boxes_stay_boxes() {
+        let rows = row_texts(&map("1. a\n   - b\n     - [ ] c\n       1. d\n"));
+        assert_eq!(rows[0], "1. a");
+        assert!(
+            rows[1].ends_with("◦ b"),
+            "a bullet under a number is level two: {rows:?}"
+        );
+        assert!(rows[2].ends_with("☐ c"), "{rows:?}");
+        assert!(
+            rows[3].ends_with("1. d"),
+            "level four comes back round to decimal: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_quote_between_lists_neither_resets_nor_adds_to_the_depth() {
+        let rows = row_texts(&map("- a\n\n  > - b\n  >   - c\n"));
+        let b = rows.iter().find(|r| r.ends_with('b')).unwrap();
+        let c = rows.iter().find(|r| r.ends_with('c')).unwrap();
+        assert!(b.contains("│") && b.ends_with("◦ b"), "{rows:?}");
+        assert!(c.ends_with("▪ c"), "{rows:?}");
+    }
+
+    #[test]
+    fn a_wide_marker_hangs_its_continuation_rows_under_the_text() {
+        // A roman `viii. ` is wider than `• `; the item's later rows must still
+        // start under its text, which they do by wearing the marker itself as
+        // their (invisible) indent.
+        let src = "1. a\n   1. b\n      1. c\n      2. c\n      3. c\n      4. c\n      5. c\n      6. c\n      7. c\n      8. one\n\n         two\n";
+        let m = map(src);
+        let row = |needle: &str| {
+            m.rows
+                .iter()
+                .find(|r| {
+                    r.glyphs
+                        .iter()
+                        .map(|g| g.ch)
+                        .collect::<String>()
+                        .ends_with(needle)
+                })
+                .unwrap()
+        };
+        let first = row("viii. one");
+        let second = row("two");
+        let marker = |r: &VRow, role: Role| -> String {
+            r.glyphs
+                .iter()
+                .filter(|g| g.style.role == role)
+                .map(|g| g.ch)
+                .collect()
+        };
+        assert_eq!(marker(first, Role::ListMarker), "viii. ");
+        assert_eq!(marker(second, Role::ListIndent), "1. a. viii. ");
+        let width = |r: &VRow| r.glyphs.iter().take_while(|g| !g.stop).count();
+        assert_eq!(width(first), width(second), "the continuation lines up");
+    }
+
+    #[test]
+    fn ordinals_count_past_z_and_into_big_numerals() {
+        assert_eq!(ordinal(1, 1), "a");
+        assert_eq!(ordinal(26, 1), "z");
+        assert_eq!(ordinal(27, 1), "aa");
+        assert_eq!(ordinal(52, 1), "az");
+        assert_eq!(ordinal(703, 1), "aaa");
+        assert_eq!(ordinal(0, 1), "0", "no letter for zero");
+        assert_eq!(ordinal(4, 2), "iv");
+        assert_eq!(ordinal(1994, 2), "mcmxciv");
+        assert_eq!(ordinal(3999, 2), "mmmcmxcix");
+        assert_eq!(ordinal(4000, 2), "4000", "past the numerals, decimal");
+        assert_eq!(ordinal(0, 2), "0");
+        assert_eq!(ordinal(7, 3), "7", "the fourth level is decimal again");
     }
 
     #[test]
