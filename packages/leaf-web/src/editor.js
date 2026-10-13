@@ -3761,12 +3761,16 @@ export class LeafEditor {
    * elsewhere). This is an editor: clicking a link in your own prose should put
    * the caret in it, not navigate away from the document.
    *
-   * A footnote is the exception, from a finger or in a reader. A phone has no
-   * ⌘ to hold, so a tap on a reference reveals its note and a tap on a note's
-   * marker goes back up to what cites it; the CSS grows both labels' targets
-   * to a fingertip under a coarse pointer. A reader places no caret to protect,
-   * so there a plain click does the same. Following a footnote never leaves
-   * the document, which is why it alone gets this and a link does not.
+   * From a finger or in a reader, a plain tap follows instead. A phone has no
+   * ⌘ to hold, so a tap on a reference reveals its note, a tap on a note's
+   * marker goes back up to what cites it — the CSS grows both labels' targets
+   * to a fingertip under a coarse pointer — and a tap on a link follows the
+   * link. A reader places no caret to protect, so there a plain click does the
+   * same. A finger in an editor does give up putting a caret in a link's words
+   * with a tap; it keeps the long press, which selects them, and the arrow
+   * keys. The touch surfaces of leaf-swift answer the same tap in an editor
+   * with a card over the link instead; here there is none, and a link a finger
+   * cannot follow at all was the worse of the two.
    */
   _onClick(e) {
     const runEl = e.target.closest?.(".leaf-run");
@@ -3789,7 +3793,7 @@ export class LeafEditor {
 
     if (!primaryModifier(e)) {
       if (this._pointerType === "touch" || this._pointerType === "pen" || this.doc.read_only()) {
-        this._followFootnoteLabel(e, runEl, src);
+        if (!this._followFootnoteLabel(e, runEl, src)) this._followLinkRun(e, runEl, src);
       }
       return;
     }
@@ -3806,16 +3810,7 @@ export class LeafEditor {
       }
     }
 
-    if (runEl.classList.contains("leaf-r-link")) {
-      const dest = this.doc.link_destination_at(src);
-      if (!dest) return;
-      e.preventDefault();
-      // A fragment names a place in this document; land there rather than
-      // hand the host an address it would only send back.
-      if (dest.startsWith("#") && this.goTo(dest.slice(1))) return;
-      this._onFollowLink ? this._onFollowLink(dest) : window.open(dest, "_blank", "noopener");
-      return;
-    }
+    if (this._followLinkRun(e, runEl, src)) return;
 
     // In a note, the return leg: back up to what cites it. The mousedown has
     // already put the browser's caret where the click fell, so the question
@@ -3826,6 +3821,25 @@ export class LeafEditor {
       e.preventDefault();
       this.reveal(def.offset);
     }
+  }
+
+  /**
+   * Follow the link `runEl` is part of, if it is part of one, by the run's own
+   * offset — the ⌘-click's route and a finger's tap alike, so a link goes to
+   * the same place however it was reached. Run after the footnote question,
+   * since a reference is drawn in the link role too.
+   * @returns {boolean} whether there was a link to follow
+   */
+  _followLinkRun(e, runEl, src) {
+    if (!runEl.classList.contains("leaf-r-link")) return false;
+    const dest = this.doc.link_destination_at(src);
+    if (!dest) return false;
+    e.preventDefault();
+    // A fragment names a place in this document; land there rather than
+    // hand the host an address it would only send back.
+    if (dest.startsWith("#") && this.goTo(dest.slice(1))) return true;
+    this._onFollowLink ? this._onFollowLink(dest) : window.open(dest, "_blank", "noopener");
+    return true;
   }
 
   /**
