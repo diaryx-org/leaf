@@ -5724,13 +5724,24 @@ impl Builder<'_> {
                     Some(c) => (self.source.get(c.clone()).unwrap_or(""), c.start),
                     None => (node.text.as_deref().unwrap_or(""), node.span.start + 2),
                 };
+                // A label has to be unique in its document, so a chapter whose
+                // every verse has an `a` note spells them `20a`, `21a`. Inside
+                // verse 20 the `20` is what the line already opens with, and a
+                // reader is told it twice; drawn, the reference is the letter.
+                // The number stays in the source and in the note's own marker,
+                // where nothing else says which verse the note is for.
+                let shown = self
+                    .opening_number(id)
+                    .and_then(|n| label.strip_prefix(n))
+                    .filter(|rest| !rest.is_empty() && rest.chars().all(char::is_alphabetic))
+                    .unwrap_or(label);
                 out.push(Glyph {
                     ch: '[',
                     style,
                     src: node.span.start,
                     stop: false,
                 });
-                push_text(out, label, at, style);
+                push_text(out, shown, at + (label.len() - shown.len()), style);
                 out.push(Glyph {
                     ch: ']',
                     style,
@@ -6031,6 +6042,24 @@ impl Builder<'_> {
         }
     }
 
+    /// The number the paragraph holding node `id` opens with — the `20` of
+    /// `*20* And it came to pass…`, past any emphasis the number is set in.
+    /// `None` when the paragraph opens with anything else, or `id` is in none.
+    fn opening_number(&self, id: usize) -> Option<&str> {
+        let mut at = self.nodes.get(id)?.parent;
+        let para = loop {
+            let node = &self.nodes[at?.0 as usize];
+            if node.kind == Kind::Para {
+                break node;
+            }
+            at = node.parent;
+        };
+        let text = self.source.get(para.span.clone())?;
+        let text = text.trim_start_matches(|c: char| c == '*' || c == '_' || c.is_whitespace());
+        let digits = text.len() - text.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        (digits > 0).then(|| &text[..digits])
+    }
+
     /// The source offset the caret rests at on the blank line separating a block
     /// that ends at `prev_end` from the next block starting at `next_start`:
     /// just past the newline that terminates the previous block, but kept
@@ -6049,6 +6078,13 @@ impl Builder<'_> {
     /// caret can occupy. Offsets are unique and ascending so `pos_of_offset`
     /// resolves each to its own row. Empty when the two blocks are tight (no
     /// blank line between them).
+    ///
+    /// Only a line that *is* blank counts. A line of markup between the two —
+    /// a Djot block attribute (`{#v21}`) over the block it names, which the
+    /// block's span starts below — is the next block's, not a gap: counted, it
+    /// drew a second boundary row under every attributed block, and a
+    /// scripture chapter whose every verse carries an anchor sat a full line
+    /// apart where its paragraphs should be half of one.
     fn blank_rows_between(&self, prev_end: usize, next_start: usize) -> Vec<usize> {
         // Spans aren't always in tidy source order (e.g. a block after
         // frontmatter can start *before* the previous block's rendered content
@@ -6068,7 +6104,13 @@ impl Builder<'_> {
         let mut offs = Vec::new();
         let mut start = prev_end + nl + 1;
         while start < next_line_start {
-            offs.push(start);
+            let line = self.source[start..next_line_start]
+                .lines()
+                .next()
+                .unwrap_or("");
+            if line.trim().is_empty() {
+                offs.push(start);
+            }
             match self.source[start..next_start].find('\n') {
                 Some(k) => start += k + 1,
                 None => break,
@@ -9114,6 +9156,39 @@ mod tests {
         assert_eq!(baselines_of(&m, '['), vec![Baseline::Super]);
         assert_eq!(baselines_of(&m, ']'), vec![Baseline::Super]);
         assert_eq!(baselines_of(&m, 'A'), vec![Baseline::Normal]);
+    }
+
+    #[test]
+    fn a_reference_drops_the_number_its_paragraph_opens_with() {
+        // Labels are unique per document, so a chapter spells its notes `20a`,
+        // `21a`; inside verse 20 the `20` is said already. Only the matching
+        // number goes, and only when letters are left.
+        let src = "{#v20}\n*20* And they did plead[^20a] and[^21b] wept[^20].\n\n[^20a]: note.\n\n[^21b]: note.\n\n[^20]: note.\n";
+        let m = map_djot(src);
+        let first = rendered(&m).lines().next().unwrap().to_string();
+        assert_eq!(first, "20 And they did plead[a] and[21b] wept[20].");
+        // The letter maps to its own byte, and the hidden `20` is no stop.
+        let a = src.find("[^20a]").unwrap() + 4;
+        let stops: Vec<usize> = m
+            .rows
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .filter(|g| g.stop)
+            .map(|g| g.src)
+            .collect();
+        assert!(stops.contains(&a));
+        assert!(!stops.contains(&(a - 2)) && !stops.contains(&(a - 1)));
+        // The note keeps its whole label: nothing else says which verse it is for.
+        assert!(rendered(&m).contains("[20a] note."), "{}", rendered(&m));
+    }
+
+    #[test]
+    fn a_block_attribute_between_paragraphs_is_not_a_second_gap() {
+        // `{#v21}` is the next paragraph's, not a blank line: one boundary row.
+        let m = map_djot("{#v20}\nTwenty.\n\n{#v21}\nTwenty-one.\n");
+        let gaps = m.rows.iter().filter(|r| r.boundary.is_some()).count();
+        assert_eq!(gaps, 1, "{:?}", rendered(&m));
+        assert_eq!(m.rows.len(), 3);
     }
 
     #[test]
