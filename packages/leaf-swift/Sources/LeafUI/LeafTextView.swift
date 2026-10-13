@@ -256,12 +256,16 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// Whether this surface is a reader — see the iOS peer for the full
     /// contract. The *document* is the enforcement (leaf-core's gate refuses
     /// every splice, so typing changes nothing whatever the chrome says); on
-    /// this platform the property is currently that guarantee's label alone,
-    /// kept so a cross-platform host sets one flag without conditionals.
-    /// Quieting the caret and the beep a refused key makes is still to do.
+    /// this platform the property turns off what offers an edit unasked —
+    /// Writing Tools and the spelling checker — and is otherwise that
+    /// guarantee's label, kept so a cross-platform host sets one flag without
+    /// conditionals. Quieting the caret and the beep a refused key makes is
+    /// still to do.
     public var isReadOnly: Bool = false {
         didSet {
+            guard isReadOnly != oldValue else { return }
             if #available(macOS 15.2, *) { updateWritingToolsBehavior() }
+            scheduleSpellCheck()
         }
     }
 
@@ -456,6 +460,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             guard isContinuousSpellCheckingEnabled != oldValue else { return }
             scheduleSpellCheck()
         }
+    }
+    /// Whether the checker runs at all: the preference above, in prose, on a
+    /// surface that can edit. A reader is exempt — a red wave asks for a fix
+    /// the reader cannot make — and the preference is kept, so making the
+    /// document editable again brings the checking back.
+    var checksSpelling: Bool {
+        isContinuousSpellCheckingEnabled && docView.view != "source" && !isReadOnly
     }
     private let spellDocumentTag = NSSpellChecker.uniqueSpellDocumentTag()
     private var misspelledRanges: [NSRange] = []
@@ -1110,8 +1121,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// source-offset mapping as Find, accessibility, and text input; this only
     /// draws what that mapped.
     private func drawMisspellings(in ctx: CGContext, dirtyRect band: CGRect) {
-        guard isContinuousSpellCheckingEnabled, docView.view != "source",
-              !misspelledRects.isEmpty else { return }
+        guard checksSpelling, !misspelledRects.isEmpty else { return }
         ctx.saveGState()
         defer { ctx.restoreGState() }
         ctx.setStrokeColor(NSColor.systemRed.cgColor)
@@ -3357,7 +3367,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let hit = layoutEngine.hit(point)
         let clickOffset = doc.offsetForPos(row: UInt32(hit.row), ch: UInt32(hit.ch))
         let clickUTF16 = Int(doc.utf16IndexForOffset(off: clickOffset))
-        if docView.view != "source", let misspelling = misspelling(at: clickUTF16) {
+        if docView.view != "source", !isReadOnly, let misspelling = misspelling(at: clickUTF16) {
             addSpellingItems(for: misspelling, to: menu)
             menu.addItem(.separator())
         }
@@ -4510,7 +4520,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         misspelledRanges.removeAll()
         misspelledRects.removeAll()
         needsDisplay = true
-        guard isContinuousSpellCheckingEnabled, docView.view != "source" else { return }
+        guard checksSpelling else { return }
         let generation = spellCheckGeneration
         let work = DispatchWorkItem { [weak self] in
             self?.requestSpellCheck(generation: generation)
@@ -4533,8 +4543,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             DispatchQueue.main.async {
                 guard let self,
                       generation == self.spellCheckGeneration,
-                      self.isContinuousSpellCheckingEnabled,
-                      self.docView.view != "source"
+                      self.checksSpelling
                 else { return }
                 self.misspelledRanges = results
                     .filter { $0.resultType.contains(.spelling) }
@@ -4922,7 +4931,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     @objc public func checkSpelling(_ sender: Any?) {
         let text = spellCheckingText()
         let length = (text as NSString).length
-        guard docView.view != "source", length > 0 else { return }
+        guard docView.view != "source", !isReadOnly, length > 0 else { return }
         var range = nextMisspelling(
             in: text, startingAt: min(NSMaxRange(selectedRange()), length))
         if range.location == NSNotFound {

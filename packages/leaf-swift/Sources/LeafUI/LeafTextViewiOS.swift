@@ -770,7 +770,8 @@ public final class LeafTextView: UIView, UITextInput {
     // not a misspelling. So the substitutions follow the view, read afresh by
     // UIKit each time the keyboard comes up (`render` reloads it on a view
     // change). What a host sets here is the WYSIWYG value; the source view
-    // answers `.no` regardless.
+    // answers `.no` regardless. A reader answers `.no` for spelling too: a
+    // misspelling's underline asks for a fix nobody can make there.
     private var isSourceView: Bool { docView.view == "source" }
     private var hostAutocorrection: UITextAutocorrectionType = .default
     private var hostSpellChecking: UITextSpellCheckingType = .default
@@ -782,7 +783,7 @@ public final class LeafTextView: UIView, UITextInput {
         set { hostAutocorrection = newValue }
     }
     public var spellCheckingType: UITextSpellCheckingType {
-        get { isSourceView ? .no : hostSpellChecking }
+        get { isSourceView || isReadOnly ? .no : hostSpellChecking }
         set { hostSpellChecking = newValue }
     }
     public var smartQuotesType: UITextSmartQuotesType {

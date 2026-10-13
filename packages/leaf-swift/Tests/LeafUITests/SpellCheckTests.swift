@@ -89,5 +89,39 @@ final class SpellCheckTests: XCTestCase {
 
         XCTAssertEqual(found, ["mispelling"])
     }
+
+    /// A reader is not checked, and a pass already asked for is dropped; the
+    /// preference is kept, so an editable document is checked again.
+    func testAReaderIsNotSpellChecked() throws {
+        let editor = try view("A prose mispelling.\n")
+        XCTAssertTrue(editor.checksSpelling)
+        let generation = editor.spellCheckGeneration
+        editor.isReadOnly = true
+        XCTAssertFalse(editor.checksSpelling)
+        XCTAssertGreaterThan(editor.spellCheckGeneration, generation, "an answer on its way is dropped")
+        XCTAssertTrue(editor.isContinuousSpellCheckingEnabled, "the preference is kept")
+        editor.isReadOnly = false
+        XCTAssertTrue(editor.checksSpelling)
+    }
+}
+#endif
+
+#if canImport(UIKit)
+import UIKit
+import XCTest
+import LeafFFI
+@testable import LeafUI
+
+final class SpellCheckTests: XCTestCase {
+    /// A reader tells the keyboard not to check spelling, and the host's own
+    /// choice comes back when it is editable again.
+    func testAReaderAsksForNoSpellChecking() throws {
+        let view = LeafTextView(doc: try LeafDoc(source: "prose\n", format: "markdown"), theme: .default)
+        view.spellCheckingType = .yes
+        view.isReadOnly = true
+        XCTAssertEqual(view.spellCheckingType, .no)
+        view.isReadOnly = false
+        XCTAssertEqual(view.spellCheckingType, .yes)
+    }
 }
 #endif
