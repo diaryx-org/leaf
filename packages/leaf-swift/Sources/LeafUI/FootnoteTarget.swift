@@ -59,9 +59,10 @@ struct FootnotePeekContent {
     /// For a reference nothing defines this is leaf's own sentence instead —
     /// see `isDefined`.
     let body: NSAttributedString
-    /// Whether `body` is the note itself. `false` means it is leaf explaining
-    /// why there isn't one, which a presenter draws in the secondary colour: it
-    /// is chrome, not the document's words, and must not be mistaken for them.
+    /// Whether `body` is the note itself. `false` means it is leaf's own words
+    /// — why there isn't a note, or the destination on a link's card — which
+    /// a presenter draws in the secondary colour: it is chrome, not the
+    /// document's prose, and must not be mistaken for it.
     let isDefined: Bool
 
     /// The note at `rows`, or leaf's explanation when there is no note to draw.

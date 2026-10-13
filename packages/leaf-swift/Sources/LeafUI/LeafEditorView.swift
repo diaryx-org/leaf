@@ -308,10 +308,19 @@ public final class LeafEditorModel: ObservableObject {
 
     /// Called with a highlight's `id` when the reader taps (iOS) or clicks
     /// (macOS) its **margin marker** — the glyph a `Highlight.marker` puts
-    /// beside the wash's first line. The marker is the control and the wash is
-    /// ink: text under a wash still selects, copies and (in an editor) takes a
-    /// caret like any other. A markerless highlight is purely visual whatever
-    /// this is set to.
+    /// beside the wash's first line — and, on iOS in a reader (`isReadOnly`),
+    /// when they tap the wash itself.
+    ///
+    /// The marker is the control: it answers over a 44-point square, and
+    /// whether or not text is selected. The wash is ink in an editor — text
+    /// under it selects, copies and takes a caret like any other, since a tap
+    /// there is somebody editing a marked sentence. A reader places no caret,
+    /// so there a tap on the words opens what they are marked with, marker or
+    /// not: a highlight without a marker is still one the host gave an id, and
+    /// a host that paints some purely as ink (search hits, say) ignores the
+    /// ids it has nothing to open for. Long press and double tap still select
+    /// through a wash in a reader. On the Mac a click on the wash places the
+    /// caret, as it always has.
     public var onTapHighlight: ((String) -> Void)? {
         didSet { textView?.onTapHighlight = tapHighlightBridge }
     }

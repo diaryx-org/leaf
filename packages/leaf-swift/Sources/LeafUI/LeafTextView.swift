@@ -276,7 +276,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public var onTapHighlight: ((String) -> Void)?
 
     /// The margin markers' hit targets, in layout coordinates, rebuilt on
-    /// every draw.
+    /// every draw — the touch surface's 44-point squares
+    /// (`EditorLayout.markerTarget`), which a pointer has no trouble with and
+    /// a trackpad tap is glad of.
     private var markerHits: [(rect: CGRect, id: String)] = []
 
     /// Asked to edit the destination of the link under the caret, with its
@@ -1360,17 +1362,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         markerHits.removeAll()
         let highlights = doc.highlights()
         guard highlights.contains(where: { $0.marker != nil }) else { return }
-        let box: CGFloat = 20
-        let inset: CGFloat = 4
         let width = bounds.width / zoomScale
         for highlight in highlights {
             guard let symbol = highlight.marker else { continue }
             let rc = doc.posForOffset(off: UInt32(highlight.start))
             guard let line = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { continue }
-            let frame = CGRect(
-                x: width - box - inset,
-                y: line.midY - box / 2,
-                width: box, height: box)
+            let frame = EditorLayout.markerFrame(lineMidY: line.midY, trailingEdge: width)
             let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
                 .applying(.init(paletteColors: [theme.secondaryColor]))
             if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
@@ -1382,7 +1379,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                         y: frame.midY - image.size.height / 2,
                         width: image.size.width, height: image.size.height))
             }
-            markerHits.append((frame.insetBy(dx: -6, dy: -4), highlight.id))
+            markerHits.append((EditorLayout.markerTarget(frame, trailingEdge: width), highlight.id))
         }
     }
 
@@ -1750,13 +1747,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // caret at the stop under the pointer; a click anywhere else closes
         // the open one first.
         if regionClick(p, event: event) { return }
-        // A margin marker outranks everything at its point, and — unlike the
-        // touch surface, which cannot call a tap back — this click is consumed
-        // whole: the caret stays where it was, because the reader asked for
-        // the annotation, not for a caret at the end of its line.
-        if let onTapHighlight,
-           let hit = markerHits.first(where: { $0.rect.contains(p) }) {
-            onTapHighlight(hit.id)
+        // A margin marker outranks everything at its point, and this click is
+        // consumed whole, as the touch surface keeps the system's tap off one:
+        // the caret stays where it was, because the reader asked for
+        // the annotation, not for a caret at the end of its line. A selection
+        // survives it for the same reason, and is no bar to it: the marker is
+        // never the selection's.
+        if let onTapHighlight, let id = EditorLayout.marker(at: p, in: markerHits) {
+            onTapHighlight(id)
             return
         }
         // ⌘-click on a box with something drawn in it — a picture that loaded, or

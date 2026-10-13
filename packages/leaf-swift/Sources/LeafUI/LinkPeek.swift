@@ -95,6 +95,20 @@ extension FootnotePeekContent {
         self.init(rows: Self.rows(of: view, in: doc, at: locator), theme: theme)
     }
 
+    /// The card a tap on a link raises in an editor: where the link goes,
+    /// spelled as the document spells it, above what can be done about it.
+    ///
+    /// The destination and not a preview of it, because the question a tap
+    /// asks in an editor is not yet "what does it say" — the reader may only
+    /// have been putting a caret in the link's text — but "what is this", and
+    /// the address answers that without a fetch. A preview, where there is
+    /// one, is still a long press away, in the menu. Drawn as chrome, since an
+    /// address is the link's plumbing and not a sentence of the document.
+    init(destination: String) {
+        body = NSAttributedString(string: destination)
+        isDefined = false
+    }
+
     private init?(rows: [Row], theme: EditorTheme) {
         let drawn = NSMutableAttributedString()
         for row in rows where !row.decoration {

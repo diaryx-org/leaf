@@ -143,3 +143,75 @@ extension LeafDoc {
         return text
     }
 }
+
+/// A stretch of a laid-out document that is a link, by layout position —
+/// what `EditorLayout.link(at:also:)` measures a tap against.
+struct LinkSpan {
+    /// A source offset inside the link: the run's own for a parsed link, the
+    /// opening bracket's for a wikilink.
+    let src: UInt32
+    /// The whole `[[…]]` construct for a wikilink; nil for a parsed link.
+    let wikilink: String?
+    let from: (row: Int, ch: Int)
+    let to: (row: Int, ch: Int)
+}
+
+/// A link a finger landed on — what `EditorLayout.link(at:also:)` answers, and
+/// what a touch view acts on without asking the caret, for `FootnoteTap`'s
+/// reasons: the system places the caret for the same tap in an order of its
+/// own choosing, beside the link as often as in it, and in a reader not at all.
+struct LinkTap: Equatable {
+    /// A source offset inside the link, which `linkDestinationAt` resolves
+    /// for a parsed link, and where an edit puts the caret first.
+    let src: UInt32
+    /// The `[[…]]` construct, verbatim, when the link is a wikilink — its own
+    /// destination, since there is no node for the document to ask.
+    let wikilink: String?
+    /// The glyphs of the line of the link the tap was nearest, in the layout's
+    /// coordinates.
+    let rect: CGRect
+}
+
+extension LeafDoc {
+    /// The link a tap landed on, as the document spells its destination — the
+    /// offset peer of `activatableTargetAtCaret`, honouring the same switch.
+    /// Nil for a run in the link role that leads nowhere, such as a footnote
+    /// reference.
+    func destination(of tap: LinkTap, wikilinks: Bool) -> String? {
+        if let wikilink = tap.wikilink { return wikilinks ? wikilink : nil }
+        return linkDestinationAt(off: tap.src)
+    }
+
+    /// Every `[[…]]` construct in the source, by byte range, each verbatim —
+    /// what a tap is measured against when wikilinks count as links, since none
+    /// of them is a node a layout can see (see `wikilinkAtCaret`).
+    ///
+    /// The same rule as `wikilinkAtCaret`, read from the other end: a span runs
+    /// from each `[[` to the first `]]` after it on its line, so that for every
+    /// offset inside one, the span whose opener is nearest is the construct
+    /// the caret would answer with there. Openers nest (`[[a [[b]]`), so spans
+    /// can overlap; they come back innermost first, which is the one a tap
+    /// that lands in both means.
+    func wikilinkSpans() -> [(text: String, start: UInt32, end: UInt32)] {
+        let bytes = Array(source().utf8)
+        let open = UInt8(ascii: "["), close = UInt8(ascii: "]"), newline = UInt8(ascii: "\n")
+        var spans: [(text: String, start: UInt32, end: UInt32)] = []
+        var i = 0
+        while i + 1 < bytes.count {
+            defer { i += 1 }
+            guard bytes[i] == open, bytes[i + 1] == open else { continue }
+            var j = i + 2
+            while j + 1 < bytes.count, bytes[j] != newline {
+                if bytes[j] == close, bytes[j + 1] == close {
+                    let text = String(decoding: bytes[i..<(j + 2)], as: UTF8.self)
+                    if !text.dropFirst(2).dropLast(2).trimmingCharacters(in: .whitespaces).isEmpty {
+                        spans.append((text, UInt32(i), UInt32(j + 2)))
+                    }
+                    break
+                }
+                j += 1
+            }
+        }
+        return spans.reversed()
+    }
+}

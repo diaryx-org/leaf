@@ -854,15 +854,31 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     /// Called with a highlight's `id` when a tap lands on its margin marker —
-    /// how a host's painted annotation opens. The marker, not the wash: the
-    /// wash is ink a reader should be able to select and copy through without
-    /// a card leaping at them, and the glyph in the margin is the control that
-    /// says so. Nil leaves every highlight purely visual.
+    /// how a host's painted annotation opens — and, in a reader, on its wash.
+    ///
+    /// The marker always: it is chrome, the one control on the page that is
+    /// only ever the annotation's, so a tap on it is answered whatever else is
+    /// going on, a selection included. The wash only in a reader
+    /// (`isReadOnly`). In an editor the wash is text like any other, and a tap
+    /// on it is the reader putting a caret in a sentence they mean to change;
+    /// a card leaping up over every caret placed in marked prose would make
+    /// annotated text the hardest text in the document to edit. A reader
+    /// places no caret, so a tap on the words has nothing else to mean — and
+    /// on a phone, the words are a target a thumb can hit where a glyph in the
+    /// margin is one it has to aim for. Selecting still works there: a long
+    /// press or a double tap selects through the wash as it always did.
+    ///
+    /// A wash answers whether its highlight carries a marker or not. A marker
+    /// is how a host says "there is more here", but a highlight without one is
+    /// still the host's, painted for a reason it gave an id to — a reader's own
+    /// plain highlight, which they can only remove by reaching it — and a host
+    /// that painted one purely as ink ignores an id it has nothing to open for.
+    /// Nil leaves every highlight purely visual.
     public var onTapHighlight: ((String) -> Void)?
 
-    /// The margin markers' hit targets, rebuilt on every draw — each a little
-    /// larger than the glyph it stands behind, since a 17pt symbol under a
-    /// thumb is a miss.
+    /// The margin markers' hit targets, rebuilt on every draw — each a 44-point
+    /// square around the glyph it stands behind (`EditorLayout.markerTarget`),
+    /// since a 13-point symbol under a thumb is a miss.
     private var markerHits: [(rect: CGRect, id: String)] = []
 
     /// Extra actions for the *selection's* edit menu, ahead of the system's
@@ -1001,12 +1017,13 @@ public final class LeafTextView: UIView, UITextInput {
     /// and recognises simultaneously — so the caret still lands where it always
     /// did, and this only adds playback when the tap was on a media box.
     ///
-    /// It used to follow links too. It no longer does: a tap places the caret,
-    /// like a tap on any other text, and following moved to the edit menu's
-    /// "Open Link" (see `editMenuInteraction(_:menuFor:suggestedActions:)`). The
-    /// desktop rule is the same one — the editor is an editor first, and a tap
+    /// A tap on a link places the caret like a tap on any other text, and in
+    /// an editor that is all it moves: the editor is an editor first, and a tap
     /// that navigated made link text the one span you couldn't get a caret into
-    /// without leaving the document.
+    /// without leaving the document. What it adds is a card over the link —
+    /// where it goes, Open, Copy, Edit… — so following one is a second tap
+    /// rather than a long press and a menu. In a reader, which places no caret,
+    /// the tap follows the link. See `answerLinkTap`.
     /// Where the touch `mediaTap` is recognising came down, in this view's
     /// coordinates, recorded as it arrives. Not `location(in:)` at recognition:
     /// `textInteraction` places the caret for the same tap first, and placing it
@@ -1215,10 +1232,26 @@ public final class LeafTextView: UIView, UITextInput {
 
     // MARK: media activation
 
-    /// The tap handler. A tap that landed on no media box does nothing at all —
-    /// `textInteraction` has already placed the caret, which is the whole of what
-    /// a tap on ordinary prose (link text included) should do.
+    /// The tap handler. A tap that landed on nothing it knows — a marker, a
+    /// picture, a footnote's label, a task box, a link, a wash in a reader —
+    /// does nothing at all: `textInteraction` has already placed the caret,
+    /// which is the whole of what a tap on ordinary prose should do.
     @objc private func handleMediaTap(_ gesture: UITapGestureRecognizer) {
+        let point = mediaTapPoint ?? gesture.location(in: self)
+        mediaTapPoint = nil
+        // A margin marker outranks everything at its point — it is chrome, and
+        // the whole reason it sits in the margin is to be the one tap that is
+        // only ever the annotation's (see `onTapHighlight`). Before the
+        // selection's guard, for that reason: a marker that could not be
+        // tapped while a word was selected could not be tapped right after
+        // selecting the words it annotates, which is when it is wanted. The
+        // system's own tap is kept off it (`gestureRecognizerShouldBegin`), so
+        // the selection stays and no caret lands at the end of the line.
+        if !tapBecamePress, let onTapHighlight,
+           let id = EditorLayout.marker(at: point, in: markerHits) {
+            onTapHighlight(id)
+            return
+        }
         // A tap that lands while text is selected is the *selection's* — the
         // system answers it by showing the edit menu over the selection or by
         // dismissing it — and this handler has no business moving the caret out
@@ -1232,17 +1265,6 @@ public final class LeafTextView: UIView, UITextInput {
         // A tap ends whatever the last press was about, so the next menu cannot
         // inherit its attachment.
         pressedMediaSource = nil
-        let point = mediaTapPoint ?? gesture.location(in: self)
-        mediaTapPoint = nil
-        // A margin marker outranks everything at its point — it is chrome, and
-        // the whole reason it sits in the margin is to be the one tap that
-        // opens the annotation while the washed text underneath stays ordinary
-        // text (see `onTapHighlight`).
-        if let onTapHighlight,
-           let hit = markerHits.first(where: { $0.rect.contains(point) }) {
-            onTapHighlight(hit.id)
-            return
-        }
         // A tap on a formula's picture or a region's drawing opens it; one
         // anywhere else closes the open region.
         if regionSlot.click(at: point, in: layoutEngine, theme: renderTheme) { return }
@@ -1267,6 +1289,19 @@ public final class LeafTextView: UIView, UITextInput {
         // `toggle_task_at` goes by the tap's own offset, not the caret's.
         if !isSourceView, let box = layoutEngine.taskBox(at: point) {
             command { $0.toggleTaskAt(offset: UInt64(box)) }
+            return
+        }
+        // A tap on or near a link: a card in an editor, the link followed in a
+        // reader. After the footnote, which is drawn in the link role too and
+        // has an answer of its own, and after the task box, whose glyphs a
+        // link's padding on the line above or below could otherwise reach.
+        if !isSourceView, !tapBecamePress, let tap = linkTap(at: point), answerLinkTap(tap) {
+            return
+        }
+        // In a reader a tap on a highlight's wash opens it, as its marker does
+        // — see `onTapHighlight` for why only in a reader.
+        if isReadOnly, !tapBecamePress, let onTapHighlight, let id = highlight(under: point) {
+            onTapHighlight(id)
             return
         }
         // A tap under the last block is on nothing: the caret goes onto an
@@ -1294,11 +1329,95 @@ public final class LeafTextView: UIView, UITextInput {
     @discardableResult
     private func openLinkAtCaret() -> Bool {
         guard let dest = targetAtCaret() else { return false }
+        return follow(dest)
+    }
+
+    /// Follow `destination`, however it was reached — the menu's Open Link, a
+    /// card's Open, a tap in a reader, a link inside a peek — and say whether
+    /// anything took it. One route, so that a link means the same thing
+    /// whichever way the reader came at it.
+    @discardableResult
+    private func follow(_ destination: String) -> Bool {
         // A bare `#v2` is a place in this document, so following it is a scroll
         // rather than a departure — the AppKit peer's rule, and the same one.
-        if let landing = doc.selfLanding(of: dest) { reveal(offset: landing); return true }
-        if onOpenLink?(dest) == true { return true }
-        return openWithSystem(dest)
+        if let landing = doc.selfLanding(of: destination) { reveal(offset: landing); return true }
+        if onOpenLink?(destination) == true { return true }
+        return openWithSystem(destination)
+    }
+
+    /// The link a tap at `point` is aimed at (`EditorLayout.link(at:also:)`),
+    /// wikilinks among them when this view counts them as links.
+    private func linkTap(at point: CGPoint) -> LinkTap? {
+        var wikilinks: [LinkSpan] = []
+        if recognizesWikilinks {
+            for span in doc.wikilinkSpans() {
+                let a = doc.posForOffset(off: span.start), b = doc.posForOffset(off: span.end)
+                wikilinks.append(LinkSpan(src: span.start, wikilink: span.text,
+                                          from: (Int(a.row), Int(a.ch)), to: (Int(b.row), Int(b.ch))))
+            }
+        }
+        return layoutEngine.link(at: point, also: wikilinks)
+    }
+
+    /// Answer a tap on a link, and say whether it was one.
+    ///
+    /// In a reader the tap follows it: there is no caret for a tap on a link to
+    /// be placing, so the only thing it can mean is "go there". Deferred a turn,
+    /// as a footnote's return leg is, so that a `#v2`'s landing is not undone
+    /// by the system's answer to the same tap.
+    ///
+    /// In an editor the tap is still the caret's, and the system places it;
+    /// what this adds is a card anchored on the link, saying where it goes and
+    /// offering Open, Copy and — when the host can take a new destination, and
+    /// the link is one the document can repoint — Edit…. A card rather than
+    /// following, for the reason the menu used to be the only way: a tap that
+    /// navigated would make a link's words the one place a caret could not be
+    /// put. A card costs nothing to ignore: the next keystroke or tap takes
+    /// it down, and the caret is where the reader put it.
+    private func answerLinkTap(_ tap: LinkTap) -> Bool {
+        guard let destination = doc.destination(of: tap, wikilinks: recognizesWikilinks) else {
+            return false
+        }
+        if isReadOnly {
+            footnotePeek.hide()
+            DispatchQueue.main.async { [weak self] in self?.follow(destination) }
+            return true
+        }
+        guard let parent = owningViewController else { return false }
+        var actions = [
+            PeekAction(title: loc("card.open", "Open")) { [weak self] in self?.follow(destination) },
+            PeekAction(title: loc("card.copy", "Copy")) { UIPasteboard.general.string = destination },
+        ]
+        if onEditLink != nil, tap.wikilink == nil {
+            actions.append(PeekAction(title: loc("card.edit", "Edit…")) { [weak self] in
+                self?.editLink(at: tap.src, destination: destination)
+            })
+        }
+        footnotePeek.show(FootnotePeekContent(destination: destination),
+                          from: tap.rect.insetBy(dx: -6, dy: -2), in: self,
+                          presentedBy: parent, actions: actions, onTarget: { _ in })
+        return true
+    }
+
+    /// Ask the host to repoint the link at `src`, after putting the caret in
+    /// it. `onEditLink` acts on the link under the caret — its answer comes
+    /// back through `insertLink`, which repoints that one — and a tap that
+    /// raised the card from the space above a link left the caret on the line
+    /// above, where an edit would have made a new link of nothing.
+    private func editLink(at src: UInt32, destination: String) {
+        render(doc.caretMoved(to: src))
+        onEditLink?(doc.linkDestinationAtCaret() ?? destination)
+    }
+
+    /// The id of the highlight whose wash is under `point`, or nil — the wash,
+    /// not the nearest text: a tap beside a highlight or in the margin of its
+    /// line is not a tap on it. Core answers which highlight covers the offset,
+    /// first by start where washes overlap, which is the question it answers
+    /// for every other frontend too.
+    private func highlight(under point: CGPoint) -> String? {
+        guard let glyph = layoutEngine.glyph(at: point) else { return nil }
+        let offset = doc.offsetForPos(row: UInt32(glyph.row), ch: UInt32(glyph.ch))
+        return doc.highlightAt(offset: offset)
     }
 
     /// Hand a destination the host declined to the system. False when it
@@ -1375,14 +1494,14 @@ public final class LeafTextView: UIView, UITextInput {
         // Nil when the reference names no note: a button that led nowhere would
         // contradict the sentence right above it.
         let note = doc.footnoteAt(off: off)
-        let follow: (() -> Void)? = note?.offset.map { start in
-            { [weak self] in
+        let follow = note?.offset.map { start in
+            PeekAction(title: loc("menu.goToNote", "Go to Note")) { [weak self] in
                 self?.footnotePeek.hide()
                 self?.reveal(offset: start, through: note?.end)
             }
         }
         footnotePeek.show(content, from: anchor, in: self,
-                          presentedBy: parent, onFollow: follow,
+                          presentedBy: parent, actions: follow.map { [$0] } ?? [],
                           onTarget: { [weak self] in self?.followPeekTarget($0) })
         return true
     }
@@ -1444,7 +1563,7 @@ public final class LeafTextView: UIView, UITextInput {
         let rc = doc.posForOffset(off: doc.caretOffset())
         guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { return }
         footnotePeek.show(content, from: caret.insetBy(dx: -6, dy: -2), in: self,
-                          presentedBy: parent, onFollow: nil, onTarget: { _ in })
+                          presentedBy: parent, actions: [], onTarget: { _ in })
     }
 
     /// Answer a tap on something followable inside the note — a link, or a
@@ -1459,9 +1578,7 @@ public final class LeafTextView: UIView, UITextInput {
         case .link(let destination):
             // A `#v2` in a note names a place in the document the note belongs
             // to, so it navigates here rather than going out to the host.
-            if let landing = doc.selfLanding(of: destination) { reveal(offset: landing); return }
-            if onOpenLink?(destination) == true { return }
-            openWithSystem(destination)
+            follow(destination)
         case .footnote(let offset):
             render(doc.caretMoved(to: offset))
             followFootnoteAtCaret()
@@ -2024,17 +2141,12 @@ public final class LeafTextView: UIView, UITextInput {
         markerHits.removeAll()
         let highlights = doc.highlights()
         guard highlights.contains(where: { $0.marker != nil }) else { return }
-        let box: CGFloat = 20
-        let inset: CGFloat = 4
         let config = UIImage.SymbolConfiguration(pointSize: 13, weight: .regular)
         for highlight in highlights {
             guard let symbol = highlight.marker else { continue }
             let rc = doc.posForOffset(off: UInt32(highlight.start))
             guard let line = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { continue }
-            let frame = CGRect(
-                x: bounds.width - box - inset,
-                y: line.midY - box / 2,
-                width: box, height: box)
+            let frame = EditorLayout.markerFrame(lineMidY: line.midY, trailingEdge: bounds.width)
             if let image = UIImage(systemName: symbol, withConfiguration: config)?
                 .withTintColor(renderTheme.secondaryColor, renderingMode: .alwaysOriginal)
             {
@@ -2043,7 +2155,7 @@ public final class LeafTextView: UIView, UITextInput {
                         x: frame.midX - image.size.width / 2,
                         y: frame.midY - image.size.height / 2))
             }
-            markerHits.append((frame.insetBy(dx: -10, dy: -8), highlight.id))
+            markerHits.append((EditorLayout.markerTarget(frame, trailingEdge: bounds.width), highlight.id))
         }
     }
 
@@ -2776,6 +2888,33 @@ extension LeafTextView: UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool { true }
+
+    /// Keep the system's taps off a margin marker. `mediaTap` answers one
+    /// (`handleMediaTap`), and `textInteraction`'s own tap, recognising the
+    /// same touch, would otherwise answer it too: put a caret at the end of
+    /// the marked line, raise the keyboard, scroll to keep the caret clear
+    /// of it, and collapse any selection — four answers to a tap that asked
+    /// for the annotation and nothing else. The AppKit peer consumes the click
+    /// whole for the same reason; on a phone the only way to is to have the
+    /// system's tap decline to begin.
+    ///
+    /// Every recogniser but a press, a drag and a pinch is declined, rather
+    /// than every `UITapGestureRecognizer`: the one that places the caret is
+    /// `UITextInteraction`'s own multi-tap recogniser, which is not one, and
+    /// a class check let it through to collapse the selection the marker had
+    /// just been tapped beside. A press is left alone, so a long press in the
+    /// margin still steers the loupe.
+    public override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer !== mediaTap,
+           !(gestureRecognizer is UILongPressGestureRecognizer),
+           !(gestureRecognizer is UIPanGestureRecognizer),
+           !(gestureRecognizer is UIPinchGestureRecognizer),
+           onTapHighlight != nil,
+           EditorLayout.marker(at: gestureRecognizer.location(in: self), in: markerHits) != nil {
+            return false
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
 
     /// Note where a touch for `mediaTap` came down, before anything can scroll
     /// the page out from under it (see `mediaTapPoint`).

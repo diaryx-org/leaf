@@ -1506,6 +1506,139 @@ struct EditorLayout {
         return best?.tap
     }
 
+    /// The height a link answers a finger over, at the least — `footnoteTarget`
+    /// for its reason, and only in this direction. A line of body text is two
+    /// thirds of that, so a thumb aimed at a link lands on the line above or
+    /// below it about as often as on the link, and a one-word link is a target
+    /// a few points tall wherever it sits.
+    static let linkTargetHeight: CGFloat = 44
+
+    /// How far past its first and last glyph a link answers. A few points, not
+    /// the half-target a footnote's label gets: a link is words set in prose,
+    /// and the words beside it on the same line are the words a reader taps to
+    /// put a caret in. A pad sideways would take those taps; a pad up and down
+    /// takes the space between lines, which nobody aims at.
+    static let linkSlop: CGFloat = 4
+
+    /// The link a tap at `point` is aimed at, or nil — the link peer of
+    /// `footnote(at:)`, run by a touch view before it treats a tap as a caret
+    /// placement, so that what it acts on is the link under the finger rather
+    /// than wherever the system's own tap put the caret (which in a reader is
+    /// nowhere, and in an editor is beside the link as often as in it).
+    ///
+    /// Every `link` run answers — which is how core colours a parsed link, an
+    /// autolink and a bare URL alike — and so does each span in `extra`, which
+    /// is how a caller adds what core does not parse: a wikilink is literal
+    /// text drawn in the body's role, so only the document's source can say
+    /// where one is (see `LeafDoc.wikilinkSpans()`). A run in the link role that
+    /// is not in a link — a footnote reference, coloured as one — comes back
+    /// too, since geometry cannot tell; the caller asks the document for the
+    /// destination at the offset, and runs the footnote test first.
+    ///
+    /// Each line of a link answers over its glyphs grown to `linkTargetHeight`,
+    /// centred, and by `linkSlop` at either end. Grown boxes overlap a link on
+    /// the line above or below, so the link whose glyphs are nearest the point
+    /// wins — a point on a link's own glyphs is at distance zero, and no
+    /// neighbour's padding can take it.
+    ///
+    /// The rect handed back is the line's glyphs, not the grown target: it is
+    /// what a card is anchored on, for `footnote(at:)`'s reason.
+    func link(at point: CGPoint, also extra: [LinkSpan] = []) -> LinkTap? {
+        var spans: [LinkSpan] = []
+        for (index, rl) in rows.enumerated() where rl.drawsItsGlyphs {
+            var ch = 0
+            for run in rl.row.runs {
+                let length = run.text.utf16.count
+                defer { ch += length }
+                guard run.role == "link", length > 0 else { continue }
+                spans.append(LinkSpan(src: run.src, wikilink: nil,
+                                      from: (index, ch), to: (index, ch + length)))
+            }
+        }
+        spans += extra
+        var best: (tap: LinkTap, distance: CGFloat)?
+        for span in spans {
+            for line in rangeRects(from: span.from, to: span.to) {
+                let glyphs = line.rect
+                let target = glyphs.insetBy(dx: -Self.linkSlop,
+                                            dy: min(0, (glyphs.height - Self.linkTargetHeight) / 2))
+                guard target.contains(point) else { continue }
+                let dx = max(glyphs.minX - point.x, 0, point.x - glyphs.maxX)
+                let dy = max(glyphs.minY - point.y, 0, point.y - glyphs.maxY)
+                let distance = hypot(dx, dy)
+                if best.map({ distance < $0.distance }) ?? true {
+                    best = (LinkTap(src: span.src, wikilink: span.wikilink, rect: glyphs), distance)
+                }
+            }
+        }
+        return best?.tap
+    }
+
+    /// The character whose glyph is under `point` — its row and column — or
+    /// nil when the point is on no glyph at all.
+    ///
+    /// Not `hit(_:)`, which is a caret's question and always has an answer: a
+    /// point in the margin, past a line's end or in the gap between blocks is
+    /// *nearest* some position, and a caret goes there. This is the question
+    /// a tap on painted ink asks — is the finger on the wash, or only near it —
+    /// and a tap beside a highlight is not a tap on it. The two characters
+    /// either side of the caret's answer are tried, since a point on the right
+    /// half of a glyph is nearest the stop after it.
+    func glyph(at point: CGPoint) -> (row: Int, ch: Int)? {
+        guard !rows.isEmpty else { return nil }
+        let (row, ch) = hit(point)
+        let rl = rows[row]
+        guard rl.drawsItsGlyphs else { return nil }
+        let length = rl.attributed.length
+        for c in [ch, ch - 1] where c >= 0 && c < length {
+            let boxes = rangeRects(from: (row, c), to: (row, c + 1))
+            if boxes.contains(where: { $0.rect.contains(point) }) { return (row, c) }
+        }
+        return nil
+    }
+
+    /// The side of a highlight's margin marker as drawn — a 13-point symbol
+    /// centred in it — and how far in from the view's trailing edge it sits.
+    static let markerBox: CGFloat = 20
+    static let markerInset: CGFloat = 4
+
+    /// Where a highlight's margin marker is drawn: beside the line its wash
+    /// begins on (`lineMidY`), against `trailingEdge`. Both views draw it
+    /// here, and both hit-test what `markerTarget` grows it to.
+    static func markerFrame(lineMidY: CGFloat, trailingEdge: CGFloat) -> CGRect {
+        CGRect(x: trailingEdge - markerBox - markerInset, y: lineMidY - markerBox / 2,
+               width: markerBox, height: markerBox)
+    }
+
+    /// The square a marker drawn at `frame` answers a finger or a pointer over:
+    /// `footnoteTarget` on a side, centred on the glyph, and slid back inside
+    /// `trailingEdge` where centring would hang it off the view.
+    ///
+    /// It used to be the glyph's box grown by a few points — 40 by 36 on a
+    /// phone, of which the four past the screen's edge could never be touched.
+    /// Slid rather than clipped, so the whole square is on screen: the marker
+    /// sits at the edge of the page, and the edge is where a thumb comes from.
+    /// The cost is the last word or so of the marked line, which the square
+    /// covers — a tap there is the annotation's, which on the line that
+    /// carries the annotation's marker is the likelier meaning anyway.
+    static func markerTarget(_ frame: CGRect, trailingEdge: CGFloat) -> CGRect {
+        let side = footnoteTarget
+        var target = CGRect(x: frame.midX - side / 2, y: frame.midY - side / 2,
+                            width: side, height: side)
+        if target.maxX > trailingEdge { target.origin.x = trailingEdge - side }
+        return target
+    }
+
+    /// The marker of `hits` a tap at `point` is aimed at — the one whose
+    /// glyph is nearest, where the squares of two marked lines one above the
+    /// other overlap, rather than whichever highlight began first.
+    static func marker(at point: CGPoint, in hits: [(rect: CGRect, id: String)]) -> String? {
+        hits.filter { $0.rect.contains(point) }
+            .min { hypot(point.x - $0.rect.midX, point.y - $0.rect.midY)
+                 < hypot(point.x - $1.rect.midX, point.y - $1.rect.midY) }?
+            .id
+    }
+
     /// The playable media whose box contains `point`, or `nil` — `mediaBox`
     /// narrowed to the kinds that have something to play.
     func playableMedia(at point: CGPoint) -> MediaView? {

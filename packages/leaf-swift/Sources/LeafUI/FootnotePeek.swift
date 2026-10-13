@@ -408,22 +408,33 @@ private final class FootnotePeekTextView: NSTextView {
 #if canImport(UIKit)
 import UIKit
 
-/// Presents (and owns) the peek popover on iOS.
+/// A button along the foot of a peek: Go to Note under a footnote's text,
+/// Open, Copy and Edit… under a link's destination. Pressing one dismisses
+/// the popover first and then runs, so whatever it does happens to the page
+/// rather than under a card still on it.
+struct PeekAction {
+    let title: String
+    let run: () -> Void
+}
+
+/// Presents (and owns) the peek popover on iOS — a footnote's note, a link's
+/// preview, and the card a tap on a link raises in an editor.
 ///
-/// A popover rather than the edit menu, and a long press rather than a tap,
-/// because the phone has neither a pointer to hover nor a ⌘ to hold: the long
-/// press is its whole vocabulary for "tell me about this without changing it".
-/// The jump is a button inside the popover for the same reason — there is
-/// nowhere else to put it that a finger can reach without dismissing this.
+/// A popover rather than the edit menu, because the phone has neither a
+/// pointer to hover nor a ⌘ to hold, and a menu says what can be done to a
+/// thing without saying what it is. The jump is a button inside the popover
+/// for the same reason — there is nowhere else to put it that a finger can
+/// reach without dismissing this. One presenter for all three, so that only
+/// one card can be up at a time, and the next tap's card replaces the last.
 final class FootnotePeekPresenter: NSObject, UIPopoverPresentationControllerDelegate {
     private weak var presented: UIViewController?
 
     var isShowing: Bool { presented?.presentingViewController != nil }
 
     /// Raise a popover for `content` over `rect` in `view`, presented from
-    /// `parent`. `onFollow`, when given, becomes a button that dismisses the
-    /// popover and jumps — nil when there is nowhere to jump to (an undefined
-    /// reference), so no button ever leads nowhere.
+    /// `parent`. Each of `actions` becomes a button that dismisses the popover
+    /// and runs — a caller leaves out what leads nowhere (Go to Note under an
+    /// undefined reference), so no button ever does.
     ///
     /// `onTarget` answers a tap on something followable *inside* the note — a
     /// link, or a reference to another footnote. Its AppKit peer is a delegate
@@ -433,10 +444,10 @@ final class FootnotePeekPresenter: NSObject, UIPopoverPresentationControllerDele
               from rect: CGRect,
               in view: UIView,
               presentedBy parent: UIViewController,
-              onFollow: (() -> Void)?,
+              actions: [PeekAction],
               onTarget: @escaping (FootnotePeekTarget) -> Void) {
         hide()
-        let vc = FootnotePeekController(content: content, onFollow: onFollow, onTarget: onTarget)
+        let vc = FootnotePeekController(content: content, actions: actions, onTarget: onTarget)
         vc.modalPresentationStyle = .popover
         guard let popover = vc.popoverPresentationController else { return }
         popover.sourceView = view
@@ -461,17 +472,17 @@ final class FootnotePeekPresenter: NSObject, UIPopoverPresentationControllerDele
     ) -> UIModalPresentationStyle { .none }
 }
 
-/// The popover's contents: which note, what it says, and the way to it.
+/// The popover's contents: what it shows, and the buttons under it.
 private final class FootnotePeekController: UIViewController {
     private let content: FootnotePeekContent
-    private let onFollow: (() -> Void)?
+    private let actions: [PeekAction]
     private let onTarget: (FootnotePeekTarget) -> Void
 
     init(content: FootnotePeekContent,
-         onFollow: (() -> Void)?,
+         actions: [PeekAction],
          onTarget: @escaping (FootnotePeekTarget) -> Void) {
         self.content = content
-        self.onFollow = onFollow
+        self.actions = actions
         self.onTarget = onTarget
         super.init(nibName: nil, bundle: nil)
     }
@@ -521,13 +532,23 @@ private final class FootnotePeekController: UIViewController {
         self.body = body
 
         var views: [UIView] = [body]
-        if onFollow != nil {
-            let follow = UIButton(type: .system)
-            follow.setTitle(loc("menu.goToNote", "Go to Note"), for: .normal)
-            follow.titleLabel?.font = .preferredFont(forTextStyle: .callout)
-            follow.contentHorizontalAlignment = .leading
-            follow.addTarget(self, action: #selector(followTapped), for: .touchUpInside)
-            views.append(follow)
+        // One row, leading, in the order given: a card's few verbs read as a
+        // sentence's worth of choices under what they act on, and a row keeps
+        // the popover as short as the note or the destination above it.
+        if !actions.isEmpty {
+            let buttons = actions.enumerated().map { index, action -> UIButton in
+                let button = UIButton(type: .system)
+                button.setTitle(action.title, for: .normal)
+                button.titleLabel?.font = .preferredFont(forTextStyle: .callout)
+                button.contentHorizontalAlignment = .leading
+                button.tag = index
+                button.addTarget(self, action: #selector(actionTapped(_:)), for: .touchUpInside)
+                return button
+            }
+            let row = UIStackView(arrangedSubviews: buttons)
+            row.axis = .horizontal
+            row.spacing = 20
+            views.append(row)
         }
 
         let stack = UIStackView(arrangedSubviews: views)
@@ -554,9 +575,9 @@ private final class FootnotePeekController: UIViewController {
             height: stack.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).height + margin * 2)
     }
 
-    @objc private func followTapped() {
-        let follow = onFollow
-        presentingViewController?.dismiss(animated: true) { follow?() }
+    @objc private func actionTapped(_ sender: UIButton) {
+        let run = actions[sender.tag].run
+        presentingViewController?.dismiss(animated: true) { run() }
     }
 
     /// A tap on a link or a nested reference follows it; a tap anywhere else is
