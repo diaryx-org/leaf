@@ -3592,6 +3592,12 @@ export class LeafEditor {
     // a unit and dropped between two others. A separate gesture from the
     // selection drag above, on pointer events rather than the browser's drag
     // session — see `_blockDragStart`.
+    // What kind of pointer the next click comes from — a finger follows a
+    // footnote with a plain tap, where a mouse needs the modifier. See
+    // `_onClick`.
+    on(ce, "pointerdown", (e) => {
+      this._pointerType = e.pointerType;
+    });
     on(ce, "pointerdown", (e) => this._blockDragStart(e));
     on(ce, "pointermove", (e) => this._blockDragMove(e));
     on(ce, "pointerup", (e) => this._blockDragEnd(e, true));
@@ -3754,6 +3760,13 @@ export class LeafEditor {
    * A link is followed only with the platform's modifier held (⌘ on a Mac, Ctrl
    * elsewhere). This is an editor: clicking a link in your own prose should put
    * the caret in it, not navigate away from the document.
+   *
+   * A footnote is the exception, from a finger or in a reader. A phone has no
+   * ⌘ to hold, so a tap on a reference reveals its note and a tap on a note's
+   * marker goes back up to what cites it; the CSS grows both labels' targets
+   * to a fingertip under a coarse pointer. A reader places no caret to protect,
+   * so there a plain click does the same. Following a footnote never leaves
+   * the document, which is why it alone gets this and a link does not.
    */
   _onClick(e) {
     const runEl = e.target.closest?.(".leaf-run");
@@ -3774,7 +3787,12 @@ export class LeafEditor {
       return;
     }
 
-    if (!primaryModifier(e)) return;
+    if (!primaryModifier(e)) {
+      if (this._pointerType === "touch" || this._pointerType === "pen" || this.doc.read_only()) {
+        this._followFootnoteLabel(e, runEl, src);
+      }
+      return;
+    }
 
     // A footnote reference before the link question: it is drawn with the
     // link role too (that is how it gets its colour), so asking about the link
@@ -3808,6 +3826,30 @@ export class LeafEditor {
       e.preventDefault();
       this.reveal(def.offset);
     }
+  }
+
+  /**
+   * Follow the footnote label `runEl` draws, if it draws one: a reference
+   * reveals its note, a note's marker returns to the reference. Both are
+   * raised runs, and both are asked of the run's own `src` rather than the
+   * caret, which a tap may not have placed (a reader) or placed beside the
+   * label rather than on it (a marker, which is no caret stop).
+   * @returns {boolean} whether there was a footnote to follow
+   */
+  _followFootnoteLabel(e, runEl, src) {
+    if (!runEl.classList.contains("leaf-sup")) return false;
+    const note = this.doc.footnote_at(src);
+    if (note) {
+      e.preventDefault();
+      if (note.offset != null) this.reveal(note.offset, note.end ?? null);
+      return true;
+    }
+    if (!runEl.classList.contains("leaf-r-list")) return false;
+    const def = this.doc.footnote_definition_at(src);
+    if (!def || def.offset == null) return false;
+    e.preventDefault();
+    this.reveal(def.offset);
+    return true;
   }
 
   /**
@@ -5527,6 +5569,20 @@ img.leaf-media, video.leaf-media { max-height: 60vh; }
    an underline under a letter that size is a smudge: set it the way a book
    sets a note's letter, italic in the link's ink. */
 .leaf-r-link.leaf-sup { font-style: italic; text-decoration: none; }
+/* Under a finger a raised label is a glyph or two of a small face, a target a
+   thumb lands beside more often than on. A footnote's — the reference, and
+   its note's marker — answers over a 44px square centred on it, drawn by
+   nothing and laid out by nothing: an absolute box rides on the run without
+   moving a glyph, and a pseudo-element is no text node the offset mapping
+   counts through. Not under a mouse, where the square would take clicks
+   meant for the prose beside it. */
+@media (pointer: coarse) {
+  .leaf-r-link.leaf-sup, .leaf-r-list.leaf-sup { position: relative; }
+  .leaf-r-link.leaf-sup::after, .leaf-r-list.leaf-sup::after {
+    content: ""; position: absolute; left: 50%; top: 50%;
+    width: 44px; height: 44px; transform: translate(-50%, -50%);
+  }
+}
 
 .leaf-measure {
   position: absolute; visibility: hidden; white-space: pre; top: -9999px; left: 0;

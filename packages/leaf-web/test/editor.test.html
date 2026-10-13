@@ -874,6 +874,36 @@ await test("a footnote goes down to its note and back up to its reference", () =
   return ed;
 });
 
+await test("a tap follows a footnote without a modifier, from a finger or in a reader", () => {
+  const ed = editor("text[^1] more\n\n[^1]: the note\n");
+  const tapOn = (el, pointerType) => {
+    el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType }));
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  };
+  const sup = () => ed.contentEl.querySelector(".leaf-r-link.leaf-sup");
+  const marker = () => ed.contentEl.querySelector(".leaf-r-list.leaf-sup");
+  assert(marker(), "the note's marker is not a raised run");
+  eq(marker().textContent, "1", "the note's marker kept its brackets");
+  const note = ed.footnoteAt(sup()._src);
+  const back = sup()._src;
+
+  // A mouse click is the editor's: it places a caret, and follows nothing.
+  tapOn(sup(), "mouse");
+  assert(ed._lastView.caret_src !== note.offset, "a plain mouse click followed the reference");
+
+  // A finger follows it down, and the note's marker back up.
+  tapOn(sup(), "touch");
+  eq(ed._lastView.caret_src, note.offset, "the tap did not land on the note");
+  tapOn(marker(), "touch");
+  eq(ed._lastView.caret_src, back, "the tap on the marker did not go back to the reference");
+
+  // In a reader a mouse does too: there is no caret to place.
+  ed.setReadOnly(true);
+  tapOn(sup(), "mouse");
+  eq(ed._lastView.caret_src, note.offset, "a click in a reader did not follow the reference");
+  return ed;
+});
+
 await test("hovering a link shows where it goes", () => {
   const ed = editor("see [the docs](https://example.com/x) now\n");
   const link = ed.contentEl.querySelector(".leaf-r-link");
