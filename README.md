@@ -1,5 +1,5 @@
 ---
-part_of: id:org/kv2bv2m
+part_of: id:dx4hxn744/kv2bv2m
 title: leaf
 contents:
 - '[Sample](sample.md)'
@@ -11,6 +11,7 @@ contents:
 config: .config/prov.yaml
 registry: registry.yaml
 id: 6h2bs8f
+slug: leaf
 ---
 # leaf (Work in progress!!)
 

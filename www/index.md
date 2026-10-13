@@ -40,9 +40,9 @@ operations.
 
 ## Where it fits
 
-leaf is the editor underneath [Diaryx](id:org/80k72t9)'s writing
+leaf is the editor underneath [Diaryx](id:dx4hxn744/80k72t9)'s writing
 surface — the same core that renders an entry on Mac renders it on
-iPhone. It edits documents through [twig](id:twig/wxmq0ww)'s
+iPhone. It edits documents through [twig](id:dx94n1gx2/wxmq0ww)'s
 tree. Standalone, it's embeddable anywhere a rich-text view over
 plain files belongs.
 
