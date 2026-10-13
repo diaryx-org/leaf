@@ -1068,10 +1068,14 @@ extension RegionSlot {
         waitsForPictures = setup.waits
     }
 
-    /// Have arrived pictures reach `owner`, unless the pictures are shared
-    /// from another view, which hears of them itself.
+    /// Have arrived pictures reach `owner`. A paper sheet sharing a screen
+    /// view's pictures leaves them to that view: it waits for its own and
+    /// never needs telling. A screen view sharing them takes them over — it
+    /// is the view a host made for the model again, and the one it replaces
+    /// is on its way out, so a picture that arrived would otherwise be laid
+    /// out nowhere and the region stay a placeholder.
     func listen() {
-        guard pictures.onArrive == nil else { return }
+        if waitsForPictures, pictures.onArrive != nil { return }
         pictures.onArrive = { [weak self] kinds in self?.owner?.regionPicturesArrived(kinds) }
     }
 }

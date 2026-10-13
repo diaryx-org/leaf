@@ -80,6 +80,26 @@ final class RegionRenderingTests: XCTestCase {
         XCTAssertEqual(later.requests.count, 1, "the picture was asked for again")
     }
 
+    func testAViewMadeAgainOverTheSamePicturesHearsTheirAnswers() throws {
+        // A host makes a second view for a model whose first is going: the
+        // second shares the first's pictures, asked for and not yet answered.
+        let later = Later()
+        var first: LeafTextView? = try view(later)
+        let doc = try XCTUnwrap(first?.doc)
+        let pictures = try XCTUnwrap(first?.regionSlot.pictures)
+        let second = LeafTextView(doc: doc, theme: .default,
+                                  regions: RegionSetup(renderers: ["fence:demo": later.renderer],
+                                                       pictures: pictures))
+        second.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        second.layout()
+        first = nil
+        _ = first
+        let pending = later.requests.count - 1
+        later.answer(pending, height: 60)
+        settle()
+        XCTAssertEqual(drawn(second)?.height, 60, "the answer went to the view that was replaced")
+    }
+
     func testAnAnswerForContentTheRegionNoLongerHasIsDropped() throws {
         let later = Later()
         let view = try view(later)
