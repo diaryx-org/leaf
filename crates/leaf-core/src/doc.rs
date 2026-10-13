@@ -8791,7 +8791,7 @@ impl Doc {
         // path (`click`) already snaps this way through `offset_of_pos`; the
         // source view reaches every byte, so it snaps to nothing.
         let target = match self.view {
-            View::Wysiwyg => self.vmap.snap_to_stop(offset.min(self.source.len())),
+            View::Wysiwyg => self.snap_to_stop_on_its_line(offset.min(self.source.len())),
             // The source view reaches every byte, so there is no stop to snap
             // to — but "every byte" still means every *character* boundary. A
             // caret resting inside a multi-byte character draws nowhere real
@@ -8801,6 +8801,40 @@ impl Doc {
         self.move_to(target, extend);
         self.clamp_caret();
         self.debug_assert_on_a_stop(before);
+    }
+
+    /// The caret stop `off` snaps to in WYSIWYG — the nearest one, unless `off`
+    /// is in hidden markup that *opens* a line (a heading's `## `, a list's
+    /// `- `), in which case the first stop on that line.
+    ///
+    /// Nearest alone is wrong there because the stop behind such markup is on
+    /// an earlier line: from the `#` of `## End`, the end of the paragraph
+    /// above is two bytes back and the `E` three forward. A block's first byte
+    /// is exactly what [`locate`](Self::locate) hands a frontend to land on, so
+    /// following `#end` put the reader before the heading they were sent to.
+    /// A blank line opens nothing and has no stop of its own, so a click in
+    /// the gap between blocks still goes to the nearer side.
+    fn snap_to_stop_on_its_line(&self, off: usize) -> usize {
+        let nearest = self.vmap.snap_to_stop(off);
+        if nearest >= off {
+            return nearest;
+        }
+        let bytes = self.source.as_bytes();
+        let line_start = bytes[..off]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |i| i + 1);
+        if nearest >= line_start {
+            return nearest;
+        }
+        let line_end = bytes[off..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(bytes.len(), |i| off + i);
+        match self.vmap.stop_at_or_after(off) {
+            Some(stop) if stop <= line_end => stop,
+            _ => nearest,
+        }
     }
 
     /// Select the whole document (⌘A / Ctrl+A) — everything reachable in the
@@ -14367,6 +14401,32 @@ mod tests {
         // All punctuation: it names nothing, and must not be read as "match the
         // first heading whose slug is also empty".
         assert_eq!(d.locate("!!!"), None);
+    }
+
+    #[test]
+    fn following_a_fragment_puts_the_caret_on_the_heading_not_before_it() {
+        // `landing.start` is the heading's first byte, the `#` of a hidden
+        // `## `. The paragraph's end is two bytes back and the heading's `E`
+        // three forward, so snapping to the *nearest* stop put the reader at
+        // the end of the paragraph above the place they were sent to.
+        let src = "see [below](#end) now\n\n## End\n\nlast\n";
+        let mut d = doc_in(View::Wysiwyg, "locate_lands", src);
+        let landing = d.locate("end").expect("the heading's slug");
+        d.place_caret(landing.start, false);
+        assert_eq!(d.caret, src.find("End").unwrap());
+
+        // A list item's marker opens its line the same way.
+        let src = "intro\n\n- item\n";
+        let mut d = doc_in(View::Wysiwyg, "locate_lands_item", src);
+        d.place_caret(src.find("- item").unwrap(), false);
+        assert_eq!(d.caret, src.find("item").unwrap());
+
+        // The blank line between blocks opens nothing, so a click there still
+        // goes to the nearer stop.
+        let src = "foo\n\nbar\n";
+        let mut d = doc_in(View::Wysiwyg, "locate_lands_gap", src);
+        d.place_caret(4, false);
+        assert_eq!(d.caret, 3);
     }
 
     #[test]

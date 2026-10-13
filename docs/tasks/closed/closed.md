@@ -33,6 +33,7 @@ contents:
 - '[Web Directive Hook](/docs/tasks/closed/web-directive-hook.md)'
 - '[Text typed at either stop of a leaf directive joins the directive''s line](/docs/tasks/closed/text-typed-after-a-leaf-directive-joins-its-line.md)'
 - '[A host cannot insert a link with a label of its own](/docs/tasks/closed/insert-link-with-a-label.md)'
+- '[Following a fragment lands before its heading](/docs/tasks/closed/fragment-lands-before-heading.md)'
 ---
 
 # Closed tasks

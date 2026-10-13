@@ -905,13 +905,10 @@ await test("a tap follows a footnote without a modifier, from a finger or in a r
 });
 
 await test("a tap follows a link without a modifier, from a finger or in a reader", () => {
-  const ed = editor("see [the docs](https://example.com/x) or [below](#end) now\n\n## End\n\nlast\n");
+  const src = "see [the docs](https://example.com/x) or [below](#end) now\n\n## End\n\nlast\n";
+  const ed = editor(src);
   const followed = [];
   ed.onFollowLink((dest) => followed.push(dest));
-  // Where a fragment lands is `reveal`'s business; this is whether it is asked.
-  const revealed = [];
-  const reveal = ed.reveal.bind(ed);
-  ed.reveal = (start, end) => { revealed.push(start); return reveal(start, end); };
   const tapOn = (el, pointerType) => {
     el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType }));
     el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -928,7 +925,8 @@ await test("a tap follows a link without a modifier, from a finger or in a reade
   eq(followed.join(), "https://example.com/x", "the tap did not follow the link");
   tapOn(link("below"), "pen");
   eq(followed.length, 1, "a fragment went to the host");
-  eq(revealed.join(), String(ed.doc.locate("end").start), "the fragment did not land");
+  // On the heading's words, not at the end of the paragraph above its `## `.
+  eq(ed._lastView.caret_src, src.indexOf("End"), "the fragment did not land on its heading");
 
   // In a reader a mouse does too: there is no caret to place.
   ed.setReadOnly(true);
