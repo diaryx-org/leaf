@@ -1449,6 +1449,63 @@ struct EditorLayout {
         return nil
     }
 
+    /// The side of the square a footnote's label answers a finger over — the
+    /// smallest target Apple's guidelines let a control be. A raised label is
+    /// a glyph or two of a smaller face, a few points wide, and a target that
+    /// size is one a thumb lands beside more often than on.
+    static let footnoteTarget: CGFloat = 44
+
+    /// The footnote label a tap at `point` is aimed at, or nil — the hit test a
+    /// touch runs before it is treated as a caret placement, and the footnote
+    /// peer of `taskBox(at:)`.
+    ///
+    /// Two kinds answer, both raised runs (`sup`): a reference up in the prose
+    /// (`link`, which is how core colours one), and a note's marker down in the
+    /// notes (`list`, which is what a marker is). A superscript link that is
+    /// not a footnote looks the same from here; geometry cannot tell them
+    /// apart, so the caller asks the document whether there is a footnote at
+    /// the offset before acting on it.
+    ///
+    /// Each label's box is grown to at least `footnoteTarget` on a side,
+    /// centred on the glyphs, and never shrunk — a long label already wider
+    /// than that answers over its own width. Grown boxes overlap whenever two
+    /// references sit close (`claim¹²`, or two notes on neighbouring lines),
+    /// so the label whose glyphs' centre is nearest the point wins rather than
+    /// whichever came first in the document.
+    ///
+    /// The rect handed back is the glyphs' own, not the grown target: it is
+    /// what a peek is anchored on, so the popover's arrow points at the label
+    /// the reader sees rather than at empty margin around it.
+    func footnote(at point: CGPoint) -> FootnoteTap? {
+        let side = Self.footnoteTarget
+        var best: (tap: FootnoteTap, distance: CGFloat)?
+        for (index, rl) in rows.enumerated() where rl.media == nil && rl.picture == nil && rl.hosted == nil {
+            var ch = 0
+            for run in rl.row.runs {
+                let length = run.text.utf16.count
+                defer { ch += length }
+                guard run.sup, length > 0 else { continue }
+                let kind: FootnoteTap.Kind
+                switch run.role {
+                case "link": kind = .reference
+                case "list": kind = .marker
+                default: continue
+                }
+                for line in rangeRects(from: (index, ch), to: (index, ch + length)) {
+                    let glyphs = line.rect
+                    let target = glyphs.insetBy(dx: min(0, (glyphs.width - side) / 2),
+                                                dy: min(0, (glyphs.height - side) / 2))
+                    guard target.contains(point) else { continue }
+                    let distance = hypot(point.x - glyphs.midX, point.y - glyphs.midY)
+                    if best.map({ distance < $0.distance }) ?? true {
+                        best = (FootnoteTap(kind: kind, src: run.src, rect: glyphs), distance)
+                    }
+                }
+            }
+        }
+        return best?.tap
+    }
+
     /// The playable media whose box contains `point`, or `nil` — `mediaBox`
     /// narrowed to the kinds that have something to play.
     func playableMedia(at point: CGPoint) -> MediaView? {

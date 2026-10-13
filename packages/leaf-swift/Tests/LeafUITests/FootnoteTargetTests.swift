@@ -389,4 +389,94 @@ final class FootnoteTargetTests: XCTestCase {
         XCTAssertEqual(d.caretOffset(), target)
         XCTAssertFalse(view.hasSelection)
     }
+
+    // MARK: tap targets
+
+    /// A doc over `source` told its superscripts are raised, as both views
+    /// tell theirs, and laid out the way a view lays it out.
+    private func laidOut(_ source: String) throws -> (LeafDoc, EditorLayout) {
+        let d = try LeafDoc(source: source, format: "markdown")
+        _ = d.setRaisedSuperscripts(on: true)
+        let view = d.setUnwrapped()
+        return (d, EditorLayout(view, theme: .default, wrapWidth: 400))
+    }
+
+    /// The rect a run's glyphs occupy, found by its source offset.
+    private func glyphs(at src: UInt32, in layout: EditorLayout) throws -> CGRect {
+        for (index, rl) in layout.rows.enumerated() {
+            var ch = 0
+            for run in rl.row.runs {
+                let length = run.text.utf16.count
+                if run.src == src, run.sup {
+                    return try XCTUnwrap(layout.rangeRects(from: (index, ch), to: (index, ch + length)).first?.rect)
+                }
+                ch += length
+            }
+        }
+        throw XCTSkip("no raised run at \(src)")
+    }
+
+    /// A tap on a reference's label — or anywhere in the 44-point square
+    /// around it — names the reference, by an offset the document resolves to
+    /// the note; a tap well clear of it names nothing.
+    func testATapNearAReferenceFindsIt() throws {
+        let (d, layout) = try laidOut(cited)
+        let label = offset(of: "1]", in: cited)
+        let rect = try glyphs(at: label, in: layout)
+        XCTAssertLessThan(rect.width, EditorLayout.footnoteTarget, "a raised label is small")
+
+        let onIt = try XCTUnwrap(layout.footnote(at: CGPoint(x: rect.midX, y: rect.midY)))
+        XCTAssertEqual(onIt, FootnoteTap(kind: .reference, src: label, rect: rect))
+        XCTAssertEqual(d.footnoteAt(off: onIt.src)?.offset, offset(of: "the note", in: cited))
+
+        // Inside the grown square, though outside the glyphs.
+        let near = CGPoint(x: rect.midX + 20, y: rect.midY - 20)
+        XCTAssertFalse(rect.contains(near))
+        XCTAssertEqual(layout.footnote(at: near)?.src, label)
+
+        // And not past it.
+        XCTAssertNil(layout.footnote(at: CGPoint(x: rect.midX + 23, y: rect.midY)))
+        XCTAssertNil(layout.footnote(at: CGPoint(x: rect.midX, y: rect.midY + 23)))
+    }
+
+    /// Where two grown squares overlap, the label nearest the finger wins, not
+    /// whichever the document reached first.
+    func testTheNearestOfTwoCloseReferencesWins() throws {
+        let src = "Claim[^1] a[^2].\n\n[^1]: one\n\n[^2]: two\n"
+        let (_, layout) = try laidOut(src)
+        let one = try glyphs(at: offset(of: "1]", in: src), in: layout)
+        let two = try glyphs(at: offset(of: "2]", in: src), in: layout)
+        XCTAssertLessThan(two.midX - one.midX, EditorLayout.footnoteTarget, "the squares overlap")
+        let justRightOfOne = CGPoint(x: one.maxX + 2, y: one.midY)
+        let justLeftOfTwo = CGPoint(x: two.minX - 2, y: two.midY)
+        XCTAssertEqual(layout.footnote(at: justRightOfOne)?.src, offset(of: "1]", in: src))
+        XCTAssertEqual(layout.footnote(at: justLeftOfTwo)?.src, offset(of: "2]", in: src))
+    }
+
+    /// A note's marker is a target too, and it leads back up: its offset is
+    /// the definition's, which `footnoteDefinitionAt` resolves to the reference.
+    func testATapOnANotesMarkerLeadsBack() throws {
+        let (d, layout) = try laidOut(cited)
+        let marker = offset(of: "[^1]:", in: cited)
+        let rect = try glyphs(at: marker, in: layout)
+        let tap = try XCTUnwrap(layout.footnote(at: CGPoint(x: rect.midX, y: rect.midY)))
+        XCTAssertEqual(tap.kind, .marker)
+        XCTAssertEqual(tap.src, marker)
+        XCTAssertEqual(d.footnoteDefinitionAt(off: tap.src)?.offset, offset(of: "1]", in: cited))
+    }
+
+    /// Ordinary prose, a plain superscript and the source view have no label to
+    /// answer for: the source view draws `[^1]` as text, nothing raised.
+    func testProseAndTheSourceViewOfferNoTarget() throws {
+        let src = "Plain x^2^ text.\n"
+        let d = try LeafDoc(source: src, format: "djot")
+        _ = d.setRaisedSuperscripts(on: true)
+        let layout = EditorLayout(d.setUnwrapped(), theme: .default, wrapWidth: 400)
+        let two = try glyphs(at: offset(of: "2", in: src), in: layout)
+        XCTAssertNil(layout.footnote(at: CGPoint(x: two.midX, y: two.midY)), "a superscript is no footnote")
+
+        let (s, _) = try laidOut(cited)
+        let source = EditorLayout(s.toggleView(), theme: .default, wrapWidth: 400)
+        XCTAssertTrue(source.rows.allSatisfy { $0.row.runs.allSatisfy { !$0.sup } })
+    }
 }

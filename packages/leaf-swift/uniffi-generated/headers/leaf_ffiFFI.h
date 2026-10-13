@@ -483,6 +483,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_at(uint64_t ptr, uint32_t 
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_DEFINITION_AT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_DEFINITION_AT
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_definition_at(uint64_t ptr, uint32_t off, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_DEFINITION_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_DEFINITION_AT_CARET
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_definition_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -1605,6 +1610,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_footnote_at(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_FOOTNOTE_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_FOOTNOTE_AT_CARET
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_footnote_at_caret(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_FOOTNOTE_DEFINITION_AT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_FOOTNOTE_DEFINITION_AT
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_footnote_definition_at(void
     
 );
 #endif

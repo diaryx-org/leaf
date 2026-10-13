@@ -3705,6 +3705,22 @@ impl LeafDoc {
             .map(FootnoteDefView::from)
     }
 
+    /// The footnote definition spanning byte offset `off`, and where the
+    /// reference that names it is —
+    /// [`footnote_definition_at_caret`](Self::footnote_definition_at_caret) for
+    /// a place the caret isn't.
+    ///
+    /// What a tap on a note's marker asks. The marker is decoration the caret
+    /// cannot stand on, so by the time a tap is answered the caret is wherever
+    /// the system snapped it — or, in a reader, nowhere at all — and the marker's
+    /// own offset is the only honest question.
+    pub fn footnote_definition_at(&self, off: u32) -> Option<FootnoteDefView> {
+        self.lock()
+            .doc
+            .footnote_definition_at(off as usize)
+            .map(FootnoteDefView::from)
+    }
+
     pub fn undo(&self) -> DocView {
         let mut g = self.lock();
         g.doc.undo();
@@ -5669,6 +5685,25 @@ mod tests {
         d.set_selection_offsets(9, 9);
         assert!(d.footnote_definition_at_caret().is_none());
         assert!(d.footnote_at_caret().is_some());
+    }
+
+    #[test]
+    fn footnote_definition_at_answers_for_the_markers_offset_without_the_caret() {
+        // What a tap on a note's marker asks: the marker's glyphs all carry the
+        // definition's first byte, which no caret can stand on.
+        let src = "A claim[^1] and more.\n\n[^1]: the note\n";
+        let d = doc(src);
+        d.set_selection_offsets(0, 0);
+        let marker = src.find("[^1]:").unwrap() as u32;
+        let f = d
+            .footnote_definition_at(marker)
+            .expect("the marker is the note's");
+        assert_eq!((f.label.as_str(), f.offset), ("1", Some(9)));
+        assert_eq!(d.caret_offset(), 0, "asking must not move the caret");
+        assert!(
+            d.footnote_definition_at(9).is_none(),
+            "the reference is not a note"
+        );
     }
 
     /// The contract a peek is built on: a note's offsets map to rows whose runs

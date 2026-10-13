@@ -2932,6 +2932,15 @@ impl LeafDoc {
             .map(FootnoteDefView::from)
     }
 
+    /// The footnote *definition* spanning `off`, and the first reference that
+    /// sends a reader to it, or `undefined` — what a tap on a note's marker
+    /// asks, since the marker is decoration no caret stands on.
+    pub fn footnote_definition_at(&mut self, off: usize) -> Option<FootnoteDefView> {
+        self.doc
+            .footnote_definition_at(off)
+            .map(FootnoteDefView::from)
+    }
+
     /// Write a thematic break (`---`) at the caret.
     pub fn insert_thematic_break(&mut self) -> Result<DocView, JsValue> {
         self.doc.insert_thematic_break();

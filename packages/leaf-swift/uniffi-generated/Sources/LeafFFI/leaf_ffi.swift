@@ -1217,6 +1217,19 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
     func footnoteAtCaret()  -> FootnoteView?
     
     /**
+     * The footnote definition spanning byte offset `off`, and where the
+     * reference that names it is —
+     * [`footnote_definition_at_caret`](Self::footnote_definition_at_caret) for
+     * a place the caret isn't.
+     *
+     * What a tap on a note's marker asks. The marker is decoration the caret
+     * cannot stand on, so by the time a tap is answered the caret is wherever
+     * the system snapped it — or, in a reader, nowhere at all — and the marker's
+     * own offset is the only honest question.
+     */
+    func footnoteDefinitionAt(off: UInt32)  -> FootnoteDefView?
+    
+    /**
      * The footnote definition the caret stands in, and where the reference that
      * names it is — the return leg of [`footnote_at_caret`](Self::footnote_at_caret),
      * so following a footnote is a round trip rather than a fall.
@@ -2578,6 +2591,27 @@ open func footnoteAtCaret() -> FootnoteView?  {
         uniffiCallStatus in
     uniffi_leaf_ffi_fn_method_leafdoc_footnote_at_caret(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The footnote definition spanning byte offset `off`, and where the
+     * reference that names it is —
+     * [`footnote_definition_at_caret`](Self::footnote_definition_at_caret) for
+     * a place the caret isn't.
+     *
+     * What a tap on a note's marker asks. The marker is decoration the caret
+     * cannot stand on, so by the time a tap is answered the caret is wherever
+     * the system snapped it — or, in a reader, nowhere at all — and the marker's
+     * own offset is the only honest question.
+     */
+open func footnoteDefinitionAt(off: UInt32) -> FootnoteDefView?  {
+    return try!  FfiConverterOptionTypeFootnoteDefView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_footnote_definition_at(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(off),uniffiCallStatus
     )
 })
 }
@@ -10964,6 +10998,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_at_caret() != 23696) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_definition_at() != 27374) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_definition_at_caret() != 35136) {

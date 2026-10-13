@@ -159,6 +159,29 @@ extension LeafDoc {
     }
 }
 
+/// A footnote label a finger landed on — what `EditorLayout.footnote(at:)`
+/// answers, and what a touch view acts on without moving the caret to ask.
+///
+/// The caret is the wrong thing to go by on a phone. It is placed by the
+/// system's own tap, which may run before this one or after it, and snaps to a
+/// stop that is not on the label at all when the label is a note's marker; in
+/// a reader it is not placed anywhere. So the tap carries its own offset, the
+/// way a Mac's hover does.
+struct FootnoteTap: Equatable {
+    enum Kind: Equatable {
+        /// A reference in the prose: a tap shows its note.
+        case reference
+        /// A note's marker: a tap goes back up to what cites it.
+        case marker
+    }
+    let kind: Kind
+    /// The label's source offset — inside the reference for `footnoteAt`, at
+    /// the definition's first byte for `footnoteDefinitionAt`.
+    let src: UInt32
+    /// The label's glyphs, in the layout's coordinates.
+    let rect: CGRect
+}
+
 /// A footnote the caret can follow, and where following it lands.
 struct FootnoteJump: Equatable {
     let action: FootnoteAction

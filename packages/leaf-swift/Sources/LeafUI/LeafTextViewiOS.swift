@@ -920,6 +920,16 @@ public final class LeafTextView: UIView, UITextInput {
     /// can never inherit the last one's attachment.
     private var pressedMediaSource: String?
 
+    /// Whether the touch `mediaTap` is following became a long press — set
+    /// when `linkPress` begins, cleared when the next touch comes down.
+    ///
+    /// A tap recogniser has no upper bound on how long a finger may rest, so
+    /// the lift of a press held over a footnote reference reaches the tap
+    /// handler too. The press already answers with its menu ("Show Note"), and
+    /// a peek raised on the same lift would be a second answer to one gesture,
+    /// opening under the menu the reader is about to choose from.
+    private var tapBecamePress = false
+
     /// The document's directory, which a relative `src` in the markup resolves
     /// against. Core does no I/O and knows no paths, so the host supplies this;
     /// nil (an untitled buffer) leaves relative paths unresolvable and their
@@ -1164,6 +1174,7 @@ public final class LeafTextView: UIView, UITextInput {
         // the caret may be anywhere, but the box the reader pressed is the one
         // they meant.
         if gesture.state == .began {
+            tapBecamePress = true
             pressedMediaSource = layoutEngine.mediaBox(at: gesture.location(in: self))?.src
         }
         guard gesture.state == .ended else { return }
@@ -1241,6 +1252,13 @@ public final class LeafTextView: UIView, UITextInput {
         // picture box asks the host for it.
         if let hit = layoutEngine.mediaBox(at: point) {
             _ = activateMedia(hit)
+            return
+        }
+        // A tap on or near a footnote's label follows it — a reference shows
+        // its note, a note's marker goes back up to the reference. Not in the
+        // source view, where a reference is its own `[^1]` and nothing raised.
+        if !isSourceView, !tapBecamePress,
+           let tap = layoutEngine.footnote(at: point), answerFootnoteTap(tap) {
             return
         }
         // A tap on a task item's box ticks it. `textInteraction` still places
@@ -1334,21 +1352,66 @@ public final class LeafTextView: UIView, UITextInput {
     /// inside the popover rather than beside it in the menu, so the common case
     /// (read the note, carry on reading) costs one tap and never moves the caret.
     private func showFootnotePeekAtCaret() {
-        // `docView` is the frame on screen, so the note is drawn from the rows
-        // the page below is already drawing it from.
-        guard let content = doc.footnotePeekContent(at: doc.caretOffset(), in: docView, theme: renderTheme),
-              let parent = owningViewController
-        else { return }
         let rc = doc.posForOffset(off: doc.caretOffset())
         guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { return }
+        showFootnotePeek(at: doc.caretOffset(), from: caret.insetBy(dx: -6, dy: -2))
+    }
+
+    /// Show the note the reference at byte `off` names, its popover pointing at
+    /// `anchor`, and say whether there was a reference there to show.
+    ///
+    /// By offset rather than by caret, so a tap can raise it: the caret is
+    /// the system's to place, and the peek must neither wait for it nor move
+    /// it. The follow button goes by the same offset for the same reason — a
+    /// reader who peeks, taps somewhere else in the text and then follows
+    /// means the reference they peeked at, not wherever the caret went.
+    @discardableResult
+    private func showFootnotePeek(at off: UInt32, from anchor: CGRect) -> Bool {
+        // `docView` is the frame on screen, so the note is drawn from the rows
+        // the page below is already drawing it from.
+        guard let content = doc.footnotePeekContent(at: off, in: docView, theme: renderTheme),
+              let parent = owningViewController
+        else { return false }
         // Nil when the reference names no note: a button that led nowhere would
         // contradict the sentence right above it.
-        let follow: (() -> Void)? = doc.footnoteJumpAtCaret() == nil
-            ? nil
-            : { [weak self] in self?.followFootnoteAtCaret() }
-        footnotePeek.show(content, from: caret.insetBy(dx: -6, dy: -2), in: self,
+        let note = doc.footnoteAt(off: off)
+        let follow: (() -> Void)? = note?.offset.map { start in
+            { [weak self] in
+                self?.footnotePeek.hide()
+                self?.reveal(offset: start, through: note?.end)
+            }
+        }
+        footnotePeek.show(content, from: anchor, in: self,
                           presentedBy: parent, onFollow: follow,
                           onTarget: { [weak self] in self?.followPeekTarget($0) })
+        return true
+    }
+
+    /// Answer a tap on a footnote's label (`EditorLayout.footnote(at:)`), and
+    /// say whether it was one.
+    ///
+    /// A reference raises its note's peek, the tap's whole job on a phone: the
+    /// long press and its "Show Note" still work, but a superscript a few points
+    /// wide is a target to aim a loupe at, and reading a note should cost one
+    /// tap. A note's marker goes back up to the reference, the round trip's
+    /// other leg, so the reader who tapped down can tap back.
+    ///
+    /// Neither touches first responder. In an editor the system's own tap has
+    /// already put a caret by the label, and the keyboard stays where it was:
+    /// the peek is a popover over the page, and closing it leaves the reader
+    /// typing where they tapped. The return leg is the one move that does take
+    /// the caret, deferred a turn so the system's placement for the same tap,
+    /// whichever order the two ran in, does not land on top of it.
+    private func answerFootnoteTap(_ tap: FootnoteTap) -> Bool {
+        switch tap.kind {
+        case .reference:
+            return showFootnotePeek(at: tap.src, from: tap.rect.insetBy(dx: -6, dy: -2))
+        case .marker:
+            guard let back = doc.footnoteDefinitionAt(off: tap.src)?.offset else { return false }
+            footnotePeek.hide()
+            DispatchQueue.main.async { [weak self] in self?.reveal(offset: back) }
+            return true
+        }
     }
 
     /// Show what the link under the caret points at, anchored to the caret — the
@@ -2718,7 +2781,10 @@ extension LeafTextView: UIGestureRecognizerDelegate {
     /// the page out from under it (see `mediaTapPoint`).
     public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                   shouldReceive touch: UITouch) -> Bool {
-        if gestureRecognizer === mediaTap { mediaTapPoint = touch.location(in: self) }
+        if gestureRecognizer === mediaTap {
+            mediaTapPoint = touch.location(in: self)
+            tapBecamePress = false
+        }
         return true
     }
 }
