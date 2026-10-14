@@ -3446,6 +3446,10 @@ impl Doc {
         if self.read_only {
             return;
         }
+        // The pre-edit caret, as `splice_exact` hands it over: twig files it
+        // with the step, and without it Undo put the caret back wherever the
+        // edit before this one had left it.
+        self.record_caret();
         match self.editor.split_block(self.caret) {
             Ok(change) => {
                 self.last_edit_kind = None;
@@ -12107,6 +12111,23 @@ mod tests {
         let empty = boundaries(&mut d);
         d.insert("hello");
         assert_eq!(boundaries(&mut d), empty);
+    }
+
+    #[test]
+    fn undoing_enter_in_a_quote_puts_the_caret_back_where_it_was() {
+        // Enter in a quote or a list goes to twig's `split_block`, which used to
+        // be handed no pre-edit caret. Undo restored whatever the last edit had
+        // filed — here the line under the quote, a gap the view moved the caret
+        // off and onto the heading below.
+        for src in ["> a\n\n## Math\n", "- a\n\n## Math\n"] {
+            let mut d = wysiwyg_doc("split_undo_caret", src);
+            d.caret = 3;
+            d.newline();
+            assert_ne!(d.source, src);
+            d.undo();
+            assert_eq!(d.source, src);
+            assert_eq!(d.caret, 3, "{src:?}");
+        }
     }
 
     #[test]
