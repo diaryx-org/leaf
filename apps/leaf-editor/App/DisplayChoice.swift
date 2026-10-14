@@ -1,10 +1,11 @@
 //  DisplayChoice.swift
 //
 //  The reader's display choices — how wide the column runs, how big the type
-//  is set, which paper a page is — and the theme they resolve to. `LeafUI`
-//  takes a whole `EditorTheme` and remembers none of this, so the app keeps
-//  the choices in `UserDefaults` under the keys below: the toolbar's menus,
-//  the Settings window and Export as PDF all read the same three values.
+//  is set and in which faces, how far apart its lines and paragraphs stand,
+//  which paper a page is — and the theme they resolve to. `LeafUI` takes a
+//  whole `EditorTheme` and remembers none of this, so the app keeps the
+//  choices in `UserDefaults` under the keys below: the toolbar's menus, the
+//  Settings window and Export as PDF all read the same values.
 
 import LeafUI
 import SwiftUI
@@ -14,6 +15,10 @@ enum DisplayChoice {
     static let textSizeKey = "display.textSize"
     static let paperKey = "display.paper"
     static let flowKey = "display.preserveLineBreaks"
+    static let bodyFontKey = "display.bodyFont"
+    static let codeFontKey = "display.codeFont"
+    static let lineSpacingKey = "display.lineSpacing"
+    static let paragraphSpacingKey = "display.paragraphSpacing"
 
     /// The choices resolved into a theme. Everything else stays at the default
     /// — the point of the measure being counted in *characters* is that width
@@ -26,19 +31,101 @@ enum DisplayChoice {
     /// than the flow's 68 — and the text-size choice then scales from there, so
     /// both menus still mean something on a page. How big that reads on screen
     /// is the zoom's business, which opens at fit-width.
-    static func theme(columnWidth: ColumnWidth, textSize: TextSize, page: PageSetup?) -> EditorTheme {
+    ///
+    /// The faces go in first, since fitting measures the body font: a wide
+    /// face fills the column in fewer points than a narrow one. The leading
+    /// goes in last, as a multiple of whatever size the type came out at.
+    static func theme(
+        columnWidth: ColumnWidth, textSize: TextSize, type: Typography, page: PageSetup?
+    ) -> EditorTheme {
         var t = EditorTheme.default
+        t.bodyFontName = type.bodyFont
+        t.monoFontName = type.codeFont
         if let page {
             t = t.fitted(to: page, measure: columnWidth.measure ?? 88)
-            let factor = textSize.points / TextSize.medium.points
-            t.fontSize *= factor
-            t.lineHeight *= factor
+            t.fontSize *= textSize.points / TextSize.medium.points
         } else {
             t.fontSize = textSize.points
-            t.lineHeight = textSize.points * 1.5
         }
+        t.lineHeight = t.fontSize * type.lineSpacing.ratio
+        t.blockGapScale = type.paragraphSpacing.gap
         t.measure = columnWidth.measure
         return t
+    }
+}
+
+/// The type choices, together: the two faces and the spacing. What
+/// `DisplayChoice.theme` reads, apart from the measure and the size, which
+/// the toolbar moves on their own.
+struct Typography {
+    var bodyFont = EditorTheme.serifFontName
+    var codeFont = EditorTheme.systemMonospacedFontName
+    var lineSpacing = LineSpacing.normal
+    var paragraphSpacing = ParagraphSpacing.normal
+}
+
+/// The type choices as stored, for a view to hold: reading `value` in a
+/// view's body is what redraws it when Settings changes one.
+struct StoredTypography: DynamicProperty {
+    @AppStorage(DisplayChoice.bodyFontKey) var bodyFont = Typography().bodyFont
+    @AppStorage(DisplayChoice.codeFontKey) var codeFont = Typography().codeFont
+    @AppStorage(DisplayChoice.lineSpacingKey) var lineSpacing = Typography().lineSpacing
+    @AppStorage(DisplayChoice.paragraphSpacingKey) var paragraphSpacing = Typography().paragraphSpacing
+
+    var value: Typography {
+        Typography(bodyFont: bodyFont, codeFont: codeFont,
+                   lineSpacing: lineSpacing, paragraphSpacing: paragraphSpacing)
+    }
+}
+
+/// How far apart a paragraph's lines are set, as the line box over the type
+/// size. Normal is the theme's own 1.5; a document's `data-line-height` still
+/// multiplies whichever this is.
+enum LineSpacing: String, CaseIterable, Identifiable {
+    case compact, normal, relaxed, double
+    var id: String { rawValue }
+
+    var ratio: CGFloat {
+        switch self {
+        case .compact: return 1.3
+        case .normal:  return 1.5
+        case .relaxed: return 1.75
+        case .double:  return 2
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .compact: return "Compact"
+        case .normal:  return "Normal"
+        case .relaxed: return "Relaxed"
+        case .double:  return "Double"
+        }
+    }
+}
+
+/// The space between two blocks, as a fraction of a line — the theme's
+/// `blockGapScale`. A heading's wider space above, and a verse's, scale with it.
+enum ParagraphSpacing: String, CaseIterable, Identifiable {
+    case tight, normal, open, blankLine
+    var id: String { rawValue }
+
+    var gap: CGFloat {
+        switch self {
+        case .tight:     return 0.25
+        case .normal:    return 0.5
+        case .open:      return 0.75
+        case .blankLine: return 1
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .tight:     return "Tight"
+        case .normal:    return "Normal"
+        case .open:      return "Open"
+        case .blankLine: return "A blank line"
+        }
     }
 }
 

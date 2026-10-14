@@ -36,6 +36,7 @@ struct ContentView: View {
     @AppStorage(DisplayChoice.textSizeKey) private var textSize: TextSize = .medium
     @AppStorage(DisplayChoice.paperKey) private var paper: Paper = .usLetter
     @AppStorage(DisplayChoice.flowKey) private var flowSetting = false
+    private var typography = StoredTypography()
     /// The paginated view: nil is the continuous flow, a `PageSetup` puts the
     /// document on paper. The zoom is not here — it is the model's, because the
     /// surface moves it too (a pinch, View ▸ Zoom), and this view only reads it
@@ -173,7 +174,8 @@ struct ContentView: View {
     #endif
 
     private var theme: EditorTheme {
-        DisplayChoice.theme(columnWidth: columnWidth, textSize: textSize, page: page)
+        DisplayChoice.theme(columnWidth: columnWidth, textSize: textSize,
+                            type: typography.value, page: page)
     }
 
     #if os(macOS)

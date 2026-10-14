@@ -76,6 +76,7 @@ struct LeafAppCommands: Commands {
     @AppStorage(DisplayChoice.columnWidthKey) private var columnWidth: ColumnWidth = .medium
     @AppStorage(DisplayChoice.textSizeKey) private var textSize: TextSize = .medium
     @AppStorage(DisplayChoice.paperKey) private var paper: Paper = .usLetter
+    private var typography = StoredTypography()
 
     var body: some Commands {
         #if os(macOS)
@@ -132,7 +133,8 @@ struct LeafAppCommands: Commands {
         let title = window.title
         panel.nameFieldStringValue = (title as NSString).deletingPathExtension + ".pdf"
         let page = paper.setup
-        let theme = DisplayChoice.theme(columnWidth: columnWidth, textSize: textSize, page: page)
+        let theme = DisplayChoice.theme(columnWidth: columnWidth, textSize: textSize,
+                                        type: typography.value, page: page)
         panel.beginSheetModal(for: window) { response in
             guard response == .OK, let url = panel.url else { return }
             do {
@@ -146,30 +148,105 @@ struct LeafAppCommands: Commands {
 }
 
 #if os(macOS)
-/// Leaf ▸ Settings…: the reader's display choices, which the window's toolbar
-/// menus also move. They live in `UserDefaults` under `DisplayChoice`'s keys,
-/// so every window and every launch reads the same ones.
+/// Leaf ▸ Settings…: the reader's display choices, some of which the window's
+/// toolbar menus also move. They live in `UserDefaults` under `DisplayChoice`'s
+/// keys, so every window and every launch reads the same ones, and every open
+/// window redraws as one changes.
 struct SettingsView: View {
     @AppStorage(DisplayChoice.columnWidthKey) private var columnWidth: ColumnWidth = .medium
     @AppStorage(DisplayChoice.textSizeKey) private var textSize: TextSize = .medium
     @AppStorage(DisplayChoice.paperKey) private var paper: Paper = .usLetter
     @AppStorage(DisplayChoice.flowKey) private var flowPreserved = false
+    private var typography = StoredTypography()
 
     var body: some View {
         Form {
-            Picker("Column width:", selection: $columnWidth) {
-                ForEach(ColumnWidth.allCases) { Text($0.label).tag($0) }
+            Section("Text") {
+                FontPicker(title: "Font:", selection: typography.$bodyFont,
+                           defaults: [("Iowan Old Style (default)", EditorTheme.serifFontName),
+                                      ("System", EditorTheme.systemFontName)],
+                           families: FontPicker.allFamilies)
+                FontPicker(title: "Code font:", selection: typography.$codeFont,
+                           defaults: [("System monospaced (default)", EditorTheme.systemMonospacedFontName)],
+                           families: FontPicker.monospacedFamilies)
+                Picker("Size:", selection: $textSize) {
+                    ForEach(TextSize.allCases) { Text($0.label).tag($0) }
+                }
             }
-            Picker("Text size:", selection: $textSize) {
-                ForEach(TextSize.allCases) { Text($0.label).tag($0) }
+            Section("Layout") {
+                Picker("Line spacing:", selection: typography.$lineSpacing) {
+                    ForEach(LineSpacing.allCases) { Text($0.label).tag($0) }
+                }
+                Picker("Paragraph spacing:", selection: typography.$paragraphSpacing) {
+                    ForEach(ParagraphSpacing.allCases) { Text($0.label).tag($0) }
+                }
+                Picker("Column width:", selection: $columnWidth) {
+                    ForEach(ColumnWidth.allCases) { Text($0.label).tag($0) }
+                }
+                Toggle("Preserve line breaks in new windows", isOn: $flowPreserved)
             }
-            Picker("Paper:", selection: $paper) {
-                ForEach(Paper.allCases) { Text($0.label).tag($0) }
+            Section("Page") {
+                Picker("Paper:", selection: $paper) {
+                    ForEach(Paper.allCases) { Text($0.label).tag($0) }
+                }
             }
-            Toggle("Preserve line breaks in new windows", isOn: $flowPreserved)
+            HStack {
+                Spacer()
+                Button("Restore Defaults", action: restoreDefaults)
+            }
         }
-        .padding(20)
-        .frame(width: 360)
+        .formStyle(.grouped)
+        // A grouped form is a scroll view, and its ideal height came out a
+        // point short of its content, which put up a scroller beside a pane
+        // with nothing to scroll to.
+        .scrollDisabled(true)
+        .frame(width: 440)
+        .fixedSize(horizontal: false, vertical: true)
     }
+
+    /// Every choice back to what a first launch has. Removing the keys rather
+    /// than writing the defaults, so a later release that changes a default
+    /// reaches a reader who never chose otherwise.
+    private func restoreDefaults() {
+        let keys = [
+            DisplayChoice.columnWidthKey, DisplayChoice.textSizeKey, DisplayChoice.paperKey,
+            DisplayChoice.flowKey, DisplayChoice.bodyFontKey, DisplayChoice.codeFontKey,
+            DisplayChoice.lineSpacingKey, DisplayChoice.paragraphSpacingKey,
+        ]
+        keys.forEach(UserDefaults.standard.removeObject(forKey:))
+    }
+}
+
+/// A font family menu: the theme's own names first, then every family
+/// installed that fits. A family stored by a font since uninstalled keeps
+/// its row, so the menu still says what is chosen; the editor sets such a
+/// font in the system face.
+private struct FontPicker: View {
+    let title: String
+    @Binding var selection: String
+    let defaults: [(label: String, name: String)]
+    let families: [String]
+
+    var body: some View {
+        Picker(title, selection: $selection) {
+            ForEach(defaults, id: \.name) { Text($0.label).tag($0.name) }
+            Divider()
+            if !families.contains(selection) && !defaults.contains(where: { $0.name == selection }) {
+                Text(selection).tag(selection)
+            }
+            ForEach(families, id: \.self) { Text($0).tag($0) }
+        }
+    }
+
+    /// Every family on the Mac, hidden ones (a leading `.`) aside.
+    static let allFamilies: [String] = NSFontManager.shared.availableFontFamilies
+        .filter { !$0.hasPrefix(".") }
+
+    /// The families with a fixed-pitch face, for code.
+    static let monospacedFamilies: [String] = {
+        let names = NSFontManager.shared.availableFontNames(with: .fixedPitchFontMask) ?? []
+        let families = Set(names.compactMap { NSFont(name: $0, size: 12)?.familyName })
+        return families.filter { !$0.hasPrefix(".") }.sorted()
+    }()
 }
 #endif
