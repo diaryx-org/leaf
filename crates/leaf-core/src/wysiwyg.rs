@@ -1531,9 +1531,10 @@ fn media_spans(rows: &[VRow]) -> Vec<MediaInfo> {
 ///
 /// One gap can be spelled with several rows — [`Builder::emit_separators_before`]
 /// draws the row that closes the block above and the row that opens the block
-/// below, with any extra blank source lines navigable between them — and gives
-/// every one of them the same [`Boundary`]. So the walk crosses those navigable
-/// blanks and relabels the whole run, stopping at the first row that is neither.
+/// below, with any extra blank source lines navigable between them. Only where
+/// the two drawn rows meet do both border the picture; past a navigable blank
+/// line the gap borders that empty paragraph instead. So the walk relabels the
+/// drawn rows next to the picture and stops at the first row that is not one.
 fn label_media_boundaries(rows: &mut [VRow]) {
     // A display formula's placeholder is promoted from its paragraph exactly
     // as a picture is, and its gaps are relabelled the same way, as `Math`.
@@ -1551,10 +1552,9 @@ fn label_media_boundaries(rows: &mut [VRow]) {
             }
         })
         .collect();
-    // A row inside one gap: a drawn boundary to relabel, or one of the navigable
-    // blank lines sitting between two drawn ones. Anything else ends the run.
+    // A drawn boundary beside the picture. Anything else ends the run.
     fn in_gap(row: &VRow) -> bool {
-        row.boundary.is_some() || (!row.decoration && row.glyphs.is_empty())
+        row.boundary.is_some()
     }
     for (span, class) in spans {
         for i in (0..span.start).rev() {
@@ -3730,7 +3730,24 @@ impl Builder<'_> {
                 align: (!drawn).then_some(self.presentation.align).flatten(),
                 line_height: (!drawn).then_some(self.presentation.line_height).flatten(),
                 hang: None,
-                boundary: drawn.then_some(boundary),
+                // With blank lines between them, the two drawn rows don't
+                // meet: each borders an empty paragraph the caret can rest
+                // in, and is labelled so. Spaced by the block beyond, the
+                // gap over an empty line above a heading was a heading's
+                // wide one, and shrank under the line when its first
+                // character made it the paragraph it had been all along.
+                boundary: drawn.then_some(Boundary {
+                    above: if k > 0 && last > 1 {
+                        BlockClass::Paragraph
+                    } else {
+                        boundary.above
+                    },
+                    below: if k < last && last > 1 {
+                        BlockClass::Paragraph
+                    } else {
+                        boundary.below
+                    },
+                }),
                 mark_ends: Vec::new(),
                 math: Vec::new(),
                 region: None,
@@ -11263,11 +11280,13 @@ mod tests {
         );
         // One gap spelled with several rows — the row closing the block above and
         // the row opening the one below, with the author's spare blank line
-        // navigable between them — carries the same pair on every drawn row.
+        // navigable between them. That line is an empty paragraph, so only the
+        // row opening the picture borders it; the other borders the empty line,
+        // and is spaced as it will be once the line has text on it.
         let roomy = map("one\n\n\n\n![alt](p.png)\n");
         assert_eq!(
             boundaries(&roomy),
-            vec![(Paragraph, Media), (Paragraph, Media)]
+            vec![(Paragraph, Paragraph), (Paragraph, Media)]
         );
     }
 

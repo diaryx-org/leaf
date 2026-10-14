@@ -12092,6 +12092,24 @@ mod tests {
     }
 
     #[test]
+    fn the_line_a_quote_is_left_on_is_spaced_as_the_paragraph_it_becomes() {
+        // Above a heading, the gap over the empty line was labelled by the
+        // heading beyond it, which a frontend spaces wider: the line sat low,
+        // and jumped up as soon as a character made it a paragraph.
+        let boundaries = |d: &mut Doc| {
+            d.build_visual(80);
+            d.vmap.rows.iter().map(|r| r.boundary).collect::<Vec<_>>()
+        };
+        let mut d = wysiwyg_doc("quote_exit_gap", "> a\n\n## Math\n");
+        d.caret = 3;
+        d.newline();
+        d.newline();
+        let empty = boundaries(&mut d);
+        d.insert("hello");
+        assert_eq!(boundaries(&mut d), empty);
+    }
+
+    #[test]
     fn opening_a_container_on_a_blank_line_is_one_undo_step() {
         // It was three edits — scratch, wrap, unscratch — coalesced into one, and
         // now it is twig's single edit. Either way one ⌘z has to put the blank
