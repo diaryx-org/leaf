@@ -3241,6 +3241,14 @@ impl Doc {
             self.exit_list(&marker);
             return;
         }
+        // The same double-Enter leaves a quote: the first Enter at its end
+        // wrote a separator and an empty quoted line, and a second one there
+        // is the writer asking out, which `split_block` would answer with a
+        // third quoted line. Outside any list — an item's own empty line took
+        // the branch above.
+        if !has(Kind::ListItem) && !has(Kind::TaskListItem) && self.exit_quote() {
+            return;
+        }
         // Beside a rule, at the home past it, the caret's source line is the
         // blank one under the rule, which the branch below would take for an
         // empty paragraph. Mid-document its lone newline left the caret on the
@@ -3552,6 +3560,61 @@ impl Doc {
             Some(m) => self.source[m.line_start..m.marker_start].to_string(),
             None => self.quote_prefix_at(off),
         }
+    }
+
+    /// Leave the innermost quote from an empty line at its end — one holding
+    /// only quote markers — and say whether that was where the caret was.
+    ///
+    /// The empty line goes, and so does a blank quoted line above it, the
+    /// separator the first Enter wrote: left behind, the quote would end in
+    /// an empty paragraph. In their place goes what [`exit_list`] writes, a
+    /// blank line and the caret's own line, each keeping the markers of any
+    /// quote still around them.
+    ///
+    /// [`exit_list`]: Self::exit_list
+    fn exit_quote(&mut self) -> bool {
+        // Only the markers, and how many: a line whose `>`s are all there is
+        // to it, at the depth of the quote it closes.
+        fn depth(line: &str) -> Option<usize> {
+            line.chars()
+                .all(|c| c == '>' || c.is_whitespace())
+                .then(|| line.matches('>').count())
+        }
+        fn opening_depth(line: &str) -> usize {
+            line.chars()
+                .take_while(|c| *c == '>' || c.is_whitespace())
+                .filter(|c| *c == '>')
+                .count()
+        }
+        let caret = self.caret.min(self.source.len());
+        let line_start = self.source[..caret].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.source[caret..]
+            .find('\n')
+            .map_or(self.source.len(), |i| caret + i);
+        let line = &self.source[line_start..line_end];
+        let Some(level) = depth(line).filter(|&n| n > 0) else {
+            return false;
+        };
+        // A blank quoted line with more of the quote under it is a gap between
+        // two of its paragraphs, not its end.
+        let next = self.source.get(line_end + 1..).unwrap_or("");
+        let next = next.split('\n').next().unwrap_or("");
+        if opening_depth(next) >= level {
+            return false;
+        }
+        let mut start = line_start;
+        if line_start > 0 {
+            let above_start = self.source[..line_start - 1]
+                .rfind('\n')
+                .map_or(0, |i| i + 1);
+            if depth(&self.source[above_start..line_start - 1]) == Some(level) {
+                start = above_start;
+            }
+        }
+        let outer = &line[..line.rfind('>').unwrap_or(0)];
+        let blank = outer.trim_end();
+        let text = format!("{blank}\n{outer}");
+        self.splice(start, line_end, &text, EditKind::Other)
     }
 
     /// The block-quote prefix in force at `off` — `""` outside a quote, `"> "`
@@ -10415,6 +10478,7 @@ fn differing_span<'a>(from: &str, to: &'a str) -> (usize, usize, &'a str) {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::style::{FontFamily, LineSpacing, SizeStep};
 
@@ -11980,6 +12044,51 @@ mod tests {
         assert_eq!(drawn_rows(&d), ["│ a", "│ ", "│ "]);
         // And the caret is on the new line, not stranded on the old one.
         assert_eq!(d.caret, 8);
+    }
+
+    #[test]
+    fn a_second_enter_at_the_end_of_a_quote_leaves_it() {
+        // Double-Enter, as it leaves a list. The second Enter used to split the
+        // empty quoted line like any other, so the writer pressing it to get
+        // out watched blank lines pile up under the quote with the caret still
+        // in it — and the empty quoted line and its separator stayed behind.
+        let mut d = wysiwyg_doc("quote_exit", "> hello\n");
+        d.caret = 7;
+        d.newline();
+        assert_eq!(d.source, "> hello\n>\n> \n");
+        d.newline();
+        assert_eq!(d.source, "> hello\n\n\n");
+        d.insert("x");
+        assert_eq!(d.source, "> hello\n\nx\n");
+        let quotes = d
+            .nodes()
+            .iter()
+            .filter(|n| n.kind == Kind::BlockQuote)
+            .count();
+        assert_eq!(quotes, 1, "the quote keeps only `hello`");
+
+        // Out of the inner quote only, into a paragraph of the outer one.
+        let mut d = wysiwyg_doc("quote_exit_nested", "> > a\n");
+        d.caret = 5;
+        d.newline();
+        d.newline();
+        assert_eq!(d.source, "> > a\n>\n> \n");
+
+        // Above more of the document, the quote's end is still its end.
+        let mut d = wysiwyg_doc("quote_exit_mid", "> a\n\nnext\n");
+        d.caret = 3;
+        d.newline();
+        d.newline();
+        d.insert("x");
+        assert_eq!(d.source, "> a\n\nx\n\nnext\n");
+
+        // And one undo puts the empty quoted line back.
+        let mut d = wysiwyg_doc("quote_exit_undo", "> a\n");
+        d.caret = 3;
+        d.newline();
+        d.newline();
+        d.undo();
+        assert_eq!(d.source, "> a\n>\n> \n");
     }
 
     #[test]
