@@ -42,6 +42,11 @@ struct ContentView: View {
     /// surface moves it too (a pinch, View ▸ Zoom), and this view only reads it
     /// back for the label.
     @State private var page: PageSetup?
+    #if os(iOS)
+    /// The Settings sheet, which the bar's menu opens. The Mac has
+    /// a Settings window for these; a phone has no app menu to open one from.
+    @State private var showingSettings = false
+    #endif
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,15 +60,26 @@ struct ContentView: View {
             // Above the keyboard, where the package's row is meant to hang:
             // its `Aa` swaps the keyboard for the formatting panel and the row
             // stays above whichever is up. The demo's display chrome goes in
-            // the navigation bar instead, where it can be reached without a
-            // keyboard up — and the row keeps to the nine it was sized for.
+            // the navigation bar's one menu instead, where it can be reached
+            // without a keyboard up — and the row keeps to the nine it was
+            // sized for.
             LeafEditor(model: model, theme: theme, page: page) {
                 LeafFormattingToolbar(editor: model)
             }
             .background(page == nil ? editorBackground : Color.clear)
             .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    ForEach(displayTools) { $0.navigationItem }
+                ToolbarItem(placement: .primaryAction) { moreMenu }
+            }
+            .sheet(isPresented: $showingSettings) {
+                NavigationStack {
+                    SettingsView()
+                        .navigationTitle("Settings")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { showingSettings = false }
+                            }
+                        }
                 }
             }
             #endif
@@ -187,10 +203,9 @@ struct ContentView: View {
     }
     #endif
 
-    /// The demo's display chrome, defined once for both places it is drawn —
-    /// host tools at the end of the Mac's bar, items in the navigation bar on
-    /// iOS: the source toggle, the flow and appearance menus, and the page
-    /// menu. Each lights while its choice is off the default, on both.
+    /// The demo's display chrome as host tools at the end of the Mac's bar:
+    /// the source toggle, the flow and appearance menus, and the page menu.
+    /// Each lights while its choice is off the default.
     private var displayTools: [DisplayTool] {
         [
             DisplayTool(id: "view",
@@ -204,6 +219,30 @@ struct ContentView: View {
                         label: "page", active: page != nil, kind: .menu(AnyView(pageRows))),
         ]
     }
+
+    #if os(iOS)
+    /// The display chrome on iOS, as one menu at the end of the navigation
+    /// bar. A phone's bar holds two of the Mac's four tools and folds the
+    /// rest into a More menu of its own, so the four go into one menu here,
+    /// with Settings — which also holds the Mac's appearance menu — last.
+    private var moreMenu: some View {
+        Menu {
+            Button { model.toggleView() } label: {
+                Label(model.isSource ? "Show Rich Text" : "Show Source",
+                      systemImage: model.isSource ? "doc.richtext" : "chevron.left.slash.chevron.right")
+            }
+            Menu { flowRows } label: { Label("Line Breaks", systemImage: "arrow.turn.down.left") }
+            Menu { pageRows } label: {
+                Label("Page", systemImage: page == nil ? "doc.plaintext" : "doc.on.doc")
+            }
+            Divider()
+            Button { showingSettings = true } label: { Label("Settings…", systemImage: "gearshape") }
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .accessibilityLabel("Document Options")
+    }
+    #endif
 
     /// The soft-break flow rows (a "View"-style menu): Fold reflows soft breaks
     /// into the paragraph, Preserve renders each where it was written. The
@@ -300,10 +339,9 @@ struct ContentView: View {
     }
 }
 
-/// One piece of the demo's display chrome: what it is, what it does, and
-/// whether it is lit. The Mac draws it as one of `LeafFormattingToolbar`'s
-/// host tools (`barTool`), iOS as a navigation-bar item (`navigationItem`),
-/// and neither can lose a state the other shows.
+/// One piece of the demo's display chrome on the Mac: what it is, what it
+/// does, and whether it is lit, drawn as one of `LeafFormattingToolbar`'s host
+/// tools (`barTool`). iOS gathers the same rows into one menu (`moreMenu`).
 private struct DisplayTool: Identifiable {
     enum Kind {
         case button(() -> Void)
@@ -325,29 +363,6 @@ private struct DisplayTool: Identifiable {
             return .menu(id, systemImage: systemImage, label: label, active: active) { rows }
         }
     }
-
-    #if os(iOS)
-    /// As a navigation-bar item: the glyph, with the bar's accent pill
-    /// behind it while it is lit.
-    @ViewBuilder
-    var navigationItem: some View {
-        Group {
-            switch kind {
-            case .button(let action): Button(action: action) { glyph }
-            case .menu(let rows): Menu { rows } label: { glyph }
-            }
-        }
-        .accessibilityLabel(label)
-        .accessibilityAddTraits(active ? .isSelected : [])
-    }
-
-    private var glyph: some View {
-        Image(systemName: systemImage)
-            .padding(4)
-            .background(RoundedRectangle(cornerRadius: 6)
-                .fill(active ? Color.accentColor.opacity(0.15) : Color.clear))
-    }
-    #endif
 }
 
 /// The window/content background, resolved to each toolkit's dynamic system
