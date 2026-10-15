@@ -4,6 +4,7 @@
 use std::rc::Rc;
 
 use dioxus::html::Modifiers;
+use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use dioxus_widget_spike::rows::{RowHandle, RowView};
 
@@ -19,11 +20,20 @@ pub const PAD: f64 = 16.0;
 /// approximation — Blitz could measure it, but the spike does not ask.
 const CELL: f64 = 15.0 * 0.6;
 
-/// Where a row sends the click it received, as (row, column, extend). A
-/// context rather than a prop so [`Row`]'s props stay its index and handle,
-/// both of which compare cheaply — the memoization the parent measured.
+/// What the pointer did on a row, at a (row, column).
+#[derive(Clone, Copy, Debug)]
+pub enum Pointer {
+    /// The button went down; ⇧ extends the selection.
+    Press { row: usize, col: usize, extend: bool },
+    /// It moved with the button held: a drag-select.
+    Drag { row: usize, col: usize },
+}
+
+/// Where a row sends what the pointer did on it. A context rather than a prop
+/// so [`Row`]'s props stay its index and handle, both of which compare
+/// cheaply — the memoization the parent measured.
 #[derive(Clone)]
-pub struct ClickSink(pub Rc<dyn Fn(usize, usize, bool)>);
+pub struct PointerSink(pub Rc<dyn Fn(Pointer)>);
 
 #[derive(Props, Clone, PartialEq)]
 pub struct RowProps {
@@ -35,7 +45,8 @@ pub struct RowProps {
 /// same `Rc` as last time, compares equal, and is not rendered again.
 #[allow(non_snake_case)]
 pub fn Row(props: RowProps) -> Element {
-    let sink = use_context::<ClickSink>();
+    let sink = use_context::<PointerSink>();
+    let drag = sink.clone();
     let v: &RowView = &props.row.0;
     let index = props.index;
     let class = match (v.code, v.decoration) {
@@ -49,9 +60,15 @@ pub fn Row(props: RowProps) -> Element {
     rsx! {
         div { class,
             onmousedown: move |e: MouseEvent| {
-                let x = e.client_coordinates().x - PAD;
-                let col = (x / (CELL * scale)).round().max(0.0) as usize;
-                (sink.0)(index, col, e.modifiers().contains(Modifiers::SHIFT));
+                let col = column(e.client_coordinates().x, scale);
+                let extend = e.modifiers().contains(Modifiers::SHIFT);
+                (sink.0)(Pointer::Press { row: index, col, extend });
+            },
+            onmousemove: move |e: MouseEvent| {
+                if e.held_buttons().contains(MouseButton::Primary) {
+                    let col = column(e.client_coordinates().x, scale);
+                    (drag.0)(Pointer::Drag { row: index, col });
+                }
             },
             for seg in segs {
                 match seg {
@@ -61,6 +78,12 @@ pub fn Row(props: RowProps) -> Element {
             }
         }
     }
+}
+
+/// The display column under a client x, in a row whose glyphs are `scale`
+/// times a body cell.
+fn column(x: f64, scale: f64) -> usize {
+    ((x - PAD) / (CELL * scale)).round().max(0.0) as usize
 }
 
 /// A row's runs with the caret spliced in among them.

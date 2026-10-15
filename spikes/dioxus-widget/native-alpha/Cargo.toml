@@ -24,6 +24,16 @@ dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
 dioxus-native = "0.8.0-alpha.2"
 # The bridge, with the parent's own Dioxus (0.7.10) switched off.
 dioxus-widget-spike = { path = "..", default-features = false }
+# `fs` on, unlike the parent's widget: this is an app with a file to open and
+# save, which is what `Doc::open` and `Doc::save` are.
 leaf-core = { path = "../../../crates/leaf-core", default-features = false, features = [
+    "fs",
     "syntax",
 ] }
+# The system clipboard. Already in the tree through Blitz's own `clipboard`
+# feature, so it costs no new crate.
+arboard = "3.7"
+# A timer for work that should wait for the typing to stop (the word count).
+# Already in the tree: dioxus-native builds and enters a tokio runtime with
+# timers enabled, which is what makes `tokio::time::sleep` work in a task.
+tokio = { version = "1", default-features = false, features = ["time"] }

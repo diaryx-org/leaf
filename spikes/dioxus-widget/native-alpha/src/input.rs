@@ -1,147 +1,309 @@
-//! A key to a [`Doc`] edit — the job `leaf-ratatui`'s `input.rs` does for
-//! crossterm and `leaf-gpui` does for gpui, here for a DOM keyboard event.
+//! A key to a [`Doc`] edit, with the Swift editor's bindings.
 //!
-//! It is deliberately a *function of the key*, not of Dioxus: the component
-//! hands it `Key` and `Modifiers` and nothing else, so the mapping is testable
-//! without a virtual DOM, a browser, or an event. That is also what makes the
-//! answer to "can Dioxus express leaf's input?" legible — everything hard
-//! about it is in the ten lines of [`Action`] below, and what Dioxus has to
-//! supply is one `onkeydown`.
+//! The parent's `src/input.rs` is the minimum a keystroke needs; this is the
+//! keyboard `apps/leaf-editor` ships (its `LeafTextView` and the menus in
+//! `EditorCommands.swift`), mapped onto the same `Doc` calls Swift makes
+//! through leaf-ffi. Every edit is core's, so a binding here is a line, not a
+//! feature: what a frontend owns is only which chord means what.
 //!
-//! A copy of the parent's `src/input.rs`, minus its tests: `Key` and
-//! `Modifiers` are Dioxus types, and this crate's Dioxus (0.8-alpha) is not
-//! the parent's (0.7), so the two cannot share it. The tests stay in the
-//! parent, where they cover the same mapping.
+//! It stays a *function of the key*, not of Dioxus: the component hands it
+//! the key, the physical key and the modifiers, so it is testable without a
+//! virtual DOM or an event. Digits and brackets match on the physical [`Code`]
+//! because ⇧ changes their [`Key`] — ⇧⌘8 arrives as `*` — and the binding is
+//! to the key, not the character.
+//!
+//! This is a native app, so it knows its platform: ⌘ is Meta on Apple and
+//! Control elsewhere, and ⌃ is a modifier of its own only on Apple, where the
+//! Swift editor's ⌃0–⌃6 and ⌃K live.
 
-use dioxus::html::{Key, Modifiers};
-use leaf_core::Doc;
+use dioxus::html::{Code, Key, Modifiers};
+use leaf_core::{BlockKind, Doc, InlineKind};
 
 /// What a key did, for the host to act on what it does not own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     /// The document changed, or the caret moved: repaint.
     Handled,
-    /// Not ours — let the browser have it.
+    /// Not ours — let Blitz have it.
     Ignored,
-    /// The host owns this one: the clipboard, which a DOM widget cannot read
-    /// from a key event at all (it needs the `paste` event's `DataTransfer`),
-    /// and saving.
+    /// The host owns this one: the clipboard and the file.
     Host(Host),
+    /// A page of motion: the host knows how many rows a page is.
+    Page { down: bool, extend: bool },
 }
 
-/// The gestures a widget cannot complete by itself.
+/// The gestures a document cannot complete by itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Host {
     Copy,
     Cut,
     Paste,
+    /// ⇧⌘V and ⌥⇧⌘V: the clipboard's text, never its HTML.
+    PastePlain,
     Save,
 }
+
+/// ⌘ arrives from winit as `SUPER` — not `META`, which `keyboard-types`
+/// keeps for the legacy Meta key. Matching `META` alone, every ⌘ chord fell
+/// through to the plain keys: ⌘I typed an `i`, ⌘↓ moved one row.
+#[cfg(target_os = "macos")]
+const CMD: Modifiers = Modifiers::SUPER;
+#[cfg(not(target_os = "macos"))]
+const CMD: Modifiers = Modifiers::CONTROL;
 
 /// Apply one key press to the document.
 ///
 /// `shift` extends the selection on every motion, which is why each motion
 /// passes it rather than branching on it: core's caret API takes `extend` for
 /// exactly this.
-pub fn apply_key(doc: &mut Doc, key: &Key, mods: Modifiers) -> Action {
+pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Action {
     let shift = mods.contains(Modifiers::SHIFT);
-    // The command modifier: Meta on Apple, Control elsewhere. A widget cannot
-    // tell which platform it is on from a key event, so it honours both — the
-    // same thing leaf-web does.
-    let cmd = mods.contains(Modifiers::META) || mods.contains(Modifiers::CONTROL);
+    let alt = mods.contains(Modifiers::ALT);
+    let cmd = mods.contains(CMD) || (cfg!(target_os = "macos") && mods.contains(Modifiers::META));
+    let ctrl = cfg!(target_os = "macos") && mods.contains(Modifiers::CONTROL);
 
-    if cmd && let Key::Character(c) = key {
-        return match c.as_str() {
-            "c" => Action::Host(Host::Copy),
-            "x" => Action::Host(Host::Cut),
-            "v" => Action::Host(Host::Paste),
-            "s" => Action::Host(Host::Save),
-            "a" => {
-                doc.select_all();
-                Action::Handled
-            }
-            "z" if shift => {
-                doc.redo();
-                Action::Handled
-            }
-            "z" => {
-                doc.undo();
-                Action::Handled
-            }
-            _ => Action::Ignored,
-        };
+    if cmd {
+        return command(doc, key, code, shift, alt);
+    }
+    if ctrl {
+        return control(doc, key, code, shift);
     }
 
+    let done = |_: ()| Action::Handled;
     match key {
         // A printable key. `Key::Character` is already the composed result of
-        // the layout and the modifiers, so there is no keycode arithmetic here
-        // — but see README.md on what it is *not*: an IME's composition never
-        // arrives this way.
-        Key::Character(text) if !cmd => {
-            doc.insert(text);
+        // the layout and the modifiers — but an IME's composition never
+        // arrives this way; see README.md.
+        Key::Character(text) => done(doc.insert(text)),
+        // Inside a table Return moves down a cell and ⇧Return breaks the line
+        // in it; elsewhere both are a newline. Core answers whether it was a
+        // table's, as it does for Swift.
+        Key::Enter if shift => {
+            if !doc.cell_line_break() {
+                doc.newline();
+            }
             Action::Handled
         }
         Key::Enter => {
-            doc.newline();
-            Action::Handled
-        }
-        Key::Backspace => {
-            doc.backspace();
-            Action::Handled
-        }
-        Key::Delete => {
-            doc.delete_forward();
+            if !doc.cell_return() {
+                doc.newline();
+            }
             Action::Handled
         }
         Key::Tab => {
-            if shift {
-                doc.outdent();
-            } else {
-                doc.indent();
+            if !doc.cell_tab(!shift) {
+                if shift {
+                    doc.outdent();
+                } else {
+                    doc.indent();
+                }
             }
             Action::Handled
         }
-        Key::ArrowLeft => {
-            if mods.contains(Modifiers::ALT) {
-                doc.move_word_left(shift);
-            } else {
-                doc.move_left(shift);
-            }
-            Action::Handled
-        }
-        Key::ArrowRight => {
-            if mods.contains(Modifiers::ALT) {
-                doc.move_word_right(shift);
-            } else {
-                doc.move_right(shift);
-            }
-            Action::Handled
-        }
-        Key::ArrowUp => {
-            doc.move_up(shift);
-            Action::Handled
-        }
-        Key::ArrowDown => {
-            doc.move_down(shift);
-            Action::Handled
-        }
-        Key::Home => {
-            if cmd {
-                doc.move_doc_start(shift);
-            } else {
-                doc.move_home(shift);
-            }
-            Action::Handled
-        }
-        Key::End => {
-            if cmd {
-                doc.move_doc_end(shift);
-            } else {
-                doc.move_end(shift);
-            }
-            Action::Handled
-        }
+        Key::Backspace if alt => done(doc.delete_word_back()),
+        Key::Backspace => done(doc.backspace()),
+        Key::Delete if alt => done(doc.delete_word_forward()),
+        Key::Delete => done(doc.delete_forward()),
+        Key::ArrowLeft if alt => done(doc.move_word_left(shift)),
+        Key::ArrowRight if alt => done(doc.move_word_right(shift)),
+        Key::ArrowUp if alt => done(doc.move_block_up()),
+        Key::ArrowDown if alt => done(doc.move_block_down()),
+        Key::ArrowLeft => done(doc.move_left(shift)),
+        Key::ArrowRight => done(doc.move_right(shift)),
+        Key::ArrowUp => done(doc.move_up(shift)),
+        Key::ArrowDown => done(doc.move_down(shift)),
+        Key::Home => done(doc.move_home(shift)),
+        Key::End => done(doc.move_end(shift)),
+        Key::PageUp => Action::Page { down: false, extend: shift },
+        Key::PageDown => Action::Page { down: true, extend: shift },
         _ => Action::Ignored,
     }
 }
 
+/// ⌘ chords: the Edit and Format menus.
+fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Action {
+    let done = |_: ()| Action::Handled;
+    // The physical keys first, which ⇧ would otherwise rename.
+    match code {
+        Code::Digit8 if shift => return done(doc.toggle_list(false)),
+        Code::Digit7 if shift => return done(doc.toggle_list(true)),
+        Code::Digit9 if shift => return done(doc.toggle_blockquote()),
+        Code::BracketRight if !shift => return done(doc.indent()),
+        Code::BracketLeft if !shift => return done(doc.outdent()),
+        _ => {}
+    }
+    match key {
+        Key::ArrowUp => return done(doc.move_doc_start(shift)),
+        Key::ArrowDown => return done(doc.move_doc_end(shift)),
+        // Ends of the line. Swift goes to the *visual* line's ends by
+        // geometry; a monospace row is a visual line, so core's are the same.
+        Key::ArrowLeft => return done(doc.move_home(shift)),
+        Key::ArrowRight => return done(doc.move_end(shift)),
+        Key::Backspace => return done(doc.delete_to_line_start()),
+        _ => {}
+    }
+    let Key::Character(c) = key else {
+        return Action::Ignored;
+    };
+    match (c.to_lowercase().as_str(), shift, alt) {
+        ("c", false, false) => Action::Host(Host::Copy),
+        ("x", false, false) => Action::Host(Host::Cut),
+        ("v", false, false) => Action::Host(Host::Paste),
+        ("v", true, _) => Action::Host(Host::PastePlain),
+        ("s", false, false) => Action::Host(Host::Save),
+        ("a", false, false) => done(doc.select_all()),
+        // Undo and redo answer whether there was a step to take; either way
+        // the frame is current, so either way is a repaint.
+        ("z", false, false) => {
+            doc.undo();
+            Action::Handled
+        }
+        ("z", true, false) => {
+            doc.redo();
+            Action::Handled
+        }
+        // Marks.
+        ("b", false, false) => done(doc.toggle(InlineKind::Strong)),
+        ("i", false, false) => done(doc.toggle(InlineKind::Emph)),
+        ("u", false, false) => done(doc.toggle(InlineKind::Insert)),
+        ("c", true, false) => done(doc.toggle(InlineKind::Verbatim)),
+        ("m", true, false) => done(doc.toggle(InlineKind::Mark)),
+        ("x", true, false) => done(doc.toggle(InlineKind::Delete)),
+        // Blocks.
+        ("c", false, true) => done(doc.toggle_code_block()),
+        ("l", true, false) => done(doc.toggle_task_item()),
+        ("u", true, false) => done(doc.toggle_task_checked()),
+        _ => Action::Ignored,
+    }
+}
+
+/// ⌃ chords, on Apple only: the paragraph style menu and the Emacs keys
+/// Cocoa text views honour.
+fn control(doc: &mut Doc, key: &Key, code: Code, shift: bool) -> Action {
+    let done = |_: ()| Action::Handled;
+    let level = match code {
+        Code::Digit0 => Some(0),
+        Code::Digit1 => Some(1),
+        Code::Digit2 => Some(2),
+        Code::Digit3 => Some(3),
+        Code::Digit4 => Some(4),
+        Code::Digit5 => Some(5),
+        Code::Digit6 => Some(6),
+        _ => None,
+    };
+    match level {
+        Some(0) => return done(doc.set_block(BlockKind::Paragraph)),
+        Some(n) => return done(doc.toggle_heading(n)),
+        None => {}
+    }
+    let Key::Character(c) = key else {
+        return Action::Ignored;
+    };
+    match c.to_lowercase().as_str() {
+        "a" => done(doc.move_home(shift)),
+        "e" => done(doc.move_end(shift)),
+        "k" => done(doc.delete_to_line_end()),
+        "f" => done(doc.move_right(shift)),
+        "b" => done(doc.move_left(shift)),
+        "n" => done(doc.move_down(shift)),
+        "p" => done(doc.move_up(shift)),
+        "d" => done(doc.delete_forward()),
+        "h" => done(doc.backspace()),
+        _ => Action::Ignored,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use leaf_core::Format;
+
+    use super::*;
+
+    fn doc(src: &str) -> Doc {
+        let mut d = Doc::from_source(src.to_string(), Format::Markdown).expect("a document");
+        d.build_visual(80);
+        d
+    }
+
+    fn press(d: &mut Doc, key: Key, code: Code, mods: Modifiers) -> Action {
+        let a = apply_key(d, &key, code, mods);
+        d.build_visual(80);
+        a
+    }
+
+    fn ch(c: &str) -> Key {
+        Key::Character(c.into())
+    }
+
+    #[test]
+    fn cmd_b_bolds_the_selection() {
+        let mut d = doc("hello\n");
+        d.select_range(0, 5);
+        press(&mut d, ch("b"), Code::KeyB, CMD);
+        assert!(d.source.starts_with("**hello**"), "{:?}", d.source);
+    }
+
+    #[test]
+    fn shift_cmd_8_is_a_bullet_list_though_its_key_is_a_star() {
+        let mut d = doc("item\n");
+        d.place_caret(1, false);
+        press(&mut d, ch("*"), Code::Digit8, CMD | Modifiers::SHIFT);
+        assert!(d.source.starts_with("- item") || d.source.starts_with("* item"), "{:?}", d.source);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ctrl_2_toggles_a_heading() {
+        let mut d = doc("title\n");
+        d.place_caret(1, false);
+        press(&mut d, ch("2"), Code::Digit2, Modifiers::CONTROL);
+        assert!(d.source.starts_with("## title"), "{:?}", d.source);
+        press(&mut d, ch("2"), Code::Digit2, Modifiers::CONTROL);
+        assert!(d.source.starts_with("title"), "{:?}", d.source);
+    }
+
+    #[test]
+    fn the_clipboard_is_the_hosts() {
+        let mut d = doc("hello\n");
+        for (c, want) in [("c", Host::Copy), ("x", Host::Cut), ("v", Host::Paste)] {
+            assert_eq!(
+                apply_key(&mut d, &ch(c), Code::Unidentified, CMD),
+                Action::Host(want)
+            );
+        }
+        assert_eq!(
+            apply_key(&mut d, &ch("v"), Code::KeyV, CMD | Modifiers::SHIFT),
+            Action::Host(Host::PastePlain)
+        );
+    }
+
+    #[test]
+    fn alt_backspace_deletes_a_word() {
+        let mut d = doc("one two\n");
+        d.place_caret(7, false);
+        press(&mut d, Key::Backspace, Code::Backspace, Modifiers::ALT);
+        assert!(d.source.starts_with("one \n") || d.source.starts_with("one\n"), "{:?}", d.source);
+    }
+
+    /// What winit hands over for ⌘ on a Mac, which is what broke: a chord
+    /// must never be typed as its letter.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cmd_is_super_and_a_cmd_chord_types_nothing() {
+        let mut d = doc("hello\n");
+        d.place_caret(0, false);
+        press(&mut d, ch("i"), Code::KeyI, Modifiers::SUPER);
+        assert_eq!(d.source, "hello\n");
+        press(&mut d, Key::ArrowDown, Code::ArrowDown, Modifiers::SUPER);
+        assert_eq!(d.caret, d.source.len());
+    }
+
+    #[test]
+    fn an_unmapped_key_is_left_alone() {
+        let mut d = doc("hello\n");
+        assert_eq!(
+            apply_key(&mut d, &Key::F1, Code::F1, Modifiers::empty()),
+            Action::Ignored
+        );
+    }
+}

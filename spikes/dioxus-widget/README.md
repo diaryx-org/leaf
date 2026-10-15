@@ -316,6 +316,51 @@ scale, WKWebView's differences from WebKitGTK, memory under a long document,
 and whether a webview-hosted editor is plausible in an app store. Those need a
 machine with a display and a human looking at it.
 
+## The native editor, on macOS (2026-10-15)
+
+`native-alpha/` is now an editor working toward `apps/leaf-editor`'s feature
+set, run on a Mac with a real GPU — the machine "What this still does not
+answer" asked for. It has the Swift editor's key bindings (marks, headings,
+lists, quotes, code blocks, tasks, indent, word and line deletes, block
+moves, table-aware Return and Tab, Emacs keys), clipboard with the HTML
+flavor, save, click / double- / triple-click / shift-click / drag-select,
+task boxes, a click past the end, page motion, a status line, and only the
+rows in view rendered. `LEAF_TRACE=1` logs every key, pointer event and
+repaint to stderr.
+
+Almost none of that was leaf work: every binding is a line calling the `Doc`
+method Swift calls through leaf-ffi. What took the time was Blitz, which
+differs from a browser in six ways an editor walks straight into:
+
+| Blitz does | So the editor |
+|---|---|
+| focus only form controls on a click, and *clear* focus on anything else | reads keys from winit (`use_window_event`), not `onkeydown` |
+| report ⌘ as `SUPER`, not `META` | matches `SUPER`; matching `META` typed ⌘I as an `i` |
+| poll tasks while it holds its document borrowed, so `MountedData::scroll` / `set_focus` from a handler panic ("RefCell already borrowed") | scrolls itself: owns the offset, shifts the rows by a margin |
+| paint the first frame of an `overflow: hidden` element and not its changes | clips at `body`, never `.leaf` |
+| skip painting a child that hangs past its parent's box | gives `.leaf` no fixed height |
+| lay out an absolutely positioned element on the first paint and not when a later frame inserts it | draws the caret inline, spliced into the run |
+
+and implements neither `onresize` (the height comes from the winit window) nor
+standard macOS key bindings for app code (it keeps them for its own inputs).
+None of these is hard to live with once found, and each is a Blitz bug or a
+0.8-alpha gap rather than a design limit — but together they are what
+"0.8-alpha" means in practice.
+
+One leaf finding came out of it: `Doc::counts()` is 130 ms at 5 200 rows, so a
+status line that asks per keystroke stalls the window badly enough that Blitz
+stops painting. The editor counts after 400 ms without an edit, as core's own
+doc says to.
+
+**Still not at parity**, all frontend work: proportional text (the editor is
+monospace by the same caret decision as the rest of the spike), IME and
+dictation, tables, images, math and Mermaid drawn as pictures rather than as
+core's monospace fallbacks, the source view, find and replace, spellcheck and
+autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a
+toolbar, Save As / New / Open, settings and dark mode, print and PDF,
+accessibility. "What it would take" item 4 — proportional text and a measured
+caret — is the one the rest wait on.
+
 ## The verdict
 
 On the question asked — what a keystroke costs — Dioxus passes, with one
