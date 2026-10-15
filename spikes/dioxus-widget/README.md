@@ -519,11 +519,19 @@ NSView, but from the main dispatch queue rather than the click's handler: a
 context menu runs a nested event loop, and winit panics when it is handed an
 event while its handler is still borrowed.
 
+A ⌘-click or right-click also takes no drag after it: the hand settling
+between press and release arrives as a drag, which extended a selection from
+wherever following the link had put the caret.
+
 Checked on macOS: the Table menu present, its grid items disabled outside a
 table, and Insert Row Below, Align Column ▸ Right and Move Column Right on a
-cell, saved as expected. Not yet checked on screen: the context menu and
-⌘-click, whose resolution (footnote both ways, `#fragment`, URL, missing file)
-is unit-tested.
+cell, saved as expected; the context menu on a link (Open Link to a
+`#fragment`), on plain text (no Cut or Copy), and inside a selection (kept,
+with Cut and Copy); Select All from it; ⌘-click from a reference to its note
+and from the note back. Not tried on screen: Copy Link, and a URL or file
+handed to the system — the resolution is unit-tested. A click on a note's own
+`[1]` marker lands on the line above (core's mapping of that decoration), so
+following back is a ⌘-click on the note's text.
 
 ### Working on the native editor
 

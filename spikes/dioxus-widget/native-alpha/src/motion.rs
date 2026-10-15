@@ -30,6 +30,10 @@ pub struct Press {
     row: usize,
     key: usize,
     count: u8,
+    /// Whether a drag after it selects. Not after a ⌘-click or a
+    /// right-click: the hand settling would extend from wherever following
+    /// the link put the caret.
+    drags: bool,
 }
 
 /// Where a pointer gesture landed, resolved: a (row, column) of the view, or
@@ -169,6 +173,9 @@ impl Editor {
             Pointer::Press { mode, .. } => mode,
             Pointer::Drag { .. } => PressMode::Place,
         };
+        if mode != PressMode::Place {
+            st.last_press.set(Some(Press { at: Instant::now(), row, key, count: 1, drags: false }));
+        }
         match mode {
             PressMode::Place => gesture(&mut st.doc.borrow_mut(), &st.last_press, p, row, key, spot),
             // ⌘-click places the caret, then follows what it landed on.
@@ -219,7 +226,7 @@ fn gesture(doc: &mut Doc, last: &std::cell::Cell<Option<Press>>, p: Pointer, row
                 Some(l) if !extend && l.row == row && now - l.at < MULTI_CLICK => l.count % 3 + 1,
                 _ => 1,
             };
-            last.set(Some(Press { at: now, row, key, count }));
+            last.set(Some(Press { at: now, row, key, count, drags: true }));
             if count == 1
                 && !extend
                 && doc.view == View::Wysiwyg
@@ -250,7 +257,7 @@ fn gesture(doc: &mut Doc, last: &std::cell::Cell<Option<Press>>, p: Pointer, row
             // words or blocks, as Swift's does; until it does, it is left
             // alone rather than undoing the selection.
             match last.get() {
-                Some(p) if (p.row, p.key) == (row, key) || p.count > 1 => {}
+                Some(p) if (p.row, p.key) == (row, key) || p.count > 1 || !p.drags => {}
                 _ => place(doc, true),
             }
         }
