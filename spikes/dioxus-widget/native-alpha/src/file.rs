@@ -70,3 +70,78 @@ pub async fn ask_unsaved(window: &Arc<dyn Window>, name: &str) -> Unsaved {
         _ => Unsaved::Cancel,
     }
 }
+
+/// What a file command does.
+#[derive(Clone, Copy, Debug)]
+pub enum FileAction {
+    New,
+    Open,
+    SaveAs,
+}
+
+impl crate::editor::Editor {
+    /// New, Open, Save As: each a sheet on the window, so a task.
+    pub fn file(&self, action: FileAction) {
+        let ed = self.clone();
+        dioxus::prelude::spawn(async move {
+            match action {
+                FileAction::SaveAs => {
+                    save_as(&ed).await;
+                    ed.repaint();
+                }
+                FileAction::New | FileAction::Open => {
+                    if !settle_unsaved(&ed).await {
+                        ed.repaint();
+                        return;
+                    }
+                    let new = match action {
+                        FileAction::New => leaf_core::Doc::blank().expect("a blank document"),
+                        _ => {
+                            let Some(path) = pick_open(&ed.st.window).await else { return };
+                            match leaf_core::Doc::open(path.clone()) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    ed.st.doc.borrow_mut().status = Some(format!("{}: {e}", path.display()));
+                                    ed.repaint();
+                                    return;
+                                }
+                            }
+                        }
+                    };
+                    ed.install(new);
+                }
+            }
+        });
+    }
+}
+
+/// Name a file for the document and save it there; answers whether it saved.
+async fn save_as(ed: &crate::editor::Editor) -> bool {
+    let name = match ed.st.doc.borrow().is_untitled() {
+        true => "Untitled.md".to_owned(),
+        false => ed.st.doc.borrow().file_name(),
+    };
+    let Some(path) = pick_save(&ed.st.window, &name).await else { return false };
+    let mut d = ed.st.doc.borrow_mut();
+    d.save_as(path);
+    !d.dirty
+}
+
+/// Before the document is replaced: save it, drop its changes, or stay —
+/// answers whether to go ahead.
+async fn settle_unsaved(ed: &crate::editor::Editor) -> bool {
+    if !ed.st.doc.borrow().dirty {
+        return true;
+    }
+    let name = ed.st.doc.borrow().file_name();
+    match ask_unsaved(&ed.st.window, &name).await {
+        Unsaved::Discard => true,
+        Unsaved::Cancel => false,
+        Unsaved::Save if ed.st.doc.borrow().is_untitled() => save_as(ed).await,
+        Unsaved::Save => {
+            let mut d = ed.st.doc.borrow_mut();
+            d.save();
+            !d.dirty
+        }
+    }
+}

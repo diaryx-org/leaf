@@ -496,6 +496,27 @@ Checked on macOS: alignment (`:---`, `---:`), a wrapping cell, a bold shaded
 head, a table in a quote; a click into a word in a cell, typing there, ↓ to
 the cell below, and the source saved as expected.
 
+### Working on the native editor
+
+`native-alpha/src/main.rs` is only the app's wiring: every event source —
+the window's keys and IME, the menu bar, the pointer, a file dialog's task —
+holds an `Editor` (`editor.rs`) and calls a method on it. Where a change goes:
+
+- **A command**: a key binding in `input.rs`, and a menu item in `menu.rs`
+  given as that chord. Nothing else; the menu replays the chord.
+- **Something drawn in place of rows** (media, a formula, a diagram): a
+  variant in `blocks.rs` — its builder step, render arm and hit-test — and a
+  module of its own for what it draws, as `table.rs` is for tables. Repaint,
+  scrolling and the pointer go through `blocks.rs` and do not change.
+- **Input handling**: `dispatch.rs`; caret motion and the pointer:
+  `motion.rs`; the page's markup and stylesheet: `view.rs`.
+- **State or something the render reads**: a field of `editor::State` or
+  `editor::Signals`, and a step in `Editor::repaint`.
+
+Pure logic is unit-tested beside it (`cargo test` in `native-alpha/`);
+`LEAF_TRACE=1` and `LEAF_OUTLINE=1` are the instruments for the rest. A window
+covered by others does not paint — see `occluded` in the trace.
+
 **Still not at parity**, all frontend work: dictation, images, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, spellcheck and
 autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a
