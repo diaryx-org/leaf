@@ -44,6 +44,16 @@ fn main() {
         return;
     }
 
+    // `--page <out.html>`: the same component tree as a standalone page, for a
+    // browser-engine screenshot (see scripts/shoot.sh and README.md's "Webview
+    // against native"). Rendered through dioxus-ssr, which walks the same
+    // `rsx!` the client renderer does, so the markup is the widget's own.
+    if let Some(i) = args.iter().position(|a| a == "--page") {
+        let out = args.get(i + 1).map(String::as_str).unwrap_or("page.html");
+        write_page(corpus, out);
+        return;
+    }
+
     println!(
         "leaf through Dioxus {}: {KEYSTROKES} keystrokes per row, wrap {WRAP}, \
          release build\n",
@@ -400,6 +410,34 @@ fn print_dom(corpus: &str) {
         }
     }
     println!("…");
+}
+
+/// The widget as a standalone page: the stylesheet it is written against plus
+/// the rows, with the caret where the gpui app puts it on open.
+fn write_page(corpus: &str, out: &str) {
+    let mut doc = Doc::from_source(corpus.to_string(), Format::Markdown).expect("a document");
+    doc.build_visual(WRAP);
+    doc.place_caret(0, false);
+    let mut frame = Frame::default();
+    let rows = SharedRows::default();
+    let marks = Marks::of(&doc.vmap, doc.caret, doc.anchor);
+    rows.set(frame.update(&doc.vmap, &marks));
+
+    let mut vdom = VirtualDom::new(Document).with_root_context(rows);
+    vdom.rebuild_in_place();
+    let body = dioxus_ssr::render(&vdom);
+
+    let page = format!(
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\">\n\
+         <title>leaf — Dioxus (webview)</title>\n<style>\n\
+         html, body {{ margin: 0; padding: 16px; background: #fff; color: #202124; }}\n\
+         /* Frozen for the screenshot: a blinking caret is invisible half the time. */\n\
+         .leaf .caret {{ animation: none; }}\n\
+         {}</style></head><body>{body}</body></html>\n",
+        dioxus_widget_spike::style::STYLESHEET
+    );
+    std::fs::write(out, page).expect("write the page");
+    println!("wrote {out}");
 }
 
 fn ms(d: Duration) -> f64 {

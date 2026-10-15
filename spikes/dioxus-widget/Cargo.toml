@@ -11,16 +11,27 @@ edition = "2024"
 publish = false
 
 [features]
-default = []
+default = ["widget"]
+# The Dioxus components. Optional, and not because a consumer would turn them
+# off to save weight: `style`, `rows` and `frame` — the whole bridge from
+# leaf's rows to a virtual DOM's nodes — touch no Dioxus type at all, and
+# gating the components proves it. It is what lets `native-alpha/` reuse this
+# crate while pinning a different, incompatible Dioxus (0.8.0-alpha.2, the only
+# line `dioxus-native` is published for).
+widget = ["dep:dioxus"]
 # The web build, measured in README.md's "The web" section. Off by default so
 # the headless bench (the part that runs anywhere) doesn't drag in dioxus-web.
-web = ["dep:dioxus-web", "dep:console_error_panic_hook"]
+web = ["widget", "dep:dioxus-web", "dep:console_error_panic_hook"]
+# The desktop build: the same widget in a real webview (wry → WebKitGTK here,
+# WKWebView on Apple, Android WebView on Android), for the screenshots in
+# README.md's "Webview against native" section.
+desktop = ["widget", "dep:dioxus-desktop"]
 
 [dependencies]
 # 0.7.10, the latest stable line; 0.8 is in alpha (0.8.0-alpha.2).
 # `default-features = false` drops launch/devtools/logger, none of which a
 # widget crate wants to decide for its host.
-dioxus = { version = "0.7.10", default-features = false, features = [
+dioxus = { version = "0.7.10", default-features = false, optional = true, features = [
     "macro",
     "html",
     "signals",
@@ -40,12 +51,14 @@ leaf-core = { path = "../../crates/leaf-core", default-features = false, feature
 ] }
 
 dioxus-web = { version = "0.7.10", optional = true }
+dioxus-desktop = { version = "0.7.10", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 
 # The headless bench, which is the spike's measurement: no browser, no `dx`.
 [[bin]]
 name = "bench"
 path = "src/bin/bench.rs"
+required-features = ["widget"]
 
 # The browser build, behind the `web` feature so the bench never drags
 # dioxus-web in.
@@ -53,6 +66,12 @@ path = "src/bin/bench.rs"
 name = "web"
 path = "src/bin/web.rs"
 required-features = ["web"]
+
+# The webview host screenshotted in README.md.
+[[bin]]
+name = "desktop"
+path = "src/bin/desktop.rs"
+required-features = ["desktop"]
 
 # The profile leaf-wasm ships under, copied from leaf's root manifest so the
 # size in README.md is comparable with the one in packages/leaf-web/README.md

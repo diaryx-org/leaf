@@ -1,0 +1,29 @@
+# The experimental native backend, in a workspace of its own because it cannot
+# share the parent's: `dioxus-native` is published only for 0.8.0-alpha.2, and
+# a 0.8 `Element` is not a 0.7 `Element`. So this crate pins the alpha, and
+# reuses the parent for everything that is not a Dioxus type — `style`, `rows`
+# and `frame`, through `default-features = false`.
+#
+# Blitz draws through wgpu rather than a webview: the same component tree, the
+# same document, no HTML engine. It is the third screenshot in ../README.md.
+[workspace]
+
+[package]
+name = "dioxus-native-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+] }
+dioxus-native = "0.8.0-alpha.2"
+# The bridge, with the parent's own Dioxus (0.7.10) switched off.
+dioxus-widget-spike = { path = "..", default-features = false }
+leaf-core = { path = "../../../crates/leaf-core", default-features = false, features = [
+    "syntax",
+] }

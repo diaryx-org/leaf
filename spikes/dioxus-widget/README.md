@@ -25,6 +25,10 @@ cargo run --release --bin bench -- --ssr # the DOM a small document renders to
 cargo test                               # 17 tests: the claims below, as code
 
 cargo build --release --target wasm32-unknown-unknown --features web --bin web
+
+# The two renderers screenshotted in "Webview against native":
+cargo run --features desktop --bin desktop -- corpus/document.md  # wry/WebKit
+cd native-alpha && cargo run -- ../corpus/document.md             # Blitz/wgpu
 ```
 
 The bench needs no browser and no `dx`: a virtual DOM's output is a list of
@@ -218,13 +222,99 @@ but nothing found here says it is cheap either.
 5. **The rest of the rendering surface:** tables, images, formulas, directives,
    headings — each of which `leaf-web` and `leaf-swift` already draw, and none
    of which this spike touched.
-6. **Then the platform question,** which this spike deliberately did not ask:
-   on desktop and mobile Dioxus is a webview (`dioxus-desktop`/`wry`), so a
-   Dioxus leaf would replace `leaf-gpui`'s native rendering and `leaf-swift`'s
-   AppKit/UIKit views with a webview, and `dioxus-native` (Blitz) is 0.8-alpha.
-   The measurements above are of the virtual DOM and apply to all three
-   targets; what a webview costs in feel, font rendering, and app-store
-   plausibility against today's native frontends is a separate spike.
+6. **Then the platform question.** On desktop and mobile Dioxus is a webview
+   (`dioxus-desktop`/`wry`), so a Dioxus leaf would replace `leaf-gpui`'s
+   native rendering and `leaf-swift`'s AppKit/UIKit views with one — unless it
+   waits for `dioxus-native` (Blitz), which is 0.8-alpha. "Webview against
+   native" above takes the first bite out of this: the two render the same
+   picture, and differ in processes and memory. What it could not do is
+   capture leaf-gpui, or answer anything about feel, latency and IME, which is
+   what actually decides it.
+
+## Webview against native (2026-10-15)
+
+The measurements above are of the virtual DOM and apply to every target. This
+section is the other half: what the thing actually *looks like*, and what it
+costs to run, in a webview against a native renderer.
+
+Dioxus has two answers to that, and the spike now builds both from the same
+widget:
+
+- **`dioxus-desktop` (`src/bin/desktop.rs`)** — wry, so WebKitGTK here,
+  WKWebView on Apple, Android WebView on Android. This is what "Dioxus on
+  desktop and mobile" means today.
+- **`dioxus-native` (`native-alpha/`)** — Blitz, an HTML/CSS renderer on wgpu
+  with no browser engine at all. Published only for 0.8.0-alpha.2, so it is a
+  workspace of its own pinning that alpha while the rest of the spike stays on
+  0.7.10 stable.
+
+That second crate reuses this one through `default-features = false`, which is
+worth a line of its own: `style`, `rows` and `frame` — the entire bridge from
+leaf's rows to a virtual DOM's nodes — name no Dioxus type, so they compile
+against *either* Dioxus. Only the twenty lines of `rsx!` had to be written
+twice. The bridge is not coupled to the renderer, or even to the version.
+
+```sh
+scripts/shoot.sh out.png "webview" -- ./target/debug/desktop corpus/document.md
+scripts/shoot.sh out.png "Dioxus App" -- \
+    ./native-alpha/target/debug/dioxus-native-spike corpus/document.md
+```
+
+![The same document in a WebKitGTK webview and in Blitz](webview-vs-native.png)
+
+**They are the same picture.** Against each other: RMSE 0.11, and 30 832 of
+700 000 pixels differ by more than 5% — 4.4%, confined to text antialiasing and
+the caret (the webview's is a CSS animation and was mid-blink when the shutter
+fell). Headings, bold, italic, strikethrough, the link, bullets and the nested
+bullet, the quote gutter, the code block's tint and all eight syntax token
+colours come out alike. At 3× magnification the glyphs differ only in
+sub-pixel metrics. Blitz is an alpha, and on this corpus it renders the
+widget's stylesheet as faithfully as WebKit does.
+
+**What they cost, which is where they part:**
+
+| | webview (WebKitGTK) | native (Blitz) |
+|---|---|---|
+| processes | 3 (host + WebKitWebProcess + WebKitNetworkProcess) | 1 |
+| resident memory | 497 MB | 223 MB |
+| binary | 266 MB | 671 MB |
+
+Every number there is from a **debug** build under software rendering
+(llvmpipe), so read the shape, not the magnitude: a webview is three processes
+and roughly twice the resident memory, a native renderer is one process and a
+much larger binary. Release builds would move all six figures. Startup was
+~16 s to first window for the webview, which is a figure about this container
+— a 266 MB unoptimised binary on a software rasteriser — and not worth
+quoting as anything else.
+
+### leaf-gpui could not be captured here
+
+The comparison this section *should* have made is against leaf's own native
+frontend, and it did not happen. `apps/leaf` builds and runs on this machine,
+and software Vulkan is available (lavapipe, `vulkaninfo` reports llvmpipe), but
+under Xvfb it opens no window: the process starts, parks its main thread in
+`ep_poll`, prints nothing at `RUST_LOG=debug` — and holds **no X11 connection
+at all**, only an eventfd, a timerfd and an epoll. It never reaches the
+display. That is a container finding, not a gpui one; it needs a machine with
+a real session to settle, so the gpui side of this comparison is still open.
+
+The repository's own [`leaf-gpui.png`](../../leaf-gpui.png) is the reference in
+the meantime, and one difference in it is worth naming so the screenshots above
+are not misread: **leaf-gpui draws proportional body text** with real bold and
+italic, monospace only inside code. The spike is monospace throughout. That is
+the spike's own doing — its caret is one node at `left: Nch`, which is exact
+only in a monospace row — and not a limit of webviews, which draw proportional
+text perfectly well, as `leaf-web` does. Nothing in these screenshots is
+evidence either way about proportional text in a webview.
+
+### What this still does not answer
+
+Pixels are the easy half. A webview's real costs against a native renderer are
+in the half no screenshot shows: keystroke-to-glyph latency, scrolling and
+selection feel, IME behaviour, font rendering on a real GPU and at retina
+scale, WKWebView's differences from WebKitGTK, memory under a long document,
+and whether a webview-hosted editor is plausible in an app store. Those need a
+machine with a display and a human looking at it.
 
 ## The verdict
 
