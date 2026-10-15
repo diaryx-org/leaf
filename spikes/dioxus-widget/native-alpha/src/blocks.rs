@@ -19,6 +19,7 @@ use std::ops::Range;
 use dioxus::prelude::*;
 use leaf_core::{Doc, View};
 
+use crate::media::{self, MediaBlock};
 use crate::row::{Pointer, TableBlock};
 use crate::table;
 use crate::text::{Fonts, byte_of_col};
@@ -27,6 +28,7 @@ use crate::text::{Fonts, byte_of_col};
 #[derive(Clone, PartialEq)]
 pub enum Block {
     Table(table::Block),
+    Media(media::Block),
 }
 
 impl Block {
@@ -34,6 +36,7 @@ impl Block {
     pub fn rows(&self) -> Range<usize> {
         match self {
             Block::Table(t) => t.rows.clone(),
+            Block::Media(m) => m.rows.clone(),
         }
     }
 
@@ -41,6 +44,7 @@ impl Block {
     pub fn first(&self) -> usize {
         match self {
             Block::Table(t) => t.first,
+            Block::Media(m) => m.first,
         }
     }
 
@@ -48,6 +52,7 @@ impl Block {
     pub fn height(&self) -> f64 {
         match self {
             Block::Table(t) => t.layout.height as f64,
+            Block::Media(m) => m.height() as f64,
         }
     }
 
@@ -64,6 +69,7 @@ impl Block {
                 let text: String = cell.view.runs.iter().map(|r| r.text.as_str()).collect();
                 Some(cell.offset(byte_of_col(&text, cl.col_at(line, x))))
             }
+            (Block::Media(m), crate::row::Target::Block { .. }) => Some(m.hit(x)),
             _ => None,
         }
     }
@@ -111,6 +117,22 @@ pub fn build(
         out.push(Block::Table(block));
     }
 
+    // Pictures, video and audio, in place of their placeholder rows. A box
+    // is a few numbers, worked out each frame from the sizes `media.rs`
+    // caches by path; only its prefix's layout is kept from the last.
+    let dir = doc.path.parent();
+    for m in &doc.vmap.media {
+        let reuse = |p: &_| {
+            old.iter().find_map(|b| match b {
+                Block::Media(b) if b.prefix == *p => Some(b.prefix_layout.clone()),
+                _ => None,
+            })
+        };
+        if let Some(b) = media::block(m, &doc.vmap.rows, dir, caret, sel, fonts, width, reuse) {
+            out.push(Block::Media(b));
+        }
+    }
+
     *cache.borrow_mut() = out.clone();
     out
 }
@@ -119,5 +141,6 @@ pub fn build(
 pub fn render(i: usize, block: &Block) -> Element {
     match block {
         Block::Table(b) => rsx! { TableBlock { key: "{i}", block: b.clone() } },
+        Block::Media(b) => rsx! { MediaBlock { key: "{i}", block: b.clone() } },
     }
 }

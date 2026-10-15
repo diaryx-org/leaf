@@ -18,7 +18,7 @@
 //! - [`text`]: proportional rows, wrapped and hit-tested by parley; [`row`]
 //!   draws them; [`source`] builds the source view's.
 //! - [`blocks`]: what is drawn in place of rows — tables ([`table`]) now,
-//!   media next. **Adding a kind of block is that file.**
+//!   and media ([`media`]). **Adding a kind of block is that file.**
 //! - [`find`] / [`findbar`], [`file`], [`host`], [`ime`], [`status`].
 //! - [`view`]: the stylesheet and the page.
 //!
@@ -41,6 +41,7 @@ mod host;
 mod ime;
 mod input;
 mod keys;
+mod media;
 mod menu;
 mod motion;
 mod row;

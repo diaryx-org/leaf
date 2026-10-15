@@ -53,6 +53,12 @@ unicode-width = "0.2"
 # Grapheme clusters, the unit a column advances by, as core walks them.
 unicode-segmentation = "1.13"
 
+# Block pictures (`media.rs`): a picture's size off its header, an SVG's off
+# its canvas, so the block's height is known before Blitz has decoded it. Both
+# already in the tree through Blitz, at the formats it decodes.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
+usvg = { version = "0.48", default-features = false }
+
 # The menu bar (`menu.rs`): Tauri's, the native NSMenu on macOS.
 muda = "0.21"
 # File dialogs and the unsaved-changes prompt (`file.rs`). Already in the tree

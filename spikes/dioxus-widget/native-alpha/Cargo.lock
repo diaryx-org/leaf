@@ -1274,6 +1274,7 @@ dependencies = [
  "dioxus",
  "dioxus-native",
  "dioxus-widget-spike",
+ "image",
  "leaf-core",
  "muda",
  "objc2 0.6.5",
@@ -1283,6 +1284,7 @@ dependencies = [
  "tokio",
  "unicode-segmentation",
  "unicode-width",
+ "usvg",
 ]
 
 [[package]]
