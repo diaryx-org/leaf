@@ -23,6 +23,7 @@
 //! bridge is independent of which Dioxus renders it.
 
 mod host;
+mod ime;
 mod input;
 mod keys;
 mod row;
@@ -39,12 +40,15 @@ use dioxus::html::geometry::WheelDelta;
 use dioxus::prelude::*;
 use dioxus::html::{Code, Key, Modifiers};
 use dioxus_native::winit;
-use dioxus_native::winit::event::WindowEvent;
+use dioxus_native::winit::dpi::{LogicalPosition, LogicalSize};
+use dioxus_native::winit::event::{Ime, WindowEvent};
+use dioxus_native::winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
 use dioxus_widget_spike::frame::Frame;
 use dioxus_widget_spike::rows::{Marks, RowHandle, RowView};
 use dioxus_widget_spike::style::STYLESHEET;
 use leaf_core::{Doc, Format};
 
+use crate::ime::Composer;
 use crate::input::{Action, apply_key};
 use crate::row::{LayoutHandle, Pointer, PointerSink, Row};
 use crate::text::{BODY, Fonts, MONO, SIZE};
@@ -81,6 +85,7 @@ body {{ position: relative; }}
 .leaf {{ padding: 0 16px; box-sizing: border-box; font-family: {BODY}; font-size: {SIZE}px; }}
 .leaf .row.code, .leaf .row.table, .leaf .code {{ font-family: {MONO}; }}
 .leaf .line {{ min-height: 1.5em; }}
+.leaf .ime {{ text-decoration: underline; text-decoration-color: #1a73e8; }}
 {REST}"
     )
 }
@@ -166,6 +171,7 @@ fn App() -> Element {
     let frame = use_hook(|| Rc::new(RefCell::new(Frame::default())));
     let fonts = use_hook(|| Rc::new(RefCell::new(Fonts::new())));
     let cache = use_hook(|| Rc::new(RefCell::new(Layouts::default())));
+    let composer = use_hook(|| Rc::new(RefCell::new(Composer::default())));
     let last_press = use_hook(|| Rc::new(Cell::new(None::<Press>)));
     // The x a run of ↑/↓ aims for, kept across the lines it passes through
     // so a short line does not pull the caret left for good.
@@ -199,12 +205,17 @@ fn App() -> Element {
     let repaint = {
         let doc_rc = doc.clone();
         let (doc, frame, fonts, cache) = (doc.clone(), frame.clone(), fonts.clone(), cache.clone());
+        let composer = composer.clone();
         move || -> Option<usize> {
             let t0 = Instant::now();
             let mut doc = doc.borrow_mut();
             doc.build_visual_unwrapped();
             let t1 = Instant::now();
-            let marks = Marks::of(&doc.vmap, doc.caret, doc.anchor);
+            // While composing, the caret is drawn at the input method's
+            // cursor and the marked text underlined; see `ime.rs`.
+            let composer = composer.borrow();
+            let caret = composer.caret().unwrap_or(doc.caret);
+            let marks = Marks::of(&doc.vmap, caret, doc.anchor).composing(composer.marked());
             let mut frame = frame.borrow_mut();
             let handles = frame.update(&doc.vmap, &marks).to_vec();
             let t2 = Instant::now();
@@ -295,9 +306,11 @@ fn App() -> Element {
         let doc = doc.clone();
         let repaint = repaint.clone();
         let goal = goal.clone();
+        let composer = composer.clone();
         move || {
             PointerSink(Rc::new(move |p| {
                 goal.set(None);
+                composer.borrow_mut().settle(&mut doc.borrow_mut());
                 let (row, line, x) = match p {
                     Pointer::Press { row, line, x, .. } | Pointer::Drag { row, line, x } => (row, line, x),
                 };
@@ -313,10 +326,11 @@ fn App() -> Element {
 
     // Where the caret is in the layout: its row, its visual line, its x.
     let caret_at = {
-        let doc = doc.clone();
+        let (doc, composer) = (doc.clone(), composer.clone());
         move || -> Option<(usize, usize, f32)> {
             let doc = doc.borrow();
-            let (row, col) = doc.vmap.pos_of_offset(doc.caret);
+            let at = composer.borrow().caret().unwrap_or(doc.caret);
+            let (row, col) = doc.vmap.pos_of_offset(at);
             let lays = lays.peek();
             let (line, x) = lays.get(row)?.0.caret(col);
             Some((row, line, x))
@@ -362,7 +376,10 @@ fn App() -> Element {
         let doc = doc.clone();
         let mut repaint = repaint.clone();
         let goal = goal.clone();
+        let composer = composer.clone();
+        let caret_at = caret_at.clone();
         move |key: Key, code: Code, mods: Modifiers| {
+            composer.borrow_mut().settle(&mut doc.borrow_mut());
             let action = apply_key(&mut doc.borrow_mut(), &key, code, mods);
             trace(|| format!("key {key:?} {code:?} {mods:?} -> {action:?}"));
             if !matches!(action, Action::Vertical { .. } | Action::Page { .. } | Action::Ignored) {
@@ -398,10 +415,61 @@ fn App() -> Element {
             }
         }
     };
+    // Tell the input method where the caret is, so its candidate window and
+    // a dead key's accent menu open beside it.
+    let ime_area = {
+        let (window, caret_at) = (window.clone(), caret_at.clone());
+        move || {
+            let Some((row, line, x)) = caret_at() else { return };
+            let lays = lays.peek();
+            let Some(l) = lays.get(row).and_then(|l| l.0.lines.get(line)) else { return };
+            let y = layout.peek().top(row) - *top.peek() + l.top as f64;
+            let _ = window.request_ime_update(ImeRequest::Update(ImeRequestData::default().with_cursor_area(
+                LogicalPosition::new(row::PAD + x as f64, y).into(),
+                LogicalSize::new(2.0, l.height as f64).into(),
+            )));
+        }
+    };
+    // The input method, allowed on the window once; see `ime.rs` for why
+    // the editor and not Blitz asks.
+    use_hook({
+        let window = window.clone();
+        move || {
+            let request = ImeEnableRequest::new(
+                ImeCapabilities::new().with_cursor_area(),
+                ImeRequestData::default()
+                    .with_cursor_area(LogicalPosition::new(0.0, 0.0).into(), LogicalSize::new(2.0, LINE).into()),
+            );
+            if let Some(request) = request {
+                let _ = window.request_ime_update(ImeRequest::Enable(request));
+            }
+        }
+    });
+    let mut on_ime = {
+        let (doc, composer) = (doc.clone(), composer.clone());
+        let mut repaint = repaint.clone();
+        let ime_area = ime_area.clone();
+        move |ime: &Ime| {
+            trace(|| format!("ime {ime:?}"));
+            let mut c = composer.borrow_mut();
+            let mut d = doc.borrow_mut();
+            match ime {
+                Ime::Preedit(text, cursor) => c.preedit(&mut d, text, *cursor),
+                Ime::Commit(text) => c.commit(&mut d, text),
+                Ime::Disabled => c.settle(&mut d),
+                _ => return,
+            }
+            drop((c, d));
+            follow(repaint());
+            ime_area();
+        }
+    };
     let mut mods = winit::keyboard::ModifiersState::empty();
     dioxus_native::use_window_event({
         let mut repaint = repaint.clone();
+        let ime_area = ime_area.clone();
         move |event, _| match event {
+            WindowEvent::Ime(ime) => on_ime(ime),
             WindowEvent::SurfaceResized(size) => {
                 let scale = window.scale_factor();
                 height.set(viewport_height(size.height, scale));
@@ -419,6 +487,7 @@ fn App() -> Element {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Some((key, code, m)) = keys::pressed(event, mods) {
                     on_key(key, code, m);
+                    ime_area();
                 }
             }
             _ => {}

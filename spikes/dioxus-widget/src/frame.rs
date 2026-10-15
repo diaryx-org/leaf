@@ -139,13 +139,13 @@ impl Frame {
     }
 }
 
-/// The rows the caret and selection decorate.
+/// The rows the caret, the selection and a composition decorate.
 fn marked_rows(vmap: &VisualMap, marks: &Marks) -> Vec<usize> {
     let mut rows = Vec::new();
     if let Some((r, _)) = marks.caret {
         rows.push(r);
     }
-    if let Some((lo, hi)) = marks.selection {
+    for (lo, hi) in [marks.selection, marks.composing].into_iter().flatten() {
         let (first, last) = vmap.row_range_for(lo..hi);
         rows.extend(first..=last.min(vmap.rows.len().saturating_sub(1)));
     }

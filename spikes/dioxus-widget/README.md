@@ -380,8 +380,33 @@ on a width change); a keystroke lays out the rows it changed — a Return 3 of
 them, because layouts are cached by row handle and the frame keeps a shifted
 row's handle.
 
-**Still not at parity**, all frontend work: IME and
-dictation, tables, images, math and Mermaid drawn as pictures rather than as
+### IME and dead keys
+
+`native-alpha/src/ime.rs`. Native needs none of what item 3 asks of
+`dioxus-html`: winit reports the input method itself — `Ime::Preedit` with
+the marked text and a cursor inside it, then `Ime::Commit` — and on macOS that
+covers every input method *and* dead keys (⌥E opens a composition of `´`; the
+E after it commits `é`). Blitz turns IME on only for its own `<input>`s and
+sends its IME events to the focused node, so the editor allows IME on the
+window itself and reads `WindowEvent::Ime` beside the keys.
+
+The marked text is written into the document as it is composed, through
+core's `edit_composing`, each step replacing the last one's provisional
+bytes, and `end_composition` on commit — so a whole composition is one undo
+step, as in the Swift editor. It is underlined by a `composing` mark the
+parent crate's `Marks` now carries beside the selection, and the input
+method is told where the caret is so its candidate window opens beside it.
+
+One core finding: moving the caret — even to where it already is — ends an
+edit run, so placing it at the input method's cursor after each step made
+every step its own undo. The editor *draws* the caret at that cursor
+instead and leaves core's where `edit_composing` put it.
+
+Unit-tested (a dead key, a kana composition folding into one undo, a
+withdrawn composition, a composition over a selection); **not yet exercised
+with a real input method in the app.**
+
+**Still not at parity**, all frontend work: dictation, tables, images, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, the source view, find and replace, spellcheck and
 autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a
 toolbar, Save As / New / Open, settings and dark mode, print and PDF,

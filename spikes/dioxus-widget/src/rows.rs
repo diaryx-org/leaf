@@ -98,6 +98,10 @@ pub struct Marks {
     pub caret: Option<(usize, usize)>,
     /// The selection as source offsets, low end first.
     pub selection: Option<(usize, usize)>,
+    /// An IME's marked text — the composition not yet committed — as source
+    /// offsets. Its glyphs carry `ime`, which the stylesheet underlines, as
+    /// every text view marks a composition.
+    pub composing: Option<(usize, usize)>,
 }
 
 impl Marks {
@@ -106,25 +110,31 @@ impl Marks {
         Self {
             caret: Some(vmap.pos_of_offset(caret)),
             selection: anchor.map(|a| (a.min(caret), a.max(caret))),
+            composing: None,
+        }
+    }
+
+    /// The same marks, with an IME composition over `range`.
+    pub fn composing(self, range: Option<(usize, usize)>) -> Self {
+        Self {
+            composing: range,
+            ..self
         }
     }
 
     /// Whether this row needs rebuilding for the marks alone — it holds the
-    /// caret, or the selection touches it. Used to invalidate rows whose
-    /// *text* did not change but whose decoration did.
+    /// caret, or the selection or a composition touches it. Used to
+    /// invalidate rows whose *text* did not change but whose decoration did.
     pub fn touches(&self, row: usize, vrow: &VRow) -> bool {
         if self.caret.is_some_and(|(r, _)| r == row) {
             return true;
         }
-        match self.selection {
-            None => false,
-            Some((lo, hi)) => {
-                // A row is touched when any glyph of it falls in the range, or
-                // when the range spans the row entirely.
-                vrow.glyphs.iter().any(|g| g.src >= lo && g.src < hi)
-                    || (vrow.glyphs.first().is_some_and(|g| g.src >= lo) && vrow.end_src <= hi)
-            }
-        }
+        [self.selection, self.composing].into_iter().flatten().any(|(lo, hi)| {
+            // A row is touched when any glyph of it falls in the range, or
+            // when the range spans the row entirely.
+            vrow.glyphs.iter().any(|g| g.src >= lo && g.src < hi)
+                || (vrow.glyphs.first().is_some_and(|g| g.src >= lo) && vrow.end_src <= hi)
+        })
     }
 }
 
@@ -133,25 +143,29 @@ impl Marks {
 pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
     let mut runs: Vec<Run> = Vec::new();
     let mut class = String::new();
-    // The style and selection state the open run was opened with. A glyph
-    // extends it when both still match.
-    let mut open: Option<(leaf_core::Style, bool)> = None;
+    // The style, selection and composition state the open run was opened
+    // with. A glyph extends it when all three still match.
+    let mut open: Option<(leaf_core::Style, bool, bool)> = None;
 
     for g in &vrow.glyphs {
-        let selected = is_selected(g, marks);
-        let extends = open == Some((g.style, selected));
+        let selected = within(g, marks.selection);
+        let composing = within(g, marks.composing);
+        let extends = open == Some((g.style, selected, composing));
         if !extends {
             class.clear();
             class_of(&g.style, &mut class);
             if selected {
                 class.push_str(" sel");
             }
+            if composing {
+                class.push_str(" ime");
+            }
             runs.push(Run {
                 text: String::new(),
                 class: class.clone(),
                 src: opts.offsets.then_some(g.src),
             });
-            open = Some((g.style, selected));
+            open = Some((g.style, selected, composing));
         }
         // `drawn()` rather than `ch`: a list item's indent on a continuation
         // row is spelled with the marker's characters for its width and drawn
@@ -170,10 +184,8 @@ pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
     }
 }
 
-fn is_selected(g: &Glyph, marks: &Marks) -> bool {
-    marks
-        .selection
-        .is_some_and(|(lo, hi)| g.src >= lo && g.src < hi)
+fn within(g: &Glyph, range: Option<(usize, usize)>) -> bool {
+    range.is_some_and(|(lo, hi)| g.src >= lo && g.src < hi)
 }
 
 #[cfg(test)]
@@ -214,12 +226,22 @@ mod tests {
         let marks = Marks {
             caret: None,
             selection: Some((0, 5)),
+            composing: None,
         };
         let v = row_view(&d.vmap.rows[0], 0, &marks, Opts::default());
         assert_eq!(v.runs[0].text, "hello");
         assert!(v.runs[0].class.ends_with("sel"));
         assert_eq!(v.runs[1].text, " world");
         assert!(!v.runs[1].class.contains("sel"));
+    }
+
+    #[test]
+    fn a_composition_is_classed_ime() {
+        let d = doc("hello world\n");
+        let marks = Marks::default().composing(Some((6, 11)));
+        let v = row_view(&d.vmap.rows[0], 0, &marks, Opts::default());
+        assert_eq!(v.runs[1].text, "world");
+        assert!(v.runs[1].class.ends_with("ime"), "{}", v.runs[1].class);
     }
 
     #[test]
