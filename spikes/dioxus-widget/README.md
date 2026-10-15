@@ -496,6 +496,29 @@ Checked on macOS: alignment (`:---`, `---:`), a wrapping cell, a bold shaded
 head, a table in a quote; a click into a word in a cell, typing there, ↓ to
 the cell below, and the source saved as expected.
 
+### Images
+
+`native-alpha/src/media.rs` draws a block-level image, video or audio from
+core's `MediaInfo` in place of the one-row `🖼 alt` placeholder, as
+`Block::Media` in `blocks.rs`. Blitz draws the picture itself: an `img` whose
+`src` is the file's `file://` URL, which its `net` provider reads and decodes
+(PNG, JPEG, GIF, WebP, TIFF, SVG). The block's height has to be known before
+Blitz decodes anything, so the size comes off the file's header (`image`) or
+an SVG's canvas (`usvg`), once per path, a failure cached too. A relative path
+resolves against the document's directory. The box is fitted to the column
+past any list marker or quote gutter, keeps its aspect ratio, is never scaled
+up, and is capped at 420 px tall (Swift's `MediaLayout.fit`). Like Swift and
+leaf-gpui it never calls `Doc::set_media_rows`, which is for a terminal: the
+placeholder stays one row and the block stands in for it.
+
+A click on the left half of a picture puts the caret at core's stop in front
+of it, and on the right half at the stop past it; the caret draws as a bar
+at that side of the box. There is no playback, as in Swift: a video draws its
+poster (or a dark 16:9 box) under a play badge, audio a fixed-height chip,
+and a picture that would not load a dashed chip with its alt text. A web URL
+or `data:` URI also gets the chip, because nothing reads its size before
+layout.
+
 ### Working on the native editor
 
 `native-alpha/src/main.rs` is only the app's wiring: every event source —
@@ -517,8 +540,8 @@ Pure logic is unit-tested beside it (`cargo test` in `native-alpha/`);
 `LEAF_TRACE=1` and `LEAF_OUTLINE=1` are the instruments for the rest. A window
 covered by others does not paint — see `occluded` in the trace.
 
-**Still not at parity**, all frontend work: dictation, images, math and Mermaid drawn as pictures rather than as
-core's monospace fallbacks, spellcheck and
+**Still not at parity**, all frontend work: dictation, math and Mermaid drawn as pictures rather than as
+core's monospace fallbacks, video and audio playback, spellcheck and
 autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a
 toolbar, Save As / New / Open, settings and dark mode, print and PDF,
 accessibility.

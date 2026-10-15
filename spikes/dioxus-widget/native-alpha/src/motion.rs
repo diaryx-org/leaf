@@ -157,7 +157,7 @@ impl Editor {
                 };
                 (row, col, Spot::Pos(row, col))
             }
-            Target::Cell { first, .. } => {
+            Target::Cell { first, .. } | Target::Block { first } => {
                 let blocks = self.sig.blocks.peek();
                 let Some(off) = blocks.iter().find(|b| b.first() == first).and_then(|b| b.hit(&p)) else {
                     return;

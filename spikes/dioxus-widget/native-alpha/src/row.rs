@@ -17,12 +17,13 @@ use crate::text::{Kind, RowLayout, byte_of_col};
 /// click's client x less this is its x within a row.
 pub const PAD: f64 = 16.0;
 
-/// What a line belongs to: a row, or a cell of the table whose first row is
-/// `first`.
+/// What a line belongs to: a row, a cell of the table whose first row is
+/// `first`, or a block with nothing finer to hit (a picture).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
     Row(usize),
     Cell { first: usize, r: usize, c: usize },
+    Block { first: usize },
 }
 
 /// What the pointer did on a line: at visual line `line` of `at`, `x` CSS
