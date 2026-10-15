@@ -404,8 +404,22 @@ instead and leaves core's where `edit_composing` put it.
 
 Unit-tested (a dead key, a kana composition folding into one undo, a
 withdrawn composition, a composition over a selection). In the app on macOS,
-dead keys work (⌥E E → é, ⌥U O → ö); a multi-step input method such as
-Japanese has not been tried yet.
+dead keys work (⌥E E → é, ⌥U O → ö), and so does Japanese (romaji → kana →
+漢字, undone in one step).
+
+Two macOS text features do not, and neither is the editor's to fix:
+
+- **Press-and-hold accents.** Holding E repeats it instead of opening the
+  accent popup: AppKit shows that popup only for a view that handles key
+  repeats as its own text views do, and winit's does not.
+- **The emoji picker.** ⌃⌘Space is the key equivalent of *Edit ▸ Emoji &
+  Symbols*, which AppKit adds to an app's Edit menu, and this app has no
+  menu bar. And were the picker opened another way, winit's `insertText`
+  forwards only text that ends a composition, so its insertion would be
+  dropped.
+
+Both want a winit patch (its macOS `insertText` and key-repeat handling) and
+a real menu bar, which parity needs anyway.
 
 **Still not at parity**, all frontend work: dictation, tables, images, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, the source view, find and replace, spellcheck and
