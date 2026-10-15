@@ -509,7 +509,11 @@ appearance resolves them, its syntax pairs, its 28% highlighter washes). A
 test fails if a property is used but not set, set for one appearance only, or
 a literal colour appears outside the two palettes. The one Rust is a
 `request_redraw` on `ThemeChanged`, which Blitz handles without asking for a
-frame.
+frame — and the Appearance override below, which cannot go through Blitz:
+winit sends no `ThemeChanged` for the app's own `Window::set_theme` (its
+appearance observer ignores a window whose appearance is set), so a forced
+appearance rewrites the dark block's media query to `all` or `not all`
+(`view::themed`).
 
 **Settings (⌘,, Leaf ▸ Settings…)** are Swift's `SettingsView` choices with
 its values: font and code font, size (14/16/19), line spacing
@@ -537,7 +541,22 @@ it follows the face, the size and the zoom.
 viewport in the wrong units. The editor wins by naming the three chords as
 View menu items: macOS hands a key equivalent to the menu before the window,
 so Blitz never sees them. ⇧⌘= (⌘+ typed with Shift) is not the menu item's
-equivalent; see "Checked" below for what it does.
+equivalent: it reaches the editor through the window, which zooms the text,
+and Blitz, which almost certainly zooms the page as well — dioxus-native gives
+the app no handle on Blitz's viewport to undo it. Not verified, since the
+tools here synthesise that chord as `NumpadEqual`.
+
+Checked on macOS: the panel from Leaf ▸ Settings… and ⌘,, closed by Done and
+Escape; Dark, Light and back from the panel, the window's title bar with them;
+Dark kept across a relaunch through the settings file; Charter at Large, and
+⌘= / ⌘− / ⌘0 from the keyboard (125%, 150%, back to 100%), each reflowing
+with the column widening by its measure while the status line stays at 12px —
+Blitz's page zoom never acted; a click in the right half of a glyph putting
+the caret after it, in Charter at 19px and again at 125%; Restore Defaults
+back to the System appearance; the source view at its 82-cell measure. Not
+checked: a change of the *system's* appearance while the app runs (the
+`prefers-color-scheme` path is the one the launch used, and Blitz's handler
+is above), which needs System Settings changed.
 
 ### Working on the native editor
 

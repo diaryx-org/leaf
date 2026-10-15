@@ -11,6 +11,7 @@ use crate::findbar;
 use crate::row::{self, Row};
 use crate::table::{PAD_X, PAD_Y};
 use crate::prefs;
+use crate::settings::Appearance;
 use crate::text::Type;
 use crate::trace::trace;
 
@@ -65,6 +66,21 @@ body {{ position: relative; }}
 /// The window chrome's colours — the status line, the find bar, the settings
 /// panel — beside the document's in the parent's stylesheet, and like them
 /// set once per appearance.
+/// The stylesheet for an appearance. `System` leaves the dark palette to
+/// `prefers-color-scheme`, which Blitz answers from winit's theme. A forced
+/// one cannot go that way: winit sends no `ThemeChanged` for the app's own
+/// `Window::set_theme` (its appearance observer ignores a window whose
+/// appearance is set), so Blitz never hears of it — the dark block is
+/// switched on or off here instead.
+pub fn themed(css: &str, appearance: Appearance) -> String {
+    const DARK: &str = "@media (prefers-color-scheme: dark)";
+    match appearance {
+        Appearance::System => css.to_string(),
+        Appearance::Dark => css.replace(DARK, "@media all"),
+        Appearance::Light => css.replace(DARK, "@media not all"),
+    }
+}
+
 const CHROME: &str = "
 :root {
   --chrome-bg: #f5f5f5;
@@ -147,8 +163,8 @@ pub fn render(ed: &Editor) -> Element {
     let (wheel, past_end) = (ed.clone(), ed.clone());
 
     rsx! {
-        style { {STYLESHEET} }
-        style { {css(&ty)} }
+        style { {themed(STYLESHEET, prefs.settings.appearance)} }
+        style { {themed(&css(&ty), prefs.settings.appearance)} }
         // The mouse's default actions are cancelled: they are Blitz's own
         // text selection, drawn over leaf's, and the focus changes that made
         // `onkeydown` unreliable (see `keys.rs`). Not `onpointerdown`:
@@ -251,5 +267,15 @@ mod tests {
         assert!(css.contains("font-family: Charter, serif; font-size: 19px; line-height: 1.75;"), "{css}");
         assert!(css.contains("font-family: Monaco, monospace;"));
         assert!(css.contains("min-height: 1.75em;"));
+    }
+
+    #[test]
+    fn a_forced_appearance_switches_the_dark_block_itself() {
+        let css = dioxus_widget_spike::style::STYLESHEET;
+        assert_eq!(themed(css, Appearance::System), css);
+        let dark = themed(css, Appearance::Dark);
+        assert!(dark.contains("@media all") && !dark.contains("prefers-color-scheme"));
+        let light = themed(css, Appearance::Light);
+        assert!(light.contains("@media not all") && !light.contains("prefers-color-scheme"));
     }
 }
