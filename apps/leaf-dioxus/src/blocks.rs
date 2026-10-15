@@ -102,7 +102,11 @@ pub fn build(
             _ => None,
         });
         let block = match reused {
-            Some(b) => table::Block { first: t.rows_span.start, rows: t.rows_span.clone(), ..b },
+            Some(b) => table::Block {
+                first: t.rows_span.start,
+                rows: t.rows_span.clone(),
+                ..b
+            },
             None => {
                 let layout = table::layout(fonts, &view, width);
                 table::Block {

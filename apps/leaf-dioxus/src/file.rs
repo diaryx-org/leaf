@@ -52,7 +52,9 @@ pub enum Unsaved {
 pub async fn ask_unsaved(window: &Arc<dyn Window>, name: &str) -> Unsaved {
     let answer = AsyncMessageDialog::new()
         .set_level(MessageLevel::Warning)
-        .set_title(format!("Do you want to save the changes you made to “{name}”?"))
+        .set_title(format!(
+            "Do you want to save the changes you made to “{name}”?"
+        ))
         .set_description("Your changes will be lost if you don’t save them.")
         .set_buttons(MessageButtons::YesNoCancelCustom(
             "Save".into(),
@@ -97,11 +99,14 @@ impl crate::editor::Editor {
                     let new = match action {
                         FileAction::New => leaf_core::Doc::blank().expect("a blank document"),
                         _ => {
-                            let Some(path) = pick_open(&ed.st.window).await else { return };
+                            let Some(path) = pick_open(&ed.st.window).await else {
+                                return;
+                            };
                             match leaf_core::Doc::open(path.clone()) {
                                 Ok(d) => d,
                                 Err(e) => {
-                                    ed.st.doc.borrow_mut().status = Some(format!("{}: {e}", path.display()));
+                                    ed.st.doc.borrow_mut().status =
+                                        Some(format!("{}: {e}", path.display()));
                                     ed.repaint();
                                     return;
                                 }
@@ -121,7 +126,9 @@ async fn save_as(ed: &crate::editor::Editor) -> bool {
         true => "Untitled.md".to_owned(),
         false => ed.st.doc.borrow().file_name(),
     };
-    let Some(path) = pick_save(&ed.st.window, &name).await else { return false };
+    let Some(path) = pick_save(&ed.st.window, &name).await else {
+        return false;
+    };
     let mut d = ed.st.doc.borrow_mut();
     d.save_as(path);
     !d.dirty

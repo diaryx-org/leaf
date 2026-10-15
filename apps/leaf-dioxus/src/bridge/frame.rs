@@ -44,7 +44,10 @@ pub struct Frame {
 /// What one frame cost this side of Dioxus. The editor reads `rebuilt`; the
 /// rest say why, for the tests.
 #[derive(Clone, Copy, Default, Debug)]
-#[cfg_attr(not(test), expect(dead_code, reason = "the tests read why a row was rebuilt"))]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the tests read why a row was rebuilt")
+)]
 pub struct Stats {
     /// Rows whose handle is new — the ones Dioxus will actually render.
     pub rebuilt: usize,

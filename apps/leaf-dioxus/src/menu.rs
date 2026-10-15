@@ -57,7 +57,12 @@ impl AppMenu {
     /// the menu bar or from a context menu.
     pub fn next(&self) -> Option<Command> {
         while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if let Some(c) = self.commands.get(&event.id).cloned().or_else(|| context_command(&event.id)) {
+            if let Some(c) = self
+                .commands
+                .get(&event.id)
+                .cloned()
+                .or_else(|| context_command(&event.id))
+            {
                 return Some(c);
             }
         }
@@ -104,7 +109,11 @@ pub fn install() -> AppMenu {
     )
     .expect("the app menu");
     // Leaf ▸ Settings…, where a Mac app keeps it.
-    let settings = b.item("Settings…", Command::Chord(ch(","), Code::Comma, CMD), Some((CMD, Code::Comma)));
+    let settings = b.item(
+        "Settings…",
+        Command::Chord(ch(","), Code::Comma, CMD),
+        Some((CMD, Code::Comma)),
+    );
     let _ = app.insert(&settings, 2);
     let _ = app.insert(&PredefinedMenuItem::separator(), 3);
 
@@ -113,7 +122,12 @@ pub fn install() -> AppMenu {
     b.add(&file, "Open…", Command::Open, Some((CMD, Code::KeyO)));
     sep(&file);
     b.chord(&file, "Save", ch("s"), Code::KeyS, CMD);
-    b.add(&file, "Save As…", Command::SaveAs, Some((CMD | SHIFT, Code::KeyS)));
+    b.add(
+        &file,
+        "Save As…",
+        Command::SaveAs,
+        Some((CMD | SHIFT, Code::KeyS)),
+    );
     sep(&file);
     let _ = file.append(&PredefinedMenuItem::close_window(None));
 
@@ -126,7 +140,13 @@ pub fn install() -> AppMenu {
     b.chord(&edit, "Cut", ch("x"), Code::KeyX, CMD);
     b.chord(&edit, "Copy", ch("c"), Code::KeyC, CMD);
     b.chord(&edit, "Paste", ch("v"), Code::KeyV, CMD);
-    b.chord(&edit, "Paste and Match Style", ch("v"), Code::KeyV, CMD | SHIFT | ALT);
+    b.chord(
+        &edit,
+        "Paste and Match Style",
+        ch("v"),
+        Code::KeyV,
+        CMD | SHIFT | ALT,
+    );
     b.chord(&edit, "Select All", ch("a"), Code::KeyA, CMD);
     sep(&edit);
     let find = Submenu::new("Find", true);
@@ -153,7 +173,13 @@ pub fn install() -> AppMenu {
         (5, Code::Digit5),
         (6, Code::Digit6),
     ] {
-        b.chord(&format, &format!("Heading {n}"), ch(&n.to_string()), code, CTRL);
+        b.chord(
+            &format,
+            &format!("Heading {n}"),
+            ch(&n.to_string()),
+            code,
+            CTRL,
+        );
     }
     sep(&format);
     b.chord(&format, "Bulleted List", ch("*"), Code::Digit8, CMD | SHIFT);
@@ -167,7 +193,13 @@ pub fn install() -> AppMenu {
     b.chord(&format, "Outdent", ch("["), Code::BracketLeft, CMD);
     sep(&format);
     b.chord(&format, "Move Block Up", Key::ArrowUp, Code::ArrowUp, ALT);
-    b.chord(&format, "Move Block Down", Key::ArrowDown, Code::ArrowDown, ALT);
+    b.chord(
+        &format,
+        "Move Block Down",
+        Key::ArrowDown,
+        Code::ArrowDown,
+        ALT,
+    );
     sep(&format);
     let _ = format.append(&table_menu(&mut b));
 
@@ -195,10 +227,16 @@ pub fn install() -> AppMenu {
     )
     .expect("the window menu");
 
-    let menu = Menu::with_items(&[&app, &file, &edit, &format, &view, &window]).expect("the menu bar");
+    let menu =
+        Menu::with_items(&[&app, &file, &edit, &format, &view, &window]).expect("the menu bar");
     menu.init_for_nsapp();
     window.set_as_windows_menu_for_nsapp();
-    AppMenu { _menu: menu, commands: b.commands, table_items: b.table_items, in_table: true.into() }
+    AppMenu {
+        _menu: menu,
+        commands: b.commands,
+        table_items: b.table_items,
+        in_table: true.into(),
+    }
 }
 
 /// Format ▸ Table, as Swift's `TableRows` lays it out — none of it with a
@@ -224,8 +262,18 @@ fn table_menu(b: &mut Builder) -> Submenu {
     grid(b, &table, "Insert Row Below", InsertRow { below: true });
     grid(b, &table, "Delete Row", DeleteRow);
     sep(&table);
-    grid(b, &table, "Insert Column Left", InsertColumn { right: false });
-    grid(b, &table, "Insert Column Right", InsertColumn { right: true });
+    grid(
+        b,
+        &table,
+        "Insert Column Left",
+        InsertColumn { right: false },
+    );
+    grid(
+        b,
+        &table,
+        "Insert Column Right",
+        InsertColumn { right: true },
+    );
     grid(b, &table, "Delete Column", DeleteColumn);
     sep(&table);
     let align = Submenu::new("Align Column", true);
@@ -292,7 +340,10 @@ fn context_items(cx: &Context) -> Vec<Option<&'static str>> {
         None => {}
     }
     if cx.link {
-        ids.extend([Some("leaf.context.open-link"), Some("leaf.context.copy-link")]);
+        ids.extend([
+            Some("leaf.context.open-link"),
+            Some("leaf.context.copy-link"),
+        ]);
     }
     if !ids.is_empty() {
         ids.push(None);
@@ -321,15 +372,22 @@ fn context_items(cx: &Context) -> Vec<Option<&'static str>> {
 pub fn show_context(window: &dyn dioxus_native::winit::window::Window, cx: &Context) {
     use muda::ContextMenu;
     use raw_window_handle::RawWindowHandle;
-    let Ok(handle) = window.rwh_06_window_handle().window_handle() else { return };
-    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+    let Ok(handle) = window.rwh_06_window_handle().window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else {
+        return;
+    };
     let view = h.ns_view.as_ptr() as usize;
 
     let menu = Menu::new();
     for id in context_items(cx) {
         match id {
             Some(id) => {
-                let label = CONTEXT.iter().find(|(i, _)| *i == id).map_or(id, |(_, l)| l);
+                let label = CONTEXT
+                    .iter()
+                    .find(|(i, _)| *i == id)
+                    .map_or(id, |(_, l)| l);
                 let _ = menu.append(&MenuItem::with_id(id, label, true, None));
             }
             None => {
@@ -356,7 +414,12 @@ pub fn show_context(_window: &dyn dioxus_native::winit::window::Window, _cx: &Co
 /// No menu bar but macOS's yet: the keyboard has every command regardless.
 #[cfg(not(target_os = "macos"))]
 pub fn install() -> AppMenu {
-    AppMenu { _menu: Menu::new(), commands: HashMap::new(), table_items: Vec::new(), in_table: true.into() }
+    AppMenu {
+        _menu: Menu::new(),
+        commands: HashMap::new(),
+        table_items: Vec::new(),
+        in_table: true.into(),
+    }
 }
 
 fn sep(m: &Submenu) {
@@ -372,19 +435,35 @@ struct Builder {
 impl Builder {
     /// An item that presses `key` with `mods`, shown with it as the shortcut.
     fn chord(&mut self, menu: &Submenu, label: &str, key: Key, code: Code, mods: Modifiers) {
-        self.add(menu, label, Command::Chord(key, code, mods), Some((mods, code)));
+        self.add(
+            menu,
+            label,
+            Command::Chord(key, code, mods),
+            Some((mods, code)),
+        );
     }
 
     /// An item, appended to `menu` — and handed back, for a caller that
     /// enables or disables it later (the Table items outside a table).
-    fn add(&mut self, menu: &Submenu, label: &str, command: Command, shortcut: Option<(Modifiers, Code)>) -> MenuItem {
+    fn add(
+        &mut self,
+        menu: &Submenu,
+        label: &str,
+        command: Command,
+        shortcut: Option<(Modifiers, Code)>,
+    ) -> MenuItem {
         let item = self.item(label, command, shortcut);
         let _ = menu.append(&item);
         item
     }
 
     /// An item, for a menu to take where it likes.
-    fn item(&mut self, label: &str, command: Command, shortcut: Option<(Modifiers, Code)>) -> MenuItem {
+    fn item(
+        &mut self,
+        label: &str,
+        command: Command,
+        shortcut: Option<(Modifiers, Code)>,
+    ) -> MenuItem {
         let id = MenuId::new(format!("leaf.{}", self.commands.len()));
         let accel = shortcut.and_then(|(m, c)| accelerator(m, c));
         let item = MenuItem::with_id(id.clone(), label, true, accel);
@@ -414,17 +493,52 @@ mod tests {
     #[test]
     fn a_chord_becomes_its_menu_shortcut() {
         let a = accelerator(CMD | SHIFT, Code::Digit8).expect("an accelerator");
-        assert_eq!(a, Accelerator::from_str("Shift+Cmd+Digit8").expect("a parse"));
+        assert_eq!(
+            a,
+            Accelerator::from_str("Shift+Cmd+Digit8").expect("a parse")
+        );
     }
 
     #[test]
     fn a_context_menu_leads_with_the_link_and_offers_cut_only_with_a_selection() {
-        let ids = |cx| context_items(&cx).into_iter().map(|i| i.unwrap_or("-")).collect::<Vec<_>>();
-        let plain = ids(Context { selection: false, link: false, footnote: None });
-        assert_eq!(plain, ["leaf.context.paste", "leaf.context.paste-plain", "leaf.context.select-all"]);
-        let link = ids(Context { selection: true, link: true, footnote: None });
-        assert_eq!(&link[..4], ["leaf.context.open-link", "leaf.context.copy-link", "-", "leaf.context.cut"]);
-        let note = ids(Context { selection: false, link: false, footnote: Some(Footnote::BackToReference) });
+        let ids = |cx| {
+            context_items(&cx)
+                .into_iter()
+                .map(|i| i.unwrap_or("-"))
+                .collect::<Vec<_>>()
+        };
+        let plain = ids(Context {
+            selection: false,
+            link: false,
+            footnote: None,
+        });
+        assert_eq!(
+            plain,
+            [
+                "leaf.context.paste",
+                "leaf.context.paste-plain",
+                "leaf.context.select-all"
+            ]
+        );
+        let link = ids(Context {
+            selection: true,
+            link: true,
+            footnote: None,
+        });
+        assert_eq!(
+            &link[..4],
+            [
+                "leaf.context.open-link",
+                "leaf.context.copy-link",
+                "-",
+                "leaf.context.cut"
+            ]
+        );
+        let note = ids(Context {
+            selection: false,
+            link: false,
+            footnote: Some(Footnote::BackToReference),
+        });
         assert_eq!(&note[..2], ["leaf.context.reference", "-"]);
     }
 
@@ -435,7 +549,11 @@ mod tests {
         }
         assert_eq!(
             context_command(&MenuId::new("leaf.context.paste-plain")),
-            Some(Command::Chord(Key::Character("v".into()), Code::KeyV, CMD | SHIFT | ALT))
+            Some(Command::Chord(
+                Key::Character("v".into()),
+                Code::KeyV,
+                CMD | SHIFT | ALT
+            ))
         );
     }
 }

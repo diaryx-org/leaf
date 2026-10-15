@@ -43,8 +43,8 @@ mod host;
 mod ime;
 mod input;
 mod keys;
-mod media;
 mod link;
+mod media;
 mod menu;
 mod motion;
 mod prefs;
@@ -94,7 +94,8 @@ fn open(path: Option<PathBuf>) -> Doc {
         }
     }
     let source = include_str!("../corpus/document.md").to_string();
-    Doc::from_source(source, Format::Markdown).unwrap_or_else(|_| Doc::blank().expect("a blank document"))
+    Doc::from_source(source, Format::Markdown)
+        .unwrap_or_else(|_| Doc::blank().expect("a blank document"))
 }
 
 /// The app: the editor, and every event source wired to it.

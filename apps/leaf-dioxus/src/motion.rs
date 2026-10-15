@@ -79,11 +79,16 @@ impl Editor {
         let st = &*self.st;
         // In a table, up and down are core's: to the cell above or below, in
         // the same column — falling through at the grid's edge.
-        if !extend && st.doc.borrow_mut().caret_in_table() && st.doc.borrow_mut().cell_move_vertical(down) {
+        if !extend
+            && st.doc.borrow_mut().caret_in_table()
+            && st.doc.borrow_mut().cell_move_vertical(down)
+        {
             st.goal.set(None);
             return;
         }
-        let Some((row, line, x)) = self.caret_at() else { return };
+        let Some((row, line, x)) = self.caret_at() else {
+            return;
+        };
         let aim = st.goal.get().unwrap_or(x);
         let lays = self.sig.lays.peek();
         let rows = self.sig.rows.peek();
@@ -97,7 +102,10 @@ impl Editor {
         } else if line > 0 {
             Some((row, line - 1))
         } else {
-            (0..row).rev().find(|&r| holds(r)).map(|r| (r, lays[r].0.lines.len() - 1))
+            (0..row)
+                .rev()
+                .find(|&r| holds(r))
+                .map(|r| (r, lays[r].0.lines.len() - 1))
         };
         let mut doc = st.doc.borrow_mut();
         match target {
@@ -114,7 +122,9 @@ impl Editor {
     /// — Swift's and gpui's rule.
     pub fn page(&self, down: bool, extend: bool) {
         let line = self.st.fonts.borrow().ty().line() as f64;
-        let lines = ((self.view_height() / line) as usize).saturating_sub(1).max(1);
+        let lines = ((self.view_height() / line) as usize)
+            .saturating_sub(1)
+            .max(1);
         for _ in 0..lines {
             self.vertical(down, extend);
         }
@@ -163,7 +173,11 @@ impl Editor {
             }
             Target::Cell { first, .. } | Target::Block { first } => {
                 let blocks = self.sig.blocks.peek();
-                let Some(off) = blocks.iter().find(|b| b.first() == first).and_then(|b| b.hit(&p)) else {
+                let Some(off) = blocks
+                    .iter()
+                    .find(|b| b.first() == first)
+                    .and_then(|b| b.hit(&p))
+                else {
                     return;
                 };
                 (first, off, Spot::Offset(off))
@@ -174,10 +188,18 @@ impl Editor {
             Pointer::Drag { .. } => PressMode::Place,
         };
         if mode != PressMode::Place {
-            st.last_press.set(Some(Press { at: Instant::now(), row, key, count: 1, drags: false }));
+            st.last_press.set(Some(Press {
+                at: Instant::now(),
+                row,
+                key,
+                count: 1,
+                drags: false,
+            }));
         }
         match mode {
-            PressMode::Place => gesture(&mut st.doc.borrow_mut(), &st.last_press, p, row, key, spot),
+            PressMode::Place => {
+                gesture(&mut st.doc.borrow_mut(), &st.last_press, p, row, key, spot)
+            }
             // ⌘-click places the caret, then follows what it landed on.
             PressMode::Follow => place(&mut st.doc.borrow_mut(), spot, false),
             // A right-click outside the selection moves the caret there
@@ -185,7 +207,9 @@ impl Editor {
             PressMode::Context => {
                 let mut doc = st.doc.borrow_mut();
                 let at = spot_offset(&doc, spot);
-                let inside = doc.anchor.is_some_and(|a| a.min(doc.caret) <= at && at <= a.max(doc.caret));
+                let inside = doc
+                    .anchor
+                    .is_some_and(|a| a.min(doc.caret) <= at && at <= a.max(doc.caret));
                 if !inside {
                     place(&mut doc, spot, false);
                 }
@@ -216,7 +240,14 @@ impl Editor {
 /// select the word and the block; a drag extends the selection from wherever
 /// the press left it. `row` and `key` identify the spot for counting presses
 /// and noticing that a drag has not moved.
-fn gesture(doc: &mut Doc, last: &std::cell::Cell<Option<Press>>, p: Pointer, row: usize, key: usize, spot: Spot) {
+fn gesture(
+    doc: &mut Doc,
+    last: &std::cell::Cell<Option<Press>>,
+    p: Pointer,
+    row: usize,
+    key: usize,
+    spot: Spot,
+) {
     let offset = |doc: &Doc| spot_offset(doc, spot);
     let place = |doc: &mut Doc, extend: bool| place(doc, spot, extend);
     match p {
@@ -226,7 +257,13 @@ fn gesture(doc: &mut Doc, last: &std::cell::Cell<Option<Press>>, p: Pointer, row
                 Some(l) if !extend && l.row == row && now - l.at < MULTI_CLICK => l.count % 3 + 1,
                 _ => 1,
             };
-            last.set(Some(Press { at: now, row, key, count, drags: true }));
+            last.set(Some(Press {
+                at: now,
+                row,
+                key,
+                count,
+                drags: true,
+            }));
             if count == 1
                 && !extend
                 && doc.view == View::Wysiwyg

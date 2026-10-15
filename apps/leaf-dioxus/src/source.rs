@@ -42,7 +42,8 @@ impl SourceRows {
         selection: Option<(usize, usize)>,
         composing: Option<(usize, usize)>,
     ) -> (&[RowHandle], (usize, usize)) {
-        let mut previous: HashMap<&RowView, &RowHandle> = HashMap::with_capacity(self.handles.len());
+        let mut previous: HashMap<&RowView, &RowHandle> =
+            HashMap::with_capacity(self.handles.len());
         for h in &self.handles {
             previous.insert(&h.0, h);
         }
@@ -58,7 +59,9 @@ impl SourceRows {
             while next_run < runs.len() && runs[next_run].span.end <= start {
                 next_run += 1;
             }
-            let caret_col = (start..=end).contains(&caret).then(|| cols(&line[..caret - start]));
+            let caret_col = (start..=end)
+                .contains(&caret)
+                .then(|| cols(&line[..caret - start]));
             if let Some(c) = caret_col {
                 caret_pos = (row, c);
             }
@@ -100,7 +103,8 @@ fn line_runs(
     selection: Option<(usize, usize)>,
     composing: Option<(usize, usize)>,
 ) -> Vec<Run> {
-    let within = |r: Option<(usize, usize)>, at: usize| r.is_some_and(|(lo, hi)| at >= lo && at < hi);
+    let within =
+        |r: Option<(usize, usize)>, at: usize| r.is_some_and(|(lo, hi)| at >= lo && at < hi);
     let mut out: Vec<Run> = Vec::new();
     let mut open: Option<(Style, bool, bool)> = None;
     let mut class = String::new();
@@ -124,7 +128,11 @@ fn line_runs(
             if key.2 {
                 class.push_str(" ime");
             }
-            out.push(Run { text: String::new(), class: class.clone(), src: None });
+            out.push(Run {
+                text: String::new(),
+                class: class.clone(),
+                src: None,
+            });
             open = Some(key);
         }
         out.last_mut().expect("a run was just opened").text.push(ch);
@@ -189,7 +197,12 @@ mod tests {
         let d = doc("Some **bold** text.\n");
         let mut s = SourceRows::default();
         let (rows, _) = s.update(&d, 0, None, None);
-        let stars = rows[0].0.runs.iter().find(|r| r.text == "**").expect("a delimiter run");
+        let stars = rows[0]
+            .0
+            .runs
+            .iter()
+            .find(|r| r.text == "**")
+            .expect("a delimiter run");
         assert!(stars.class.contains("delim"), "{}", stars.class);
     }
 
@@ -217,4 +230,3 @@ mod tests {
         assert_eq!(rows[2], beta, "beta moved down a row and kept its Rc");
     }
 }
-

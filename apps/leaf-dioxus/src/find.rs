@@ -52,7 +52,9 @@ pub enum Outcome {
     /// The query changed: search again from where the search began.
     Searched,
     /// Go to the next or previous match.
-    Step { forward: bool },
+    Step {
+        forward: bool,
+    },
     /// Replace the current match and go to the next; or every match.
     Replace,
     ReplaceAll,
@@ -117,7 +119,11 @@ impl Find {
         match key {
             Key::Escape => return Outcome::Close,
             Key::Enter if self.focus == Focus::Replacement => {
-                return if alt { Outcome::ReplaceAll } else { Outcome::Replace };
+                return if alt {
+                    Outcome::ReplaceAll
+                } else {
+                    Outcome::Replace
+                };
             }
             Key::Enter => return Outcome::Step { forward: !shift },
             Key::Tab if self.replacing => {
@@ -166,7 +172,11 @@ impl Find {
         if forward {
             m.iter().find(|&&(s, _)| s >= hi).or(m.first()).copied()
         } else {
-            m.iter().rev().find(|&&(_, e)| e <= lo).or(m.last()).copied()
+            m.iter()
+                .rev()
+                .find(|&&(_, e)| e <= lo)
+                .or(m.last())
+                .copied()
         }
     }
 
@@ -181,7 +191,9 @@ impl Find {
 /// Replace the selection, if it is a match, with the replacement; answers
 /// whether it did.
 pub fn replace_current(find: &mut Find, doc: &mut Doc) -> bool {
-    let Some(sel) = doc.selection() else { return false };
+    let Some(sel) = doc.selection() else {
+        return false;
+    };
     if !find.matches(doc).contains(&sel) {
         return false;
     }
@@ -211,7 +223,9 @@ pub fn search(source: &str, query: &str) -> Vec<(usize, usize)> {
     }
     let hay = source.to_ascii_lowercase();
     let needle = query.to_ascii_lowercase();
-    hay.match_indices(&needle).map(|(i, m)| (i, i + m.len())).collect()
+    hay.match_indices(&needle)
+        .map(|(i, m)| (i, i + m.len()))
+        .collect()
 }
 
 /// What the find bar draws, copied out of [`Find`] for the render.
@@ -233,7 +247,11 @@ impl BarView {
             focus: find.focus,
             query: find.query.clone(),
             replacement: find.replacement.clone(),
-            count: if find.open { find.count(doc) } else { String::new() },
+            count: if find.open {
+                find.count(doc)
+            } else {
+                String::new()
+            },
         }
     }
 
@@ -281,23 +299,31 @@ impl Field {
     }
 
     fn prev(&self) -> usize {
-        self.text[..self.caret].char_indices().next_back().map_or(0, |(i, _)| i)
+        self.text[..self.caret]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(i, _)| i)
     }
 
     fn next(&self) -> usize {
-        self.text[self.caret..].chars().next().map_or(self.caret, |c| self.caret + c.len_utf8())
+        self.text[self.caret..]
+            .chars()
+            .next()
+            .map_or(self.caret, |c| self.caret + c.len_utf8())
     }
 
     fn key(&mut self, key: &Key, mods: Modifiers) -> FieldEdit {
         let cmd = mods.contains(Modifiers::SUPER) || mods.contains(Modifiers::META);
         match key {
-            Key::Character(c) if cmd && c == "v" => match arboard::Clipboard::new().and_then(|mut b| b.get_text()) {
-                Ok(t) => {
-                    self.insert(&t.replace('\n', " "));
-                    FieldEdit::Changed
+            Key::Character(c) if cmd && c == "v" => {
+                match arboard::Clipboard::new().and_then(|mut b| b.get_text()) {
+                    Ok(t) => {
+                        self.insert(&t.replace('\n', " "));
+                        FieldEdit::Changed
+                    }
+                    Err(_) => FieldEdit::Ignored,
                 }
-                Err(_) => FieldEdit::Ignored,
-            },
+            }
             // ⌘A in a field clears it on the next keystroke in a Mac text
             // field; with no selection to draw, it clears now.
             Key::Character(c) if cmd && c == "a" => {
@@ -311,7 +337,11 @@ impl Field {
                 FieldEdit::Changed
             }
             Key::Backspace if self.caret > 0 => {
-                let at = if mods.contains(Modifiers::ALT) || cmd { 0 } else { self.prev() };
+                let at = if mods.contains(Modifiers::ALT) || cmd {
+                    0
+                } else {
+                    self.prev()
+                };
                 self.text.replace_range(at..self.caret, "");
                 self.caret = at;
                 FieldEdit::Changed
@@ -378,9 +408,17 @@ mod tests {
         assert_eq!(f.step(&d, true), Some((0, 3)));
         let mut d = d;
         d.select_range(8, 11);
-        assert_eq!(f.step(&d, true), Some((0, 3)), "past the last, round to the first");
+        assert_eq!(
+            f.step(&d, true),
+            Some((0, 3)),
+            "past the last, round to the first"
+        );
         d.select_range(0, 3);
-        assert_eq!(f.step(&d, false), Some((8, 11)), "before the first, round to the last");
+        assert_eq!(
+            f.step(&d, false),
+            Some((8, 11)),
+            "before the first, round to the last"
+        );
     }
 
     #[test]
@@ -421,12 +459,25 @@ mod tests {
 
     #[test]
     fn typing_in_the_query_searches() {
-        let mut f = Find { open: true, focus: Focus::Query, ..Find::default() };
-        assert_eq!(f.key(&Key::Character("x".into()), Modifiers::empty()), Outcome::Searched);
+        let mut f = Find {
+            open: true,
+            focus: Focus::Query,
+            ..Find::default()
+        };
+        assert_eq!(
+            f.key(&Key::Character("x".into()), Modifiers::empty()),
+            Outcome::Searched
+        );
         assert_eq!(f.query.text, "x");
-        assert_eq!(f.key(&Key::Backspace, Modifiers::empty()), Outcome::Searched);
+        assert_eq!(
+            f.key(&Key::Backspace, Modifiers::empty()),
+            Outcome::Searched
+        );
         assert_eq!(f.query.text, "");
-        assert_eq!(f.key(&Key::Enter, Modifiers::SHIFT), Outcome::Step { forward: false });
+        assert_eq!(
+            f.key(&Key::Enter, Modifiers::SHIFT),
+            Outcome::Step { forward: false }
+        );
         assert_eq!(f.key(&Key::Escape, Modifiers::empty()), Outcome::Close);
     }
 }

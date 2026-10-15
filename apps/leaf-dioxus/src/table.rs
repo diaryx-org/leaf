@@ -90,7 +90,10 @@ impl Cell {
     /// The source offset at byte `at` of the cell's text: the glyph that
     /// starts there, or the cell's end past the last one.
     pub fn offset(&self, at: usize) -> usize {
-        self.srcs.iter().find(|&&(b, _)| b >= at).map_or(self.end, |&(_, s)| s)
+        self.srcs
+            .iter()
+            .find(|&&(b, _)| b >= at)
+            .map_or(self.end, |&(_, s)| s)
     }
 }
 
@@ -102,7 +105,8 @@ pub fn view_of(
     selection: Option<(usize, usize)>,
     composing: Option<(usize, usize)>,
 ) -> TableView {
-    let within = |r: Option<(usize, usize)>, at: usize| r.is_some_and(|(lo, hi)| at >= lo && at < hi);
+    let within =
+        |r: Option<(usize, usize)>, at: usize| r.is_some_and(|(lo, hi)| at >= lo && at < hi);
     let runs_of = |glyphs: &[Glyph], bold: bool| -> (Vec<Run>, Vec<(usize, usize)>) {
         let mut runs: Vec<Run> = Vec::new();
         let mut srcs = Vec::with_capacity(glyphs.len());
@@ -123,12 +127,19 @@ pub fn view_of(
                 if key.2 {
                     class.push_str(" ime");
                 }
-                runs.push(Run { text: String::new(), class: class.clone(), src: None });
+                runs.push(Run {
+                    text: String::new(),
+                    class: class.clone(),
+                    src: None,
+                });
                 open = Some(key);
             }
             srcs.push((bytes, g.src));
             let ch = g.drawn();
-            runs.last_mut().expect("a run was just opened").text.push(ch);
+            runs.last_mut()
+                .expect("a run was just opened")
+                .text
+                .push(ch);
             bytes += ch.len_utf8();
         }
         (runs, srcs)
@@ -148,11 +159,19 @@ pub fn view_of(
                     // The caret is in the cell anywhere from its start to its
                     // end; at a glyph's offset it stands before that glyph.
                     let caret_col = (cell.start..=cell.end).contains(&caret).then(|| {
-                        let at = srcs.iter().find(|&&(_, s)| s >= caret).map_or(text.len(), |&(b, _)| b);
+                        let at = srcs
+                            .iter()
+                            .find(|&&(_, s)| s >= caret)
+                            .map_or(text.len(), |&(b, _)| b);
                         cols(&text[..at])
                     });
                     Cell {
-                        view: RowView { runs, caret_col, code: false, decoration: false },
+                        view: RowView {
+                            runs,
+                            caret_col,
+                            code: false,
+                            decoration: false,
+                        },
                         srcs,
                         end: cell.end,
                         align: cell.align.into(),
@@ -161,7 +180,13 @@ pub fn view_of(
                 .collect(),
         })
         .collect();
-    TableView { prefix: RowView { runs: prefix, ..RowView::default() }, rows }
+    TableView {
+        prefix: RowView {
+            runs: prefix,
+            ..RowView::default()
+        },
+        rows,
+    }
 }
 
 /// A table laid out: its columns' widths, and every cell's lines.
@@ -193,7 +218,11 @@ impl TableLayout {
 /// Lay a table out in `avail` pixels.
 pub fn layout(fonts: &mut Fonts, view: &TableView, avail: f32) -> TableLayout {
     let prefix = fonts.layout(&view.prefix, f32::INFINITY, Kind::Prose);
-    let indent = if view.prefix.runs.is_empty() { 0.0 } else { prefix.width };
+    let indent = if view.prefix.runs.is_empty() {
+        0.0
+    } else {
+        prefix.width
+    };
     let n = view.rows.iter().map(|r| r.cells.len()).max().unwrap_or(0);
 
     // Every column at its widest cell, unwrapped.
@@ -220,11 +249,20 @@ pub fn layout(fonts: &mut Fonts, view: &TableView, avail: f32) -> TableLayout {
                 })
                 .collect();
             let tallest = cells.iter().flatten().map(|l| l.height).fold(0.0, f32::max);
-            RowGeom { height: tallest + PAD_Y * 2.0 + BORDER, cells }
+            RowGeom {
+                height: tallest + PAD_Y * 2.0 + BORDER,
+                cells,
+            }
         })
         .collect();
     let height = BORDER + rows.iter().map(|r| r.height).sum::<f32>();
-    TableLayout { indent, prefix, cols: text.iter().map(|t| t + chrome).collect(), rows, height }
+    TableLayout {
+        indent,
+        prefix,
+        cols: text.iter().map(|t| t + chrome).collect(),
+        rows,
+        height,
+    }
 }
 
 /// Text widths for columns that want `want` in `room`: as wanted if they
@@ -233,7 +271,10 @@ pub fn layout(fonts: &mut Fonts, view: &TableView, avail: f32) -> TableLayout {
 fn fit(want: &[f32], room: f32) -> Vec<f32> {
     let total: f32 = want.iter().sum();
     if total <= room || want.is_empty() {
-        return want.iter().map(|w| w.max(MIN_TEXT.min(*w).max(1.0))).collect();
+        return want
+            .iter()
+            .map(|w| w.max(MIN_TEXT.min(*w).max(1.0)))
+            .collect();
     }
     let mut out = want.to_vec();
     let mut fixed = vec![false; want.len()];
@@ -271,7 +312,9 @@ pub struct Block {
 
 impl PartialEq for Block {
     fn eq(&self, other: &Self) -> bool {
-        self.first == other.first && Rc::ptr_eq(&self.view, &other.view) && Rc::ptr_eq(&self.layout, &other.layout)
+        self.first == other.first
+            && Rc::ptr_eq(&self.view, &other.view)
+            && Rc::ptr_eq(&self.layout, &other.layout)
     }
 }
 
@@ -287,7 +330,8 @@ mod tests {
         d
     }
 
-    const TABLE: &str = "| Name | Notes |\n|:---|---:|\n| one | a short note |\n| two | another |\n";
+    const TABLE: &str =
+        "| Name | Notes |\n|:---|---:|\n| one | a short note |\n| two | another |\n";
 
     fn text(v: &RowView) -> String {
         v.runs.iter().map(|r| r.text.as_str()).collect()
@@ -315,7 +359,11 @@ mod tests {
         let one = TABLE.find("one").unwrap();
         assert_eq!(cell.offset(0), one);
         assert_eq!(cell.offset(2), one + 2);
-        assert_eq!(cell.offset(3), cell.end, "past the last glyph is the cell's end");
+        assert_eq!(
+            cell.offset(3),
+            cell.end,
+            "past the last glyph is the cell's end"
+        );
     }
 
     #[test]

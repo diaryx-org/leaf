@@ -1,17 +1,17 @@
 //! The page: the stylesheet, and the markup of the rows in view, the blocks
 //! among them, the find bar, the settings panel and the status line.
 
+use crate::bridge::style::STYLESHEET;
 use dioxus::html::geometry::WheelDelta;
 use dioxus::prelude::*;
-use crate::bridge::style::STYLESHEET;
 
 use crate::blocks;
 use crate::editor::Editor;
 use crate::findbar;
-use crate::row::{self, Row};
-use crate::table::{PAD_X, PAD_Y};
 use crate::prefs;
+use crate::row::{self, Row};
 use crate::settings::Appearance;
+use crate::table::{PAD_X, PAD_Y};
 use crate::text::Type;
 use crate::trace::trace;
 
@@ -36,7 +36,12 @@ use crate::trace::trace;
 //   the scroll, and the window cuts it off. The status line is pinned to the
 //   window's bottom over it, in a stacking layer of its own.
 pub fn css(ty: &Type) -> String {
-    let Type { body, mono, size, leading } = ty;
+    let Type {
+        body,
+        mono,
+        size,
+        leading,
+    } = ty;
     let mut css = format!(
         "html, body {{ margin: 0; overflow: hidden; height: 100vh; background: var(--leaf-bg); }}
 body {{ position: relative; }}
@@ -148,7 +153,12 @@ pub fn render(ed: &Editor) -> Element {
     let height = *sig.height.read();
     let top = *sig.top.read();
     let (first, last) = layout.window(top, height - bar_h);
-    trace(|| format!("render rows {first}..{last} of {}, top {top:.0}, height {height:.0}", layout.rows()));
+    trace(|| {
+        format!(
+            "render rows {first}..{last} of {}, top {top:.0}, height {height:.0}",
+            layout.rows()
+        )
+    });
     // The first drawn row is `top - above` above the viewport's top edge.
     let shift = layout.top(first) - top + bar_h;
     let rows = sig.rows.read();
@@ -221,7 +231,12 @@ mod tests {
         let names = |s: &str, after: &str| -> BTreeSet<String> {
             s.split(after)
                 .skip(1)
-                .map(|t| t.split(|c: char| !(c.is_alphanumeric() || c == '-')).next().unwrap_or("").to_string())
+                .map(|t| {
+                    t.split(|c: char| !(c.is_alphanumeric() || c == '-'))
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
+                })
                 .collect()
         };
         let used = names(css, "var(--");
@@ -236,7 +251,12 @@ mod tests {
                     .filter_map(|l| l.trim().strip_prefix("--"))
                     .filter_map(|l| l.split(':').next())
                     .map(str::to_string);
-                if k > 0 && n == 0 { &mut dark } else { &mut light }.extend(defined);
+                if k > 0 && n == 0 {
+                    &mut dark
+                } else {
+                    &mut light
+                }
+                .extend(defined);
             }
         }
         (used, light, dark)
@@ -244,7 +264,11 @@ mod tests {
 
     #[test]
     fn every_colour_is_set_for_both_appearances() {
-        let all = format!("{}{}", crate::bridge::style::STYLESHEET, css(&Type::default()));
+        let all = format!(
+            "{}{}",
+            crate::bridge::style::STYLESHEET,
+            css(&Type::default())
+        );
         let (used, light, dark) = properties(&all);
         assert!(used.len() > 20, "{used:?}");
         assert_eq!(light, dark, "light and dark set different properties");
@@ -255,16 +279,33 @@ mod tests {
         let rules: String = all
             .split(":root {")
             .enumerate()
-            .map(|(i, s)| if i == 0 { s } else { s.split_once('}').map_or("", |(_, after)| after) })
+            .map(|(i, s)| {
+                if i == 0 {
+                    s
+                } else {
+                    s.split_once('}').map_or("", |(_, after)| after)
+                }
+            })
             .collect();
-        assert!(!rules.contains('#'), "a literal colour outside the palettes");
+        assert!(
+            !rules.contains('#'),
+            "a literal colour outside the palettes"
+        );
     }
 
     #[test]
     fn the_stylesheet_sets_the_type_text_rs_measures_with() {
-        let ty = Type { body: "Charter, serif".into(), mono: "Monaco, monospace".into(), size: 19.0, leading: 1.75 };
+        let ty = Type {
+            body: "Charter, serif".into(),
+            mono: "Monaco, monospace".into(),
+            size: 19.0,
+            leading: 1.75,
+        };
         let css = css(&ty);
-        assert!(css.contains("font-family: Charter, serif; font-size: 19px; line-height: 1.75;"), "{css}");
+        assert!(
+            css.contains("font-family: Charter, serif; font-size: 19px; line-height: 1.75;"),
+            "{css}"
+        );
         assert!(css.contains("font-family: Monaco, monospace;"));
         assert!(css.contains("min-height: 1.75em;"));
     }

@@ -46,7 +46,10 @@ impl Editor {
         }
         let action = apply_key(&mut st.doc.borrow_mut(), &key, code, mods);
         trace(|| format!("key {key:?} {code:?} {mods:?} -> {action:?}"));
-        if !matches!(action, Action::Vertical { .. } | Action::Page { .. } | Action::Ignored) {
+        if !matches!(
+            action,
+            Action::Vertical { .. } | Action::Page { .. } | Action::Ignored
+        ) {
             st.goal.set(None);
         }
         let changed = match action {
@@ -123,7 +126,10 @@ impl Editor {
             Command::Table(cmd) => {
                 // A composition in progress is the document's before a
                 // table is re-spelled around it, as before a key.
-                self.st.composer.borrow_mut().settle(&mut self.st.doc.borrow_mut());
+                self.st
+                    .composer
+                    .borrow_mut()
+                    .settle(&mut self.st.doc.borrow_mut());
                 let action = apply_table(&mut self.st.doc.borrow_mut(), cmd);
                 trace(|| format!("table {cmd:?} -> {action:?}"));
                 if action == Action::Handled {
@@ -161,9 +167,10 @@ impl Editor {
             match ime {
                 Ime::Preedit(text, cursor) => c.preedit(&mut d, text, *cursor),
                 Ime::Commit(text) => c.commit(&mut d, text),
-                Ime::DeleteSurrounding { before_bytes, after_bytes } => {
-                    c.delete_surrounding(&mut d, *before_bytes, *after_bytes)
-                }
+                Ime::DeleteSurrounding {
+                    before_bytes,
+                    after_bytes,
+                } => c.delete_surrounding(&mut d, *before_bytes, *after_bytes),
                 Ime::Disabled => c.settle(&mut d),
                 _ => return,
             }
@@ -178,13 +185,23 @@ impl Editor {
     /// capability, so an empty line to start.
     pub fn enable_ime(&self) {
         let request = ImeEnableRequest::new(
-            ImeCapabilities::new().with_cursor_area().with_surrounding_text(),
+            ImeCapabilities::new()
+                .with_cursor_area()
+                .with_surrounding_text(),
             ImeRequestData::default()
-                .with_cursor_area(LogicalPosition::new(0.0, 0.0).into(), LogicalSize::new(2.0, LINE).into())
-                .with_surrounding_text(ImeSurroundingText::new(String::new(), 0, 0).expect("an empty excerpt")),
+                .with_cursor_area(
+                    LogicalPosition::new(0.0, 0.0).into(),
+                    LogicalSize::new(2.0, LINE).into(),
+                )
+                .with_surrounding_text(
+                    ImeSurroundingText::new(String::new(), 0, 0).expect("an empty excerpt"),
+                ),
         );
         if let Some(request) = request {
-            let _ = self.st.window.request_ime_update(ImeRequest::Enable(request));
+            let _ = self
+                .st
+                .window
+                .request_ime_update(ImeRequest::Enable(request));
         }
     }
 
@@ -192,10 +209,16 @@ impl Editor {
     /// the accent menu open beside it, and what text surrounds it, so
     /// press-and-hold can see the letter it offers accents for.
     pub fn ime_area(&self) {
-        let Some((row, line, x)) = self.caret_at() else { return };
+        let Some((row, line, x)) = self.caret_at() else {
+            return;
+        };
         let lays = self.sig.lays.peek();
-        let Some(l) = lays.get(row).and_then(|l| l.0.lines.get(line)) else { return };
-        let y = self.sig.layout.peek().top(row) - *self.sig.top.peek() + l.top as f64 + self.sig.bar.peek().height();
+        let Some(l) = lays.get(row).and_then(|l| l.0.lines.get(line)) else {
+            return;
+        };
+        let y = self.sig.layout.peek().top(row) - *self.sig.top.peek()
+            + l.top as f64
+            + self.sig.bar.peek().height();
         let mut data = ImeRequestData::default().with_cursor_area(
             LogicalPosition::new(crate::row::PAD + x as f64, y).into(),
             LogicalSize::new(2.0, l.height as f64).into(),

@@ -4,10 +4,10 @@
 use std::ops::Range;
 use std::rc::Rc;
 
+use crate::bridge::rows::{RowHandle, RowView, Run};
 use dioxus::html::Modifiers;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
-use crate::bridge::rows::{RowHandle, RowView, Run};
 
 use crate::table::{AlignKind, BORDER, Block};
 use crate::text::{Kind, RowLayout, byte_of_col};
@@ -33,7 +33,13 @@ pub enum Target {
 #[derive(Clone, Copy, Debug)]
 pub enum Pointer {
     /// The button went down; ⇧ extends the selection.
-    Press { at: Target, line: usize, x: f32, extend: bool, mode: PressMode },
+    Press {
+        at: Target,
+        line: usize,
+        x: f32,
+        extend: bool,
+        mode: PressMode,
+    },
     /// It moved with the button held: a drag-select.
     Drag { at: Target, line: usize, x: f32 },
 }
@@ -56,13 +62,14 @@ pub fn press_mode(e: &MouseEvent) -> (bool, PressMode) {
     let m = e.modifiers();
     let extend = m.contains(Modifiers::SHIFT);
     // ⌘ arrives as `SUPER`, as it does on a key.
-    let mode = if e.trigger_button() == Some(MouseButton::Secondary) || m.contains(Modifiers::CONTROL) {
-        PressMode::Context
-    } else if m.intersects(Modifiers::SUPER | Modifiers::META) {
-        PressMode::Follow
-    } else {
-        PressMode::Place
-    };
+    let mode =
+        if e.trigger_button() == Some(MouseButton::Secondary) || m.contains(Modifiers::CONTROL) {
+            PressMode::Context
+        } else if m.intersects(Modifiers::SUPER | Modifiers::META) {
+            PressMode::Follow
+        } else {
+            PressMode::Place
+        };
     (extend, mode)
 }
 
@@ -127,7 +134,14 @@ pub fn Row(props: RowProps) -> Element {
 /// One visual line. `origin` is where its text starts in the window, for
 /// turning a click's x into one within the text.
 #[component]
-pub fn Line(sink: PointerSink, at: Target, origin: f64, line: usize, indent: f32, segs: Vec<Seg>) -> Element {
+pub fn Line(
+    sink: PointerSink,
+    at: Target,
+    origin: f64,
+    line: usize,
+    indent: f32,
+    segs: Vec<Seg>,
+) -> Element {
     let drag = sink.clone();
     rsx! {
         // A wrapped list item's lines hang under its text by padding, not by
@@ -182,7 +196,11 @@ pub fn lines(v: &RowView, lay: &RowLayout) -> Vec<Vec<Seg>> {
 
     // The prefix: on the first line always, and on every line for a quote.
     let in_prefix = caret.filter(|&c| c < lay.prefix_cols);
-    let pre = splice(prefix, 0..usize::MAX, in_prefix.map(|c| byte_of_col(&concat(prefix), c)));
+    let pre = splice(
+        prefix,
+        0..usize::MAX,
+        in_prefix.map(|c| byte_of_col(&concat(prefix), c)),
+    );
     let bare = splice(prefix, 0..usize::MAX, None);
 
     // The caret's byte in the body, and which line holds it.
@@ -249,7 +267,11 @@ mod tests {
     use super::*;
 
     fn run(text: &str) -> Run {
-        Run { text: text.into(), class: "g".into(), src: None }
+        Run {
+            text: text.into(),
+            class: "g".into(),
+            src: None,
+        }
     }
 
     fn texts(segs: &[Seg]) -> String {
@@ -283,7 +305,6 @@ mod tests {
     }
 }
 
-
 /// A table, drawn as a grid from core's `TableInfo` (see `table.rs`) in place
 /// of the box-drawn rows that spell it. Memoized like a row: a table whose
 /// view and layout did not change is not rendered again.
@@ -292,9 +313,16 @@ pub fn TableBlock(block: Block) -> Element {
     let sink = use_context::<PointerSink>();
     let (v, l) = (&*block.view, &*block.layout);
     let first = block.first;
-    let prefix = lines(&v.prefix, &l.prefix).into_iter().next().unwrap_or_default();
-    let heights: Vec<f32> =
-        l.rows.iter().enumerate().map(|(r, g)| g.height + if r == 0 { BORDER } else { 0.0 }).collect();
+    let prefix = lines(&v.prefix, &l.prefix)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let heights: Vec<f32> = l
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(r, g)| g.height + if r == 0 { BORDER } else { 0.0 })
+        .collect();
     rsx! {
         div { class: "table", style: "height: {l.height}px",
             for (r, row) in v.rows.iter().enumerate() {

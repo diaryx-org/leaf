@@ -22,10 +22,10 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use crate::bridge::rows::{Run, RowView};
+use crate::bridge::rows::{RowView, Run};
 pub use parley::Alignment;
 use parley::{
-    AlignmentOptions, Affinity, Cursor, FontContext, FontFamily, FontStyle, FontWeight, Layout,
+    Affinity, AlignmentOptions, Cursor, FontContext, FontFamily, FontStyle, FontWeight, Layout,
     LayoutContext, LineHeight, StyleProperty,
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -116,14 +116,20 @@ impl Fonts {
     /// editor's `averageCharWidth`, measured off the real font the same way.
     pub fn char_width(&mut self) -> f32 {
         const SAMPLE: &str = "abcdefghijklmnopqrstuvwxyz ";
-        let w = self.build(&[plain(SAMPLE)], Kind::Prose, None).layout.width();
+        let w = self
+            .build(&[plain(SAMPLE)], Kind::Prose, None)
+            .layout
+            .width();
         w / SAMPLE.len() as f32
     }
 
     /// One character cell of the code face.
     pub fn cell_width(&mut self) -> f32 {
         const SAMPLE: &str = "0000000000";
-        let w = self.build(&[plain(SAMPLE)], Kind::Cells, None).layout.width();
+        let w = self
+            .build(&[plain(SAMPLE)], Kind::Cells, None)
+            .layout
+            .width();
         w / SAMPLE.len() as f32
     }
 
@@ -134,7 +140,13 @@ impl Fonts {
 
     /// The same, with its lines aligned within `width` — a table cell's
     /// `:-:` or `--:`.
-    pub fn layout_aligned(&mut self, v: &RowView, width: f32, kind: Kind, align: Alignment) -> RowLayout {
+    pub fn layout_aligned(
+        &mut self,
+        v: &RowView,
+        width: f32,
+        kind: Kind,
+        align: Alignment,
+    ) -> RowLayout {
         let split = v.runs.iter().take_while(|r| is_prefix(r)).count();
         let (prefix, body) = v.runs.split_at(split);
         let repeat = prefix.iter().any(|r| has_class(r, "gutter"));
@@ -143,7 +155,11 @@ impl Fonts {
         // Not `pre.layout.width()` alone: parley gives even empty text a
         // few pixels of width, which hung every wrapped paragraph's lines
         // that far in.
-        let prefix_w = if prefix.is_empty() { 0.0 } else { pre.layout.width() };
+        let prefix_w = if prefix.is_empty() {
+            0.0
+        } else {
+            pre.layout.width()
+        };
         let line = self.ty.line();
         let max = (kind != Kind::Cells).then(|| (width - prefix_w).max(self.ty.size * 4.0));
         let mut body = self.build(body, kind, max);
@@ -165,8 +181,16 @@ impl Fonts {
             .collect();
         // An empty row still has a line to hold the caret.
         if lines.is_empty() {
-            let h = pre.layout.lines().next().map_or(line, |l| l.metrics().line_height);
-            lines.push(Line { bytes: 0..0, top: 0.0, height: h });
+            let h = pre
+                .layout
+                .lines()
+                .next()
+                .map_or(line, |l| l.metrics().line_height);
+            lines.push(Line {
+                bytes: 0..0,
+                top: 0.0,
+                height: h,
+            });
         }
         // A line is at least the body's own height, as a CSS line box is at
         // least its strut: a line of superscript alone is still 22.5px.
@@ -200,10 +224,16 @@ impl Fonts {
         let ty = &self.ty;
         let mut b = self.lcx.ranged_builder(&mut self.fcx, &text, 1.0, true);
         b.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(
-            if kind == Kind::Prose { ty.body.clone() } else { ty.mono.clone() },
+            if kind == Kind::Prose {
+                ty.body.clone()
+            } else {
+                ty.mono.clone()
+            },
         ))));
         b.push_default(StyleProperty::FontSize(ty.size));
-        b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(ty.leading)));
+        b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
+            ty.leading,
+        )));
         for (r, range) in runs.iter().zip(&ranges) {
             for property in style_of(&r.class, kind == Kind::Source, ty) {
                 b.push(property, range.clone());
@@ -224,15 +254,30 @@ fn style_of(class: &str, uniform: bool, ty: &Type) -> Vec<StyleProperty<'static,
     for c in class.split(' ') {
         match c {
             // The source view sets every run at body size; see `Kind::Source`.
-            "h1" | "h2" | "h3" | "sup" | "sub" if uniform => out.push(StyleProperty::FontWeight(
-                if c.starts_with('h') { FontWeight::BOLD } else { FontWeight::NORMAL },
-            )),
-            "h1" => out.extend([StyleProperty::FontSize(size * 2.0), StyleProperty::FontWeight(FontWeight::BOLD)]),
-            "h2" => out.extend([StyleProperty::FontSize(size * 1.6), StyleProperty::FontWeight(FontWeight::BOLD)]),
-            "h3" => out.extend([StyleProperty::FontSize(size * 1.3), StyleProperty::FontWeight(FontWeight::BOLD)]),
+            "h1" | "h2" | "h3" | "sup" | "sub" if uniform => {
+                out.push(StyleProperty::FontWeight(if c.starts_with('h') {
+                    FontWeight::BOLD
+                } else {
+                    FontWeight::NORMAL
+                }))
+            }
+            "h1" => out.extend([
+                StyleProperty::FontSize(size * 2.0),
+                StyleProperty::FontWeight(FontWeight::BOLD),
+            ]),
+            "h2" => out.extend([
+                StyleProperty::FontSize(size * 1.6),
+                StyleProperty::FontWeight(FontWeight::BOLD),
+            ]),
+            "h3" => out.extend([
+                StyleProperty::FontSize(size * 1.3),
+                StyleProperty::FontWeight(FontWeight::BOLD),
+            ]),
             "h4" | "h5" | "h6" | "b" => out.push(StyleProperty::FontWeight(FontWeight::BOLD)),
             "i" | "t-comment" => out.push(StyleProperty::FontStyle(FontStyle::Italic)),
-            "code" => out.push(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(ty.mono.clone())))),
+            "code" => out.push(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(
+                ty.mono.clone(),
+            )))),
             "sup" | "sub" => out.push(StyleProperty::FontSize(size * 0.8)),
             _ => {}
         }
@@ -242,7 +287,11 @@ fn style_of(class: &str, uniform: bool, ty: &Type) -> Vec<StyleProperty<'static,
 
 /// A run of body text with no style of its own.
 fn plain(text: &str) -> Run {
-    Run { text: text.into(), class: "g".into(), src: None }
+    Run {
+        text: text.into(),
+        class: "g".into(),
+        src: None,
+    }
 }
 
 fn has_class(r: &Run, name: &str) -> bool {
@@ -327,7 +376,11 @@ impl RowLayout {
     /// The display column at the start or end of visual line `line`.
     pub fn edge(&self, line: usize, end: bool) -> usize {
         let line = line.min(self.lines.len() - 1);
-        let at = if end { self.line_end(line) } else { self.lines[line].bytes.start };
+        let at = if end {
+            self.line_end(line)
+        } else {
+            self.lines[line].bytes.start
+        };
         self.prefix_cols + cols(&self.body.text[..at])
     }
 
@@ -379,11 +432,18 @@ mod tests {
     use super::*;
 
     fn run(text: &str, class: &str) -> Run {
-        Run { text: text.into(), class: class.into(), src: None }
+        Run {
+            text: text.into(),
+            class: class.into(),
+            src: None,
+        }
     }
 
     fn row(runs: Vec<Run>) -> RowView {
-        RowView { runs, ..RowView::default() }
+        RowView {
+            runs,
+            ..RowView::default()
+        }
     }
 
     const PROSE: &str = "The quick brown fox jumps over the lazy dog, and then it does so again, \
@@ -405,14 +465,22 @@ mod tests {
         let l = f.layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Prose);
         for col in [0, 5, 40, 90, PROSE.len()] {
             let (line, x) = l.caret(col);
-            assert_eq!(l.col_at(line, x + 0.5), col, "col {col} at line {line} x {x}");
+            assert_eq!(
+                l.col_at(line, x + 0.5),
+                col,
+                "col {col} at line {line} x {x}"
+            );
         }
     }
 
     #[test]
     fn a_list_item_hangs_its_body_under_the_marker() {
         let mut f = Fonts::new(Type::default());
-        let l = f.layout(&row(vec![run("• ", "g marker"), run(PROSE, "g")]), 300.0, Kind::Prose);
+        let l = f.layout(
+            &row(vec![run("• ", "g marker"), run(PROSE, "g")]),
+            300.0,
+            Kind::Prose,
+        );
         assert_eq!(l.prefix_cols, 2);
         assert!(l.prefix_w > 0.0);
         assert!(!l.repeat);
@@ -441,7 +509,11 @@ mod tests {
     fn a_heading_line_is_taller() {
         let mut f = Fonts::new(Type::default());
         let l = f.layout(&row(vec![run("Title", "g h1 b")]), 600.0, Kind::Prose);
-        assert!((l.height - Type::default().line() * 2.0).abs() < 0.5, "{}", l.height);
+        assert!(
+            (l.height - Type::default().line() * 2.0).abs() < 0.5,
+            "{}",
+            l.height
+        );
     }
 
     #[test]
@@ -461,7 +533,11 @@ mod tests {
         let l = f.layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Source);
         assert!(l.lines.len() > 1);
         let h = f.layout(&row(vec![run("# Title", "g h1 b")]), 600.0, Kind::Source);
-        assert!((h.height - Type::default().line()).abs() < 0.5, "{}", h.height);
+        assert!(
+            (h.height - Type::default().line()).abs() < 0.5,
+            "{}",
+            h.height
+        );
     }
 
     #[test]
@@ -476,21 +552,39 @@ mod tests {
     fn a_larger_size_or_leading_sets_taller_lines() {
         let base = Type::default();
         let mut f = Fonts::new(base.clone());
-        let one = f.layout(&row(vec![run("Text", "g")]), 600.0, Kind::Prose).height;
+        let one = f
+            .layout(&row(vec![run("Text", "g")]), 600.0, Kind::Prose)
+            .height;
         assert!((one - base.line()).abs() < 0.5, "{one}");
-        f.set_ty(Type { size: 20.0, ..base.clone() });
-        let bigger = f.layout(&row(vec![run("Text", "g")]), 600.0, Kind::Prose).height;
+        f.set_ty(Type {
+            size: 20.0,
+            ..base.clone()
+        });
+        let bigger = f
+            .layout(&row(vec![run("Text", "g")]), 600.0, Kind::Prose)
+            .height;
         assert!((bigger - 30.0).abs() < 0.5, "{bigger}");
-        f.set_ty(Type { leading: 2.0, ..base });
-        let looser = f.layout(&row(vec![run("Text", "g")]), 600.0, Kind::Prose).height;
+        f.set_ty(Type {
+            leading: 2.0,
+            ..base
+        });
+        let looser = f
+            .layout(&row(vec![run("Text", "g")]), 600.0, Kind::Prose)
+            .height;
         assert!((looser - 32.0).abs() < 0.5, "{looser}");
     }
 
     #[test]
     fn a_larger_size_wraps_sooner_and_still_round_trips() {
         let mut f = Fonts::new(Type::default());
-        let small = f.layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Prose).lines.len();
-        f.set_ty(Type { size: 24.0, ..Type::default() });
+        let small = f
+            .layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Prose)
+            .lines
+            .len();
+        f.set_ty(Type {
+            size: 24.0,
+            ..Type::default()
+        });
         let l = f.layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Prose);
         assert!(l.lines.len() > small, "{} vs {small}", l.lines.len());
         for col in [0, 7, 50, PROSE.len()] {
@@ -506,7 +600,10 @@ mod tests {
         // Menlo's cell is 0.602em; a lowercase serif letter about half an em.
         assert!((cell - 0.602 * 16.0).abs() < 0.2, "{cell}");
         assert!(body > 16.0 * 0.3 && body < 16.0 * 0.6, "{body}");
-        f.set_ty(Type { size: 32.0, ..Type::default() });
+        f.set_ty(Type {
+            size: 32.0,
+            ..Type::default()
+        });
         assert!((f.char_width() - 2.0 * body).abs() < 0.2);
     }
 

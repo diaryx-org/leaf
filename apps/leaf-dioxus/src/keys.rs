@@ -25,7 +25,11 @@ pub fn pressed(event: &KeyEvent, mods: ModifiersState) -> Option<(Key, Code, Mod
     if !event.state.is_pressed() {
         return None;
     }
-    Some((key(&event.logical_key), code(&event.physical_key), modifiers(mods)))
+    Some((
+        key(&event.logical_key),
+        code(&event.physical_key),
+        modifiers(mods),
+    ))
 }
 
 /// winit's named keys carry the W3C names `keyboard-types` parses, so the
@@ -64,12 +68,18 @@ mod tests {
 
     #[test]
     fn named_keys_and_codes_convert_by_name() {
-        assert_eq!(key(&keyboard::Key::Named(NamedKey::ArrowDown)), Key::ArrowDown);
+        assert_eq!(
+            key(&keyboard::Key::Named(NamedKey::ArrowDown)),
+            Key::ArrowDown
+        );
         assert_eq!(key(&keyboard::Key::Named(NamedKey::PageUp)), Key::PageUp);
         assert_eq!(key(&keyboard::Key::Named(NamedKey::Enter)), Key::Enter);
         assert_eq!(code(&PhysicalKey::Code(KeyCode::KeyB)), Code::KeyB);
         assert_eq!(code(&PhysicalKey::Code(KeyCode::Digit8)), Code::Digit8);
-        assert_eq!(code(&PhysicalKey::Code(KeyCode::BracketRight)), Code::BracketRight);
+        assert_eq!(
+            code(&PhysicalKey::Code(KeyCode::BracketRight)),
+            Code::BracketRight
+        );
     }
 
     #[test]

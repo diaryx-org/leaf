@@ -28,10 +28,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use dioxus::html::input_data::MouseButton;
-use dioxus::prelude::*;
 use crate::bridge::rows::{RowView, Run};
 use crate::bridge::style::class_of;
+use dioxus::html::input_data::MouseButton;
+use dioxus::prelude::*;
 use leaf_core::{ColorScheme, Glyph, MediaInfo, MediaKind, Role, VRow};
 
 use crate::row::{LayoutHandle, PAD, Pointer, PointerSink, Seg, Target, lines, press_mode};
@@ -63,7 +63,10 @@ pub fn resolve(dest: &str, doc_dir: Option<&Path>) -> Option<PathBuf> {
         return None;
     }
     let lower = dest.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("data:") || dest.starts_with("//")
+    if lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("data:")
+        || dest.starts_with("//")
     {
         return None;
     }
@@ -74,7 +77,9 @@ pub fn resolve(dest: &str, doc_dir: Option<&Path>) -> Option<PathBuf> {
     if path.is_absolute() {
         Some(path.to_path_buf())
     } else {
-        doc_dir.filter(|d| !d.as_os_str().is_empty()).map(|d| d.join(path))
+        doc_dir
+            .filter(|d| !d.as_os_str().is_empty())
+            .map(|d| d.join(path))
     }
 }
 
@@ -86,7 +91,8 @@ fn percent_decode(s: &str) -> String {
     while i < b.len() {
         let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
         if b[i] == b'%'
-            && let (Some(Some(hi)), Some(Some(lo))) = (b.get(i + 1).map(|&c| hex(c)), b.get(i + 2).map(|&c| hex(c)))
+            && let (Some(Some(hi)), Some(Some(lo))) =
+                (b.get(i + 1).map(|&c| hex(c)), b.get(i + 2).map(|&c| hex(c)))
         {
             out.push(hi << 4 | lo);
             i += 3;
@@ -104,7 +110,9 @@ pub fn file_url(path: &Path) -> String {
     let mut url = String::from("file://");
     for b in path.to_string_lossy().bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => url.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                url.push(b as char)
+            }
             _ => url.push_str(&format!("%{b:02X}")),
         }
     }
@@ -156,7 +164,12 @@ fn still(path: &Path) -> Option<Rc<Still>> {
             .or_insert_with(|| {
                 let size = measure(path);
                 crate::trace::trace(|| format!("media: {} -> {size:?}", path.display()));
-                size.map(|size| Rc::new(Still { url: file_url(path), size }))
+                size.map(|size| {
+                    Rc::new(Still {
+                        url: file_url(path),
+                        size,
+                    })
+                })
             })
             .clone()
     })
@@ -165,13 +178,20 @@ fn still(path: &Path) -> Option<Rc<Still>> {
 /// A picture's natural size, from its header — or an SVG's declared canvas —
 /// without decoding a pixel.
 fn measure(path: &Path) -> Option<(f32, f32)> {
-    let svg = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+    let svg = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
     if svg {
         let data = std::fs::read(path).ok()?;
         let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).ok()?;
         return Some((tree.size().width(), tree.size().height()));
     }
-    let (w, h) = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_dimensions().ok()?;
+    let (w, h) = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
     Some((w as f32, h as f32))
 }
 
@@ -215,7 +235,11 @@ impl Block {
     /// on its left half, past it on its right — the two stops core gives the
     /// placeholder row, as a click on the Swift editor's box lands on one.
     pub fn hit(&self, x: f32) -> usize {
-        if x < self.indent + self.size.0 / 2.0 { self.start } else { self.end }
+        if x < self.indent + self.size.0 / 2.0 {
+            self.start
+        } else {
+            self.end
+        }
     }
 }
 
@@ -234,12 +258,22 @@ fn prefix_of(glyphs: &[Glyph]) -> RowView {
         if open != Some(g.style) {
             let mut class = String::new();
             class_of(&g.style, &mut class);
-            runs.push(Run { text: String::new(), class, src: None });
+            runs.push(Run {
+                text: String::new(),
+                class,
+                src: None,
+            });
             open = Some(g.style);
         }
-        runs.last_mut().expect("a run was just opened").text.push(g.drawn());
+        runs.last_mut()
+            .expect("a run was just opened")
+            .text
+            .push(g.drawn());
     }
-    RowView { runs, ..RowView::default() }
+    RowView {
+        runs,
+        ..RowView::default()
+    }
 }
 
 /// Lay out one medium at `rows[info.rows_span.start]` in a column `width`
@@ -259,11 +293,19 @@ pub fn block(
 ) -> Option<Block> {
     let row = rows.get(info.rows_span.start)?;
     let (start, end) = stops(row)?;
-    let still = info.still(ColorScheme::Light).and_then(|s| resolve(s, doc_dir)).and_then(|p| still(&p));
+    let still = info
+        .still(ColorScheme::Light)
+        .and_then(|s| resolve(s, doc_dir))
+        .and_then(|p| still(&p));
     let prefix = prefix_of(&row.glyphs);
-    let prefix_layout =
-        reuse(&prefix).unwrap_or_else(|| LayoutHandle(Rc::new(fonts.layout(&prefix, f32::INFINITY, Kind::Prose))));
-    let indent = if prefix.runs.is_empty() { 0.0 } else { prefix_layout.0.width };
+    let prefix_layout = reuse(&prefix).unwrap_or_else(|| {
+        LayoutHandle(Rc::new(fonts.layout(&prefix, f32::INFINITY, Kind::Prose)))
+    });
+    let indent = if prefix.runs.is_empty() {
+        0.0
+    } else {
+        prefix_layout.0.width
+    };
     let size = box_size(info.kind, still.as_ref().map(|s| s.size), width - indent);
     let label = if info.alt.is_empty() {
         let dest = info.resolve(ColorScheme::Light);
@@ -301,13 +343,20 @@ pub fn MediaBlock(block: Block) -> Element {
     let drag = sink.clone();
     let first = block.first;
     let (w, h) = block.size;
-    let prefix = lines(&block.prefix, &block.prefix_layout.0).into_iter().next().unwrap_or_default();
+    let prefix = lines(&block.prefix, &block.prefix_layout.0)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
     let caret = |at: Caret| {
         (block.caret == Some(at)).then(|| {
             rsx! { span { style: "flex: none; width: 0; height: {h}px; border-left: 2px solid #1a73e8; margin-right: -2px;" } }
         })
     };
-    let ring = if block.selected { "outline: 3px solid #1a73e8;" } else { "" };
+    let ring = if block.selected {
+        "outline: 3px solid #1a73e8;"
+    } else {
+        ""
+    };
     let badge = rsx! {
         div { style: "width: {BADGE}px; height: {BADGE}px; border-radius: {BADGE / 2.0}px; background: rgba(0,0,0,0.55);
                       color: #fff; font-size: 20px; line-height: {BADGE}px; text-align: center;",
@@ -399,7 +448,18 @@ mod tests {
         d.vmap
             .media
             .iter()
-            .filter_map(|m| block(m, &d.vmap.rows, dir, caret, d.selection(), &mut fonts, 600.0, |_| None))
+            .filter_map(|m| {
+                block(
+                    m,
+                    &d.vmap.rows,
+                    dir,
+                    caret,
+                    d.selection(),
+                    &mut fonts,
+                    600.0,
+                    |_| None,
+                )
+            })
             .collect()
     }
 
@@ -409,13 +469,21 @@ mod tests {
         let d = doc(src);
         let b = blocks_of(&d, 0);
         assert_eq!(b.len(), 1);
-        let row = d.vmap.rows.iter().position(|r| r.glyphs.iter().any(|g| g.style.role == Role::Image)).unwrap();
+        let row = d
+            .vmap
+            .rows
+            .iter()
+            .position(|r| r.glyphs.iter().any(|g| g.style.role == Role::Image))
+            .unwrap();
         assert_eq!((b[0].first, b[0].rows.clone()), (row, row..row + 1));
         // Its stops are the markup's two ends.
         let at = src.find("![").unwrap();
         assert_eq!((b[0].start, b[0].end), (at, at + "![a cat](cat.png)".len()));
         // Nothing at /nowhere: the alt on a chip.
-        assert_eq!((b[0].still.clone(), b[0].label.as_str(), b[0].size), (None, "a cat", CHIP));
+        assert_eq!(
+            (b[0].still.clone(), b[0].label.as_str(), b[0].size),
+            (None, "a cat", CHIP)
+        );
         assert!(b[0].prefix.runs.is_empty());
     }
 
@@ -446,9 +514,20 @@ mod tests {
     fn a_picture_on_disk_is_measured_and_drawn_from_its_file_url() {
         let dir = std::env::temp_dir().join(format!("agent-leaf-media-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        image::RgbImage::new(64, 48).save(dir.join("pic.png")).unwrap();
+        image::RgbImage::new(64, 48)
+            .save(dir.join("pic.png"))
+            .unwrap();
         let d = doc("![](pic.png)\n");
-        let b = block(&d.vmap.media[0], &d.vmap.rows, Some(&dir), 0, None, &mut Fonts::new(crate::text::Type::default()), 600.0, |_| None);
+        let b = block(
+            &d.vmap.media[0],
+            &d.vmap.rows,
+            Some(&dir),
+            0,
+            None,
+            &mut Fonts::new(crate::text::Type::default()),
+            600.0,
+            |_| None,
+        );
         std::fs::remove_dir_all(&dir).unwrap();
         let still = b.unwrap().still.expect("the picture loaded");
         assert_eq!(still.size, (64.0, 48.0));
@@ -458,17 +537,35 @@ mod tests {
     #[test]
     fn a_relative_path_resolves_against_the_documents_directory() {
         let dir = Path::new("/notes");
-        assert_eq!(resolve("cat.png", Some(dir)), Some(PathBuf::from("/notes/cat.png")));
-        assert_eq!(resolve("img/cat.png", Some(dir)), Some(PathBuf::from("/notes/img/cat.png")));
-        assert_eq!(resolve("../cat.png", Some(dir)), Some(PathBuf::from("/notes/../cat.png")));
-        assert_eq!(resolve(" my%20cat.png ", Some(dir)), Some(PathBuf::from("/notes/my cat.png")));
+        assert_eq!(
+            resolve("cat.png", Some(dir)),
+            Some(PathBuf::from("/notes/cat.png"))
+        );
+        assert_eq!(
+            resolve("img/cat.png", Some(dir)),
+            Some(PathBuf::from("/notes/img/cat.png"))
+        );
+        assert_eq!(
+            resolve("../cat.png", Some(dir)),
+            Some(PathBuf::from("/notes/../cat.png"))
+        );
+        assert_eq!(
+            resolve(" my%20cat.png ", Some(dir)),
+            Some(PathBuf::from("/notes/my cat.png"))
+        );
     }
 
     #[test]
     fn an_absolute_path_or_file_url_is_taken_as_it_is() {
         let dir = Path::new("/notes");
-        assert_eq!(resolve("/pics/cat.png", Some(dir)), Some(PathBuf::from("/pics/cat.png")));
-        assert_eq!(resolve("file:///pics/cat.png", None), Some(PathBuf::from("/pics/cat.png")));
+        assert_eq!(
+            resolve("/pics/cat.png", Some(dir)),
+            Some(PathBuf::from("/pics/cat.png"))
+        );
+        assert_eq!(
+            resolve("file:///pics/cat.png", None),
+            Some(PathBuf::from("/pics/cat.png"))
+        );
     }
 
     #[test]
@@ -503,14 +600,23 @@ mod tests {
 
     #[test]
     fn each_kind_has_its_box() {
-        assert_eq!(box_size(MediaKind::Image, Some((1000.0, 500.0)), 500.0), (500.0, 250.0));
+        assert_eq!(
+            box_size(MediaKind::Image, Some((1000.0, 500.0)), 500.0),
+            (500.0, 250.0)
+        );
         assert_eq!(box_size(MediaKind::Image, None, 500.0), CHIP);
         assert_eq!(box_size(MediaKind::Audio, None, 200.0), (200.0, AUDIO.1));
         assert_eq!(box_size(MediaKind::Video, None, 640.0), (640.0, 360.0));
         // A poster is measured like a picture.
-        assert_eq!(box_size(MediaKind::Video, Some((320.0, 240.0)), 640.0), (320.0, 240.0));
+        assert_eq!(
+            box_size(MediaKind::Video, Some((320.0, 240.0)), 640.0),
+            (320.0, 240.0)
+        );
         // A column too narrow for anything still draws something.
-        assert_eq!(box_size(MediaKind::Image, Some((1000.0, 500.0)), 10.0), (MIN_W, 40.0));
+        assert_eq!(
+            box_size(MediaKind::Image, Some((1000.0, 500.0)), 10.0),
+            (MIN_W, 40.0)
+        );
     }
 
     #[test]
@@ -522,7 +628,11 @@ mod tests {
             still: None,
             label: String::new(),
             prefix: RowView::default(),
-            prefix_layout: LayoutHandle(Rc::new(Fonts::new(crate::text::Type::default()).layout(&RowView::default(), f32::INFINITY, Kind::Prose))),
+            prefix_layout: LayoutHandle(Rc::new(Fonts::new(crate::text::Type::default()).layout(
+                &RowView::default(),
+                f32::INFINITY,
+                Kind::Prose,
+            ))),
             indent: 20.0,
             size: (200.0, 100.0),
             start: 2,

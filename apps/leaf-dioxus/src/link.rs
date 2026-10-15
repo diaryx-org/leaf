@@ -66,12 +66,15 @@ pub fn resolve(doc: &mut Doc, destination: &str) -> Option<Target> {
         p if p.is_absolute() => p.to_path_buf(),
         p => doc.path.parent().filter(|_| !doc.is_untitled())?.join(p),
     };
-    full.exists().then(|| Target::Away(full.to_string_lossy().into_owned()))
+    full.exists()
+        .then(|| Target::Away(full.to_string_lossy().into_owned()))
 }
 
 /// `scheme:` per RFC 3986 — a letter, then letters, digits, `+`, `-`, `.`.
 fn has_scheme(s: &str) -> bool {
-    let Some((scheme, _)) = s.split_once(':') else { return false };
+    let Some((scheme, _)) = s.split_once(':') else {
+        return false;
+    };
     let mut chars = scheme.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && chars.all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
@@ -128,7 +131,9 @@ impl Editor {
     pub fn open_link(&self) -> bool {
         let target = {
             let mut doc = self.st.doc.borrow_mut();
-            let Some(dest) = doc.link_destination_at_caret() else { return false };
+            let Some(dest) = doc.link_destination_at_caret() else {
+                return false;
+            };
             let target = resolve(&mut doc, &dest);
             if target.is_none() {
                 doc.status = Some(format!("nothing to open at {dest}"));
@@ -147,7 +152,9 @@ impl Editor {
 
     /// Put the destination of the link the caret stands in on the clipboard.
     pub fn copy_link(&self) {
-        let Some(dest) = self.st.doc.borrow_mut().link_destination_at_caret() else { return };
+        let Some(dest) = self.st.doc.borrow_mut().link_destination_at_caret() else {
+            return;
+        };
         if let Ok(mut board) = arboard::Clipboard::new() {
             let _ = board.set_text(dest);
         }
@@ -172,7 +179,9 @@ impl Editor {
 /// Hand a URL or a file to the default app for it.
 fn open_with_system(what: &str) {
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("/usr/bin/open").arg(what).spawn();
+    let _ = std::process::Command::new("/usr/bin/open")
+        .arg(what)
+        .spawn();
     #[cfg(not(target_os = "macos"))]
     let _ = what;
 }
@@ -207,7 +216,10 @@ mod tests {
     fn a_fragment_lands_on_its_heading() {
         let src = "[go](#second-part)\n\n# First\n\n# Second part\n";
         let mut d = doc(src);
-        assert_eq!(resolve(&mut d, "#second-part"), Some(Target::Here(src.find("# Second").unwrap())));
+        assert_eq!(
+            resolve(&mut d, "#second-part"),
+            Some(Target::Here(src.find("# Second").unwrap()))
+        );
         assert_eq!(resolve(&mut d, "#nowhere"), None);
     }
 
@@ -218,7 +230,10 @@ mod tests {
             resolve(&mut d, "https://example.com/a"),
             Some(Target::Away("https://example.com/a".into()))
         );
-        assert_eq!(resolve(&mut d, "mailto:a@b.c"), Some(Target::Away("mailto:a@b.c".into())));
+        assert_eq!(
+            resolve(&mut d, "mailto:a@b.c"),
+            Some(Target::Away("mailto:a@b.c".into()))
+        );
         // Untitled, so a relative path has nothing to be relative to.
         assert_eq!(resolve(&mut d, "notes.md"), None);
         assert_eq!(resolve(&mut d, "/no/such/file%20here.md"), None);

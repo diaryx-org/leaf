@@ -121,7 +121,6 @@ impl Marks {
             ..self
         }
     }
-
 }
 
 /// Build one row's view: coalesce its glyphs into runs, mark the selected ones,

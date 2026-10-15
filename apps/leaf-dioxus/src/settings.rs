@@ -27,7 +27,10 @@ pub const BODY_FACES: &[(&str, &str)] = &[
     ("Georgia", "Georgia, serif"),
     ("Palatino", "Palatino, Georgia, serif"),
     ("Baskerville", "Baskerville, Georgia, serif"),
-    ("Avenir Next", r#""Avenir Next", "Helvetica Neue", sans-serif"#),
+    (
+        "Avenir Next",
+        r#""Avenir Next", "Helvetica Neue", sans-serif"#,
+    ),
     ("Helvetica Neue", r#""Helvetica Neue", sans-serif"#),
 ];
 
@@ -185,8 +188,12 @@ impl Settings {
     pub fn from_toml(text: &str) -> Self {
         let mut s = Self::default();
         for line in text.lines() {
-            let Some((key, value)) = line.split_once('=') else { continue };
-            let Some(value) = string(value.trim()) else { continue };
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(value) = string(value.trim()) else {
+                continue;
+            };
             match key.trim() {
                 "body_font" if !value.is_empty() => s.body = value,
                 "code_font" if !value.is_empty() => s.mono = value,
@@ -245,13 +252,17 @@ pub fn path() -> Option<PathBuf> {
     let dir = if cfg!(target_os = "macos") {
         home.join("Library/Application Support")
     } else {
-        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config"))
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config"))
     };
     Some(dir.join("leaf-dioxus/settings.toml"))
 }
 
 /// The text zoom's steps: a browser's, which a reader already knows.
-pub const ZOOMS: &[f32] = &[0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+pub const ZOOMS: &[f32] = &[
+    0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0,
+];
 
 /// The next step in from `z`, or out; the last one either way stays.
 pub fn zoom_step(z: f32, bigger: bool) -> f32 {
@@ -260,7 +271,11 @@ pub fn zoom_step(z: f32, bigger: bool) -> f32 {
         true => ZOOMS.iter().copied().find(|&s| s > z + EPS),
         false => ZOOMS.iter().rev().copied().find(|&s| s < z - EPS),
     };
-    next.unwrap_or(if bigger { ZOOMS[ZOOMS.len() - 1] } else { ZOOMS[0] })
+    next.unwrap_or(if bigger {
+        ZOOMS[ZOOMS.len() - 1]
+    } else {
+        ZOOMS[0]
+    })
 }
 
 #[cfg(test)]
@@ -276,7 +291,11 @@ mod tests {
 
     #[test]
     fn the_zoom_scales_the_size_and_not_the_leading() {
-        let s = Settings { size: TextSize::Large, spacing: LineSpacing::Relaxed, ..Settings::default() };
+        let s = Settings {
+            size: TextSize::Large,
+            spacing: LineSpacing::Relaxed,
+            ..Settings::default()
+        };
         let t = s.ty(1.5);
         assert_eq!(t.size, 19.0 * 1.5);
         assert_eq!(t.leading, 1.75);
@@ -308,7 +327,10 @@ mod tests {
     #[test]
     fn an_unknown_face_is_named_with_its_generic_after_it() {
         assert_eq!(family(MONO_FACES, "Menlo", "monospace"), "Menlo, monospace");
-        assert_eq!(family(BODY_FACES, "Hoefler Text", "serif"), r#""Hoefler Text", serif"#);
+        assert_eq!(
+            family(BODY_FACES, "Hoefler Text", "serif"),
+            r#""Hoefler Text", serif"#
+        );
     }
 
     #[test]

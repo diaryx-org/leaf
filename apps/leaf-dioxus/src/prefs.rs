@@ -18,7 +18,8 @@ use dioxus_native::winit::window::Theme;
 
 use crate::editor::{Editor, Measures, set};
 use crate::settings::{
-    Appearance, BODY_FACES, Choice, ColumnWidth, LineSpacing, MONO_FACES, Settings, TextSize, zoom_step,
+    Appearance, BODY_FACES, Choice, ColumnWidth, LineSpacing, MONO_FACES, Settings, TextSize,
+    zoom_step,
 };
 use crate::trace::trace;
 
@@ -123,7 +124,9 @@ impl Editor {
         }
         *self.st.settings.borrow_mut() = now;
         if theme_changed {
-            self.st.window.set_theme(self.st.settings.borrow().appearance.theme());
+            self.st
+                .window
+                .set_theme(self.st.settings.borrow().appearance.theme());
         }
         self.retype();
         self.sync_prefs();
@@ -155,7 +158,8 @@ impl Editor {
         {
             let mut fonts = st.fonts.borrow_mut();
             fonts.set_ty(ty.clone());
-            st.measures.set(Measures::of(&st.settings.borrow(), &mut fonts));
+            st.measures
+                .set(Measures::of(&st.settings.borrow(), &mut fonts));
         }
         // Tables keep their layouts by width alone; a new type is new ones.
         st.block_cache.borrow_mut().clear();
@@ -193,7 +197,9 @@ pub fn render(ed: &Editor, v: &PrefsView) -> Element {
     let chip = |label: String, on: bool, font: Option<String>, pick: Pick| {
         let ed = ed.clone();
         let class = if on { "chip on" } else { "chip" };
-        let style = font.map(|f| format!("font-family: {f}")).unwrap_or_default();
+        let style = font
+            .map(|f| format!("font-family: {f}"))
+            .unwrap_or_default();
         rsx! {
             span { class, style,
                 onmousedown: move |e: MouseEvent| {
@@ -217,7 +223,11 @@ pub fn render(ed: &Editor, v: &PrefsView) -> Element {
             }
         }
     };
-    fn choices<C: Choice>(chosen: C, chip: &dyn Fn(String, bool, Option<String>, Pick) -> Element, make: fn(C) -> Pick) -> Element {
+    fn choices<C: Choice>(
+        chosen: C,
+        chip: &dyn Fn(String, bool, Option<String>, Pick) -> Element,
+        make: fn(C) -> Pick,
+    ) -> Element {
         rsx! {
             for c in C::ALL.iter().copied() {
                 {chip(c.label().to_string(), c == chosen, None, make(c))}
@@ -271,7 +281,9 @@ mod tests {
 
     #[test]
     fn a_pick_changes_one_choice_and_restore_changes_them_all_back() {
-        let s = Settings::default().with(&Pick::Size(TextSize::Large)).with(&Pick::Body("Georgia".into()));
+        let s = Settings::default()
+            .with(&Pick::Size(TextSize::Large))
+            .with(&Pick::Body("Georgia".into()));
         assert_eq!(s.size, TextSize::Large);
         assert_eq!(s.body, "Georgia");
         assert_eq!(s.spacing, Settings::default().spacing);

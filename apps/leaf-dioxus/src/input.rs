@@ -74,14 +74,24 @@ pub enum Host {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TableCommand {
     /// A table of [`TABLE_ROWS`] body rows and `cols` columns at the caret.
-    Insert { cols: usize },
-    InsertRow { below: bool },
+    Insert {
+        cols: usize,
+    },
+    InsertRow {
+        below: bool,
+    },
     DeleteRow,
-    InsertColumn { right: bool },
+    InsertColumn {
+        right: bool,
+    },
     DeleteColumn,
     Align(Alignment),
-    MoveRow { down: bool },
-    MoveColumn { right: bool },
+    MoveRow {
+        down: bool,
+    },
+    MoveColumn {
+        right: bool,
+    },
 }
 
 /// Body rows under the header of an inserted table — Swift's
@@ -122,7 +132,10 @@ const CMD: Modifiers = Modifiers::CONTROL;
 /// `shift` extends the selection on every motion, which is why each motion
 /// passes it rather than branching on it: core's caret API takes `extend` for
 /// exactly this.
-#[expect(clippy::unit_arg, reason = "`done(doc.edit())` reads as one step: do it, and it was handled")]
+#[expect(
+    clippy::unit_arg,
+    reason = "`done(doc.edit())` reads as one step: do it, and it was handled"
+)]
 pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Action {
     let shift = mods.contains(Modifiers::SHIFT);
     let alt = mods.contains(Modifiers::ALT);
@@ -180,18 +193,39 @@ pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Actio
         Key::ArrowDown if alt => done(doc.move_block_down()),
         Key::ArrowLeft => done(doc.move_left(shift)),
         Key::ArrowRight => done(doc.move_right(shift)),
-        Key::ArrowUp => Action::Vertical { down: false, extend: shift },
-        Key::ArrowDown => Action::Vertical { down: true, extend: shift },
-        Key::Home => Action::LineEdge { end: false, extend: shift },
-        Key::End => Action::LineEdge { end: true, extend: shift },
-        Key::PageUp => Action::Page { down: false, extend: shift },
-        Key::PageDown => Action::Page { down: true, extend: shift },
+        Key::ArrowUp => Action::Vertical {
+            down: false,
+            extend: shift,
+        },
+        Key::ArrowDown => Action::Vertical {
+            down: true,
+            extend: shift,
+        },
+        Key::Home => Action::LineEdge {
+            end: false,
+            extend: shift,
+        },
+        Key::End => Action::LineEdge {
+            end: true,
+            extend: shift,
+        },
+        Key::PageUp => Action::Page {
+            down: false,
+            extend: shift,
+        },
+        Key::PageDown => Action::Page {
+            down: true,
+            extend: shift,
+        },
         _ => Action::Ignored,
     }
 }
 
 /// ⌘ chords: the Edit and Format menus.
-#[expect(clippy::unit_arg, reason = "`done(doc.edit())` reads as one step: do it, and it was handled")]
+#[expect(
+    clippy::unit_arg,
+    reason = "`done(doc.edit())` reads as one step: do it, and it was handled"
+)]
 fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Action {
     let done = |_: ()| Action::Handled;
     // The physical keys first, which ⇧ would otherwise rename.
@@ -213,15 +247,29 @@ fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Acti
         Key::ArrowUp => return done(doc.move_doc_start(shift)),
         Key::ArrowDown => return done(doc.move_doc_end(shift)),
         // Ends of the visual line, by geometry, as Swift does.
-        Key::ArrowLeft => return Action::LineEdge { end: false, extend: shift },
-        Key::ArrowRight => return Action::LineEdge { end: true, extend: shift },
+        Key::ArrowLeft => {
+            return Action::LineEdge {
+                end: false,
+                extend: shift,
+            };
+        }
+        Key::ArrowRight => {
+            return Action::LineEdge {
+                end: true,
+                extend: shift,
+            };
+        }
         Key::Backspace => return done(doc.delete_to_line_start()),
         _ => {}
     }
     match code {
         Code::KeyF => return Action::Find(FindCommand::Open { replace: alt }),
         Code::KeyG if !alt => {
-            return Action::Find(if shift { FindCommand::Previous } else { FindCommand::Next });
+            return Action::Find(if shift {
+                FindCommand::Previous
+            } else {
+                FindCommand::Next
+            });
         }
         _ => {}
     }
@@ -283,7 +331,10 @@ fn letter_of(code: Code) -> Option<char> {
 /// Cocoa text views honour. ⌃A and ⌃E are the *paragraph's* ends, which in an
 /// unwrapped row are core's own `move_home`/`move_end`; ⌃N and ⌃P are visual
 /// lines, like the arrows.
-#[expect(clippy::unit_arg, reason = "`done(doc.edit())` reads as one step: do it, and it was handled")]
+#[expect(
+    clippy::unit_arg,
+    reason = "`done(doc.edit())` reads as one step: do it, and it was handled"
+)]
 fn control(doc: &mut Doc, key: &Key, code: Code, shift: bool) -> Action {
     let done = |_: ()| Action::Handled;
     let level = match code {
@@ -310,8 +361,14 @@ fn control(doc: &mut Doc, key: &Key, code: Code, shift: bool) -> Action {
         "k" => done(doc.delete_to_line_end()),
         "f" => done(doc.move_right(shift)),
         "b" => done(doc.move_left(shift)),
-        "n" => Action::Vertical { down: true, extend: shift },
-        "p" => Action::Vertical { down: false, extend: shift },
+        "n" => Action::Vertical {
+            down: true,
+            extend: shift,
+        },
+        "p" => Action::Vertical {
+            down: false,
+            extend: shift,
+        },
         "d" => done(doc.delete_forward()),
         "h" => done(doc.backspace()),
         _ => Action::Ignored,
@@ -353,7 +410,11 @@ mod tests {
         let mut d = doc("item\n");
         d.place_caret(1, false);
         press(&mut d, ch("*"), Code::Digit8, CMD | Modifiers::SHIFT);
-        assert!(d.source.starts_with("- item") || d.source.starts_with("* item"), "{:?}", d.source);
+        assert!(
+            d.source.starts_with("- item") || d.source.starts_with("* item"),
+            "{:?}",
+            d.source
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -387,7 +448,11 @@ mod tests {
         let mut d = doc("one two\n");
         d.place_caret(7, false);
         press(&mut d, Key::Backspace, Code::Backspace, Modifiers::ALT);
-        assert!(d.source.starts_with("one \n") || d.source.starts_with("one\n"), "{:?}", d.source);
+        assert!(
+            d.source.starts_with("one \n") || d.source.starts_with("one\n"),
+            "{:?}",
+            d.source
+        );
     }
 
     /// What winit hands over for ⌘ on a Mac, which is what broke: a chord
@@ -436,8 +501,15 @@ mod tests {
     fn insert_table_writes_a_grid_and_lands_in_it() {
         let mut d = doc("x\n");
         d.place_caret(1, false);
-        assert_eq!(table(&mut d, TableCommand::Insert { cols: 3 }), Action::Handled);
-        let head = d.source.lines().find(|l| l.starts_with('|')).expect("a table row");
+        assert_eq!(
+            table(&mut d, TableCommand::Insert { cols: 3 }),
+            Action::Handled
+        );
+        let head = d
+            .source
+            .lines()
+            .find(|l| l.starts_with('|'))
+            .expect("a table row");
         assert_eq!(head.matches('|').count(), 4, "{:?}", d.source);
         let rows = d.source.lines().filter(|l| l.starts_with('|')).count();
         assert_eq!(rows, 2 + TABLE_ROWS, "head, rule and body: {:?}", d.source);
@@ -451,7 +523,11 @@ mod tests {
         assert_eq!(d.source.lines().count(), 5, "{:?}", d.source);
         let mut d = grid_at("1");
         table(&mut d, TableCommand::DeleteRow);
-        assert!(!d.source.contains('1') && d.source.contains('3'), "{:?}", d.source);
+        assert!(
+            !d.source.contains('1') && d.source.contains('3'),
+            "{:?}",
+            d.source
+        );
         let mut d = grid_at("1");
         table(&mut d, TableCommand::MoveRow { down: true });
         assert!(d.source.find('3') < d.source.find('1'), "{:?}", d.source);
@@ -461,10 +537,19 @@ mod tests {
     fn column_commands_act_on_the_carets_column() {
         let mut d = grid_at("1");
         table(&mut d, TableCommand::InsertColumn { right: true });
-        assert_eq!(d.source.lines().next().map(|l| l.matches('|').count()), Some(4), "{:?}", d.source);
+        assert_eq!(
+            d.source.lines().next().map(|l| l.matches('|').count()),
+            Some(4),
+            "{:?}",
+            d.source
+        );
         let mut d = grid_at("1");
         table(&mut d, TableCommand::DeleteColumn);
-        assert!(!d.source.contains('a') && d.source.contains('b'), "{:?}", d.source);
+        assert!(
+            !d.source.contains('a') && d.source.contains('b'),
+            "{:?}",
+            d.source
+        );
         let mut d = grid_at("1");
         table(&mut d, TableCommand::MoveColumn { right: true });
         let head = d.source.lines().next().unwrap_or_default();
@@ -476,8 +561,17 @@ mod tests {
         let mut d = grid_at("2");
         table(&mut d, TableCommand::Align(Alignment::Right));
         let rule = d.source.lines().nth(1).unwrap_or_default();
-        let cells: Vec<&str> = rule.split('|').map(str::trim).filter(|c| !c.is_empty()).collect();
-        assert_eq!(cells, ["---", "---:"], "only the caret's column: {:?}", d.source);
+        let cells: Vec<&str> = rule
+            .split('|')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        assert_eq!(
+            cells,
+            ["---", "---:"],
+            "only the caret's column: {:?}",
+            d.source
+        );
     }
 
     #[test]
@@ -511,9 +605,18 @@ mod tests {
         let before = d.source.clone();
         let z = |a| Action::Zoom(a);
         assert_eq!(press(&mut d, ch("="), Code::Equal, CMD), z(ZoomCommand::In));
-        assert_eq!(press(&mut d, ch("+"), Code::Equal, CMD | Modifiers::SHIFT), z(ZoomCommand::In));
-        assert_eq!(press(&mut d, ch("-"), Code::Minus, CMD), z(ZoomCommand::Out));
-        assert_eq!(press(&mut d, ch("0"), Code::Digit0, CMD), z(ZoomCommand::Reset));
+        assert_eq!(
+            press(&mut d, ch("+"), Code::Equal, CMD | Modifiers::SHIFT),
+            z(ZoomCommand::In)
+        );
+        assert_eq!(
+            press(&mut d, ch("-"), Code::Minus, CMD),
+            z(ZoomCommand::Out)
+        );
+        assert_eq!(
+            press(&mut d, ch("0"), Code::Digit0, CMD),
+            z(ZoomCommand::Reset)
+        );
         assert_eq!(press(&mut d, ch(","), Code::Comma, CMD), Action::Settings);
         assert_eq!(d.source, before);
     }

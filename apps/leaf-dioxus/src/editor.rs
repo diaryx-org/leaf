@@ -19,10 +19,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use dioxus::prelude::*;
-use dioxus_native::winit::window::Window;
 use crate::bridge::frame::Frame;
 use crate::bridge::rows::{Marks, RowHandle, RowView};
+use dioxus::prelude::*;
+use dioxus_native::winit::window::Window;
 use leaf_core::{Doc, View};
 
 use crate::blocks::{self, Block};
@@ -230,7 +230,10 @@ impl Editor {
             zoom: Cell::new(1.0),
             measures: Cell::new(measures),
         };
-        Self { st: Rc::new(st), sig }
+        Self {
+            st: Rc::new(st),
+            sig,
+        }
     }
 
     /// The first paint, and every repaint after a key, a click or a resize:
@@ -267,8 +270,10 @@ impl Editor {
                 let h = frame.update(&doc.vmap, &marks).to_vec();
                 // A table's picture is box-drawn in character cells, so its
                 // rows stay monospace, as code does.
-                let mut kinds: Vec<Kind> =
-                    h.iter().map(|r| if r.0.code { Kind::Cells } else { Kind::Prose }).collect();
+                let mut kinds: Vec<Kind> = h
+                    .iter()
+                    .map(|r| if r.0.code { Kind::Cells } else { Kind::Prose })
+                    .collect();
                 for t in &doc.vmap.tables {
                     for r in t.rows_span.clone() {
                         if let Some(k) = kinds.get_mut(r) {
@@ -283,8 +288,15 @@ impl Editor {
         // caret nowhere to be drawn and nothing to click: give it the one
         // empty line every text view shows.
         let (handles, kinds, caret_row) = if handles.is_empty() {
-            let blank = RowView { caret_col: Some(0), ..RowView::default() };
-            let k = if doc.view == View::Source { Kind::Source } else { Kind::Prose };
+            let blank = RowView {
+                caret_col: Some(0),
+                ..RowView::default()
+            };
+            let k = if doc.view == View::Source {
+                Kind::Source
+            } else {
+                Kind::Prose
+            };
             (vec![RowHandle::new(blank)], vec![k], Some(0))
         } else {
             (handles, kinds, caret_row)
@@ -292,7 +304,11 @@ impl Editor {
         let t1 = Instant::now();
 
         let mut fonts = st.fonts.borrow_mut();
-        let w = column_width(*self.sig.win_w.peek(), st.measures.get().of_view(doc.view), fonts.ty().size);
+        let w = column_width(
+            *self.sig.win_w.peek(),
+            st.measures.get().of_view(doc.view),
+            fonts.ty().size,
+        );
         if w != *self.sig.width.peek() {
             set(self.sig.width, w);
         }
@@ -325,7 +341,14 @@ impl Editor {
 
         // What is drawn in place of rows; each stands in for its rows'
         // heights, its first row holding its whole height.
-        let blocks = blocks::build(&doc, caret, composer.marked(), &mut fonts, w, &st.block_cache);
+        let blocks = blocks::build(
+            &doc,
+            caret,
+            composer.marked(),
+            &mut fonts,
+            w,
+            &st.block_cache,
+        );
         let t2 = Instant::now();
         let mut heights: Vec<f64> = row_lays.iter().map(|l| l.0.height as f64).collect();
         for b in &blocks {
@@ -353,11 +376,20 @@ impl Editor {
             st.window.set_title(&now);
             *st.title.borrow_mut() = now;
         }
-        if self.sig.words.peek().is_none_or(|(r, _)| r != doc.revision()) {
+        if self
+            .sig
+            .words
+            .peek()
+            .is_none_or(|(r, _)| r != doc.revision())
+        {
             status::recount(self.st.clone(), doc.revision(), self.sig.words);
         }
         trace(|| {
-            format!("repaint: rows {:.1?} text {:.1?} ({laid} rows laid out); {rebuilt} rows rebuilt", t1 - t0, t2 - t1)
+            format!(
+                "repaint: rows {:.1?} text {:.1?} ({laid} rows laid out); {rebuilt} rows rebuilt",
+                t1 - t0,
+                t2 - t1
+            )
         });
         caret_row
     }
@@ -368,7 +400,11 @@ impl Editor {
     /// it alone is what lets them scroll past the caret.
     pub fn follow(&self, caret_row: Option<usize>) {
         let Some(r) = caret_row else { return };
-        let to = self.sig.layout.peek().reveal(r, *self.sig.top.peek(), self.view_height());
+        let to = self
+            .sig
+            .layout
+            .peek()
+            .reveal(r, *self.sig.top.peek(), self.view_height());
         trace(|| format!("follow caret row {r} -> {to:?}"));
         if let Some(y) = to {
             set(self.sig.top, y);

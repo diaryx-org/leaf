@@ -252,5 +252,3 @@ mod tests {
         assert_eq!(d.source, "ab\n");
     }
 }
-
-
