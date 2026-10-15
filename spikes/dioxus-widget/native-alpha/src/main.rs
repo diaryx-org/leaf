@@ -19,6 +19,7 @@
 //!   draws them; [`source`] builds the source view's.
 //! - [`blocks`]: what is drawn in place of rows — tables ([`table`]) now,
 //!   media next. **Adding a kind of block is that file.**
+//! - [`link`]: ⌘-click on a link or footnote, and the context menu.
 //! - [`find`] / [`findbar`], [`file`], [`host`], [`ime`], [`status`].
 //! - [`view`]: the stylesheet and the page.
 //!
@@ -41,6 +42,7 @@ mod host;
 mod ime;
 mod input;
 mod keys;
+mod link;
 mod menu;
 mod motion;
 mod row;
@@ -123,10 +125,20 @@ fn App() -> Element {
         move || {
             let menu = menu::install();
             spawn(async move {
+                // What the Table menu's state was last set from.
+                let mut seen = None;
                 loop {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                     while let Some(command) = menu.next() {
                         ed.command(command);
+                    }
+                    // The Table menu's grid items follow the caret in and out
+                    // of a table, asked only when the caret or the text moved.
+                    let mut doc = ed.st.doc.borrow_mut();
+                    let now = (doc.caret, doc.revision());
+                    if seen != Some(now) {
+                        seen = Some(now);
+                        menu.set_in_table(doc.caret_in_table());
                     }
                 }
             });

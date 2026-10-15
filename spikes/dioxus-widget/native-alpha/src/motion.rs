@@ -14,7 +14,7 @@ use leaf_core::{Doc, View};
 
 use crate::editor::Editor;
 use crate::find::Focus;
-use crate::row::{Pointer, Target};
+use crate::row::{Pointer, PressMode, Target};
 use crate::source;
 use crate::trace::trace;
 use crate::viewport::LINE;
@@ -165,12 +165,42 @@ impl Editor {
                 (first, off, Spot::Offset(off))
             }
         };
-        gesture(&mut st.doc.borrow_mut(), &st.last_press, p, row, key, spot);
+        let mode = match p {
+            Pointer::Press { mode, .. } => mode,
+            Pointer::Drag { .. } => PressMode::Place,
+        };
+        match mode {
+            PressMode::Place => gesture(&mut st.doc.borrow_mut(), &st.last_press, p, row, key, spot),
+            // ⌘-click places the caret, then follows what it landed on.
+            PressMode::Follow => place(&mut st.doc.borrow_mut(), spot, false),
+            // A right-click outside the selection moves the caret there
+            // first, like a native text view; one inside keeps it.
+            PressMode::Context => {
+                let mut doc = st.doc.borrow_mut();
+                let at = spot_offset(&doc, spot);
+                let inside = doc.anchor.is_some_and(|a| a.min(doc.caret) <= at && at <= a.max(doc.caret));
+                if !inside {
+                    place(&mut doc, spot, false);
+                }
+            }
+        }
         trace(|| {
             let d = st.doc.borrow();
             format!("{p:?} -> {spot:?}, caret {} anchor {:?}", d.caret, d.anchor)
         });
-        self.repaint();
+        match mode {
+            PressMode::Place => {
+                self.repaint();
+            }
+            PressMode::Follow => {
+                self.repaint();
+                self.follow_at_caret();
+            }
+            PressMode::Context => {
+                self.repaint();
+                self.context_menu();
+            }
+        }
     }
 }
 
@@ -180,14 +210,8 @@ impl Editor {
 /// the press left it. `row` and `key` identify the spot for counting presses
 /// and noticing that a drag has not moved.
 fn gesture(doc: &mut Doc, last: &std::cell::Cell<Option<Press>>, p: Pointer, row: usize, key: usize, spot: Spot) {
-    let offset = |doc: &Doc| match spot {
-        Spot::Pos(r, c) => offset_at(doc, r, c),
-        Spot::Offset(o) => o,
-    };
-    let place = |doc: &mut Doc, extend: bool| match spot {
-        Spot::Pos(r, c) => doc.click(r, c, extend),
-        Spot::Offset(o) => doc.place_caret(o, extend),
-    };
+    let offset = |doc: &Doc| spot_offset(doc, spot);
+    let place = |doc: &mut Doc, extend: bool| place(doc, spot, extend);
     match p {
         Pointer::Press { extend, .. } => {
             let now = Instant::now();
@@ -230,5 +254,21 @@ fn gesture(doc: &mut Doc, last: &std::cell::Cell<Option<Press>>, p: Pointer, row
                 _ => place(doc, true),
             }
         }
+    }
+}
+
+/// The source offset a resolved spot stands for.
+fn spot_offset(doc: &Doc, spot: Spot) -> usize {
+    match spot {
+        Spot::Pos(r, c) => offset_at(doc, r, c),
+        Spot::Offset(o) => o,
+    }
+}
+
+/// Put the caret at a resolved spot, or extend the selection to it.
+fn place(doc: &mut Doc, spot: Spot, extend: bool) {
+    match spot {
+        Spot::Pos(r, c) => doc.click(r, c, extend),
+        Spot::Offset(o) => doc.place_caret(o, extend),
     }
 }

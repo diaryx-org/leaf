@@ -496,6 +496,35 @@ Checked on macOS: alignment (`:---`, `---:`), a wrapping cell, a bold shaded
 head, a table in a quote; a click into a word in a cell, typing there, ↓ to
 the cell below, and the source saved as expected.
 
+### Table editing, links and the context menu
+
+**Format ▸ Table** is Swift's `TableRows`: Insert Table (2 × 2), Insert Table
+With 3–5 columns, insert and delete rows and columns, Align Column, and move
+a row or column — each one `Doc` call (`insert_table`, `table_insert_row`, …),
+made by `input::apply_table`. Swift gives none of them a shortcut, so they are
+`menu::Command::Table` items rather than chords; everything but Insert is
+disabled while `caret_in_table()` is false, re-asked when the caret or the
+text moves, and a no-op there regardless.
+
+**⌘-click** follows what it lands on, Swift's order: a footnote reference to
+its note and a note back to its reference (`footnote_at`,
+`footnote_definition_at`), else a link — a `#fragment` to the place `locate`
+finds, a URL or an existing file beside the document to `open`
+(`native-alpha/src/link.rs`). **Right-click** (or ⌃-click) places the caret
+unless it lands inside the selection, then pops up Go to Note / Back to
+Reference, Open Link and Copy Link when they apply, Cut and Copy with a
+selection, then Paste, Paste and Match Style and Select All — the clipboard
+items replaying the Edit menu's chords. muda shows it over the window's
+NSView, but from the main dispatch queue rather than the click's handler: a
+context menu runs a nested event loop, and winit panics when it is handed an
+event while its handler is still borrowed.
+
+Checked on macOS: the Table menu present, its grid items disabled outside a
+table, and Insert Row Below, Align Column ▸ Right and Move Column Right on a
+cell, saved as expected. Not yet checked on screen: the context menu and
+⌘-click, whose resolution (footnote both ways, `#fragment`, URL, missing file)
+is unit-tested.
+
 ### Working on the native editor
 
 `native-alpha/src/main.rs` is only the app's wiring: every event source —
@@ -503,7 +532,8 @@ the window's keys and IME, the menu bar, the pointer, a file dialog's task —
 holds an `Editor` (`editor.rs`) and calls a method on it. Where a change goes:
 
 - **A command**: a key binding in `input.rs`, and a menu item in `menu.rs`
-  given as that chord. Nothing else; the menu replays the chord.
+  given as that chord. Nothing else; the menu replays the chord. One with no
+  shortcut is a `menu::Command` variant, run in `dispatch.rs`.
 - **Something drawn in place of rows** (media, a formula, a diagram): a
   variant in `blocks.rs` — its builder step, render arm and hit-test — and a
   module of its own for what it draws, as `table.rs` is for tables. Repaint,
@@ -519,8 +549,8 @@ covered by others does not paint — see `occluded` in the trace.
 
 **Still not at parity**, all frontend work: dictation, images, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, spellcheck and
-autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a
-toolbar, Save As / New / Open, settings and dark mode, print and PDF,
+autocorrect, Writing Tools and data detectors in the context menu, link
+peeks, block drag, a toolbar, settings and dark mode, print and PDF,
 accessibility.
 
 ## The verdict
