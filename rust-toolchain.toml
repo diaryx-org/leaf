@@ -17,8 +17,8 @@
 channel = "1.98.1"
 profile = "minimal"
 # `minimal` is rustc, cargo, and rust-std — deliberately, since that is all a
-# build needs. But `cargo xtask ci` is this repo's CI and its first two jobs are
-# rustfmt and clippy, so a toolchain rustup auto-installed from this file could
+# build needs. But `ship ci` is this repo's CI and its jobs include rustfmt
+# and clippy, so a toolchain rustup auto-installed from this file could
 # not run the checks a release has to pass:
 #
 #     error: 'cargo-fmt' is not installed for the toolchain '1.98.1-...'

@@ -1,0 +1,71 @@
+# What ship needs to know about leaf: its release, and its CI. Everything not
+# stated here is ship's default — the manifest, the changelog path, the cliff
+# config, and that this is a Cargo workspace.
+name = leaf
+url = https://github.com/diaryx-org/leaf
+release_branch = main
+
+# No `verify`: before cutting, a release runs the jobs below.
+
+# The npm package's manifest and the Mac app's marketing version follow the
+# workspace version, and no manifest parser in ship reaches either — so the
+# bump runs the task that writes them, and the files are staged with the
+# release commit. The `versions` job checks they agree, which is what caught
+# the npm one three releases behind.
+post_bump = cargo xtask sync-versions
+
+extra_version_files = [
+  packages/leaf-web/package.json,
+  apps/leaf-editor/project.yml,
+]
+
+# Not on crates.io: leaf is consumed from git, by commit, so a tag is a name
+# for a commit and the start of whatever else is listed below.
+publishes = false
+
+# What pushing the tag sets off, most consequential first. The warning printed
+# before the push is handed back to you is composed from these.
+tag_starts
+> *
+> > workflow = homebrew.yml
+> > does = builds the `leaf` CLI binaries and writes the tap formula
+
+# The checks a release has to pass. `ship ci` runs them here, in this order,
+# with the same shell, and stops at the first that fails; `ship ci <id>` runs
+# one. `.github/workflows/ci.yml` does not run these: its checks are the binding
+# drift, the release-build rehearsal and the toolchain pin, which are about the
+# runners rather than the code.
+#
+# A job is `id` (what `ship ci <id>` takes), `name` (the heading a full run
+# prints) and `run` (run by `bash -eo pipefail -c` at the repository root).
+# Cheapest and most likely to fail first, so the run that is going to fail
+# fails in seconds rather than after everything compiles.
+job
+> *
+> > # The npm package and the Mac app state the workspace version.
+> > id = versions
+> > name = Versions
+> > run = cargo xtask sync-versions --check
+> *
+> > id = fmt
+> > name = Format
+> > run = cargo fmt --all --check
+> *
+> > # Warnings are errors here because they are errors in review — a lint that
+> > # only fires on someone else's machine is a lint found too late.
+> > id = clippy
+> > name = Clippy
+> > run = cargo clippy --workspace --all-targets -- -D warnings
+> *
+> > # Includes the xtask's own tests: that the two frontend bindings export the
+> > # same methods, and that every workspace member is checked alone below.
+> > id = test
+> > name = Test
+> > run = cargo test --workspace
+> *
+> > # Workspace feature unification means `cargo check --workspace` can pass
+> > # when a crate cannot compile on its own, so each crate is checked alone, in
+> > # each feature shape a host builds. The list is in the xtask.
+> > id = package-isolation
+> > name = Package isolation
+> > run = cargo xtask package-isolation

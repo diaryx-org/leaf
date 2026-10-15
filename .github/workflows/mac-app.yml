@@ -129,7 +129,7 @@ jobs:
         path: target/package/*.dmg
         if-no-files-found: error
 
-    # No `body`: the release notes are `release github-release`'s, and the
+    # No `body`: the release notes are `ship github`'s, and the
     # action keeps an existing body when it is given none — see the same step
     # in diaryx-org/.github's reusable-homebrew.yml.
     - name: Attach to the GitHub Release

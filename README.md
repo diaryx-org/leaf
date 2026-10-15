@@ -90,14 +90,15 @@ in the keychain and notary credentials in the environment; the head of
 [`xtask/src/package.rs`](xtask/src/package.rs) names them, and
 `--no-notarize` does without the second.
 
-The runner holds the checks; releasing is its own tool. `cargo xtask ci` runs
-everything a release has to pass — rustfmt, clippy with warnings denied, the
-workspace tests, and a `cargo check` of each crate alone in each feature shape a
-host actually builds. `release release <patch|minor|major|X.Y.Z>` runs those
-checks, moves the version through every manifest and the lockfile, cuts the
-generated region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released
-section, and commits and tags — locally. Pushing takes `--push`, and a pushed
-tag is a release: `homebrew.yml` ships the `leaf` binary, and
+The runner holds the tasks that leave Rust; the checks and releasing are
+[`ship`](https://github.com/diaryx-org/ship). `ship ci` runs everything a
+release has to pass — the follower versions, rustfmt, clippy with warnings
+denied, the workspace tests, and a `cargo check` of each crate alone in each
+feature shape a host actually builds. `ship <patch|minor|major|X.Y.Z>` runs
+those checks, moves the version through every manifest and the lockfile, cuts
+the generated region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a
+released section, and commits and tags — locally. Pushing takes `--push`, and
+a pushed tag is a release: `homebrew.yml` ships the `leaf` binary, and
 [`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed, notarised
 `Leaf-<version>-aarch64.dmg` to the release and points the tap's
 `leaf-editor` cask at it (`brew install --cask diaryx-org/tap/leaf-editor`).
@@ -106,11 +107,11 @@ Diaryx app name them from git, `{ git = "https://github.com/diaryx-org/leaf",
 branch = "main" }`, and lock the commit they build.
 
 `leaf-wasm` and `leaf-ffi` are two projections of the same `leaf_core::Doc`, and
-`cargo xtask ci` holds them level: a method exported by one binding and not the
+`ship ci` holds them level: a method exported by one binding and not the
 other fails the `the_two_bindings_export_the_same_methods` test, which exists
 because that is exactly how the browser ended up a year behind the Apple app.
 Genuinely host-specific spellings are listed, with reasons, in
-`BINDING_DIVERGENCE` in [`xtask/src/ci.rs`](xtask/src/ci.rs).
+`BINDING_DIVERGENCE` in [`xtask/src/isolation.rs`](xtask/src/isolation.rs).
 
 The web editor's own tests live in a browser, not in `cargo test`
 ([`packages/leaf-web/test`](packages/leaf-web/test)): what they cover is a
@@ -118,14 +119,12 @@ The web editor's own tests live in a browser, not in `cargo test`
 font, and a stub DOM would mostly be testing the stub. `cargo xtask web --test`
 serves them; the page reports into `document.title` and `window.__results` as
 well as on screen, and `cargo xtask web --headless` reads that outcome out of
-a headless Chrome and exits with it. It is not part of `cargo xtask ci`, which
+a headless Chrome and exits with it. It is not part of `ship ci`, which
 has no browser to assume, so run it before pushing a change to the web editor.
 
-`release` is the shared tooling in [diaryx-org/devtools][devtools], which leaf,
-prov, twig, flower, and the historica repos all cut releases with; what makes
-leaf leaf is [`.config/release.toml`](.config/release.toml) and nothing else.
-
-[devtools]: https://github.com/diaryx-org/devtools
+`ship` is the org's release tool, which its other repositories cut releases
+with too; what makes leaf leaf is [`.config/ship.figl`](.config/ship.figl) and
+nothing else.
 
 `leaf` and `leaf-gpui` take gpui from `gpui-pre`, Longbridge's crates.io
 snapshots of Zed's gpui; the first build compiles the gpui tree, so it is slow.

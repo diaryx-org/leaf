@@ -50,7 +50,7 @@ pub struct Args {
     /// cover is the half of leaf-web that Rust cannot reach: a `TreeWalker`, a
     /// `Range`, a native selection, and text laid out in a proportional font.
     /// A stub DOM would mostly be testing the stub. So this is a task a person
-    /// runs, not a job `cargo xtask ci` can — the page reports into
+    /// runs, not a job `ship ci` can — the page reports into
     /// `document.title` (`PASS n` / `FAIL n/m`) and `window.__results` as well
     /// as on screen, so a driver that does have a browser can read the outcome.
     #[arg(long)]

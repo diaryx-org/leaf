@@ -2,12 +2,12 @@
 //! manifest parser will ever find, and the CI check that they agree.
 //!
 //! Two such files today: `packages/leaf-web/package.json`, and the Mac app's
-//! `MARKETING_VERSION` in `apps/leaf-editor/project.yml`. The release tooling
-//! moves every Cargo manifest and the lockfile, and knows nothing about an npm
+//! `MARKETING_VERSION` in `apps/leaf-editor/project.yml`. `ship` moves every
+//! Cargo manifest and the lockfile, and knows nothing about an npm
 //! manifest or an Xcode setting — so the package sat at 0.1.2 through three
-//! releases of the crates it wraps. `.config/release.toml` names this task as
-//! the bump's `post_bump` and lists the files among `extra_version_files`, so
-//! a release commit carries them.
+//! releases of the crates it wraps. `.config/ship.figl` names this task as the
+//! bump's `post_bump` and lists the files among `extra_version_files`, so a
+//! release commit carries them. `--check` is the `versions` CI job.
 
 use crate::util::{read, root};
 use anyhow::{Context, Result, bail};
@@ -77,7 +77,7 @@ pub fn run_task() -> Result<()> {
     Ok(())
 }
 
-/// The CI job: every follower states the workspace version.
+/// `--check`, the CI job: every follower states the workspace version.
 pub fn check() -> Result<()> {
     let version = workspace_version()?;
     for (path, prefix) in FOLLOWERS {
