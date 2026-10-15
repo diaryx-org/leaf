@@ -48,6 +48,9 @@ pub enum Host {
     /// ⇧⌘V and ⌥⇧⌘V: the clipboard's text, never its HTML.
     PastePlain,
     Save,
+    /// ⌃⌘Space: the emoji and symbols picker, which AppKit hangs on an Edit
+    /// menu item this app has no menu bar to hold.
+    CharacterPalette,
 }
 
 /// ⌘ arrives from winit as `SUPER` — not `META`, which `keyboard-types`
@@ -69,6 +72,9 @@ pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Actio
     let cmd = mods.contains(CMD) || (cfg!(target_os = "macos") && mods.contains(Modifiers::META));
     let ctrl = cfg!(target_os = "macos") && mods.contains(Modifiers::CONTROL);
 
+    if cmd && ctrl && code == Code::Space {
+        return Action::Host(Host::CharacterPalette);
+    }
     if cmd {
         return command(doc, key, code, shift, alt);
     }

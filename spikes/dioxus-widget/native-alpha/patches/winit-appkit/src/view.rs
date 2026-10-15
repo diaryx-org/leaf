@@ -164,6 +164,14 @@ pub struct ViewState {
     /// inserted, marked or commanded. A key repeat the input system swallowed
     /// without any of those is press-and-hold holding the key, not typing.
     text_activity: Cell<bool>,
+    /// leaf patch: press-and-hold's accent menu is up — a repeat was
+    /// swallowed and nothing has been inserted since. The key that picks an
+    /// accent (a digit, an arrow, Return) reaches none of the client's
+    /// methods while it is pressed: the menu inserts its choice *after*
+    /// `keyDown:` returns, so without this the digit was forwarded as typing
+    /// and the accent's `DeleteSurrounding` then took the digit, not the
+    /// letter.
+    accent_menu: Cell<bool>,
 }
 
 define_class!(
@@ -415,6 +423,7 @@ define_class!(
         fn insert_text(&self, string: &NSObject, replacement_range: NSRange) {
             let _entered = debug_span!("insertText:replacementRange:").entered();
             self.ivars().text_activity.set(true);
+            self.ivars().accent_menu.set(false);
 
             let string = if let Some(string) = string.downcast_ref::<NSAttributedString>() {
                 string.string().to_string()
@@ -558,11 +567,24 @@ define_class!(
             // marking or commanding anything is press-and-hold holding the
             // key while its accent menu is up — forwarding it would type the
             // letter over and over underneath the menu.
-            let swallowed_repeat = event.isARepeat()
-                && self.ivars().ime_capabilities.get().is_some()
-                && !self.ivars().text_activity.get();
+            let ime_capable = self.ivars().ime_capabilities.get().is_some();
+            let quiet = ime_capable && !self.ivars().text_activity.get();
+            let swallowed_repeat = event.isARepeat() && quiet;
+            if swallowed_repeat {
+                self.ivars().accent_menu.set(true);
+            }
+            // While the accent menu is up, a key that reached nothing is the
+            // menu's: choosing, moving, or dismissing it. Any key the input
+            // system does pass on (typing on past the menu) ends it.
+            let for_the_menu = self.ivars().accent_menu.get() && quiet;
+            if !quiet {
+                self.ivars().accent_menu.set(false);
+            }
 
-            if (!had_ime_input || self.ivars().forward_key_to_app.get()) && !swallowed_repeat {
+            if (!had_ime_input || self.ivars().forward_key_to_app.get())
+                && !swallowed_repeat
+                && !for_the_menu
+            {
                 let key_event = create_key_event(&event, true, event.isARepeat());
                 self.queue_event(WindowEvent::KeyboardInput {
                     device_id: None,
@@ -899,6 +921,7 @@ impl WinitView {
             surrounding: Default::default(),
             in_key_down: Default::default(),
             text_activity: Default::default(),
+            accent_menu: Default::default(),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         *this.ivars().input_source.borrow_mut() = this.current_input_source();

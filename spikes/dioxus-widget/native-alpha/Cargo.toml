@@ -43,6 +43,12 @@ parley = "=0.12.0"
 # Display columns — core's unit for a caret column — as core counts them.
 unicode-width = "0.2"
 
+# The Character Viewer (⌃⌘Space), which AppKit only offers through an Edit
+# menu this app does not have. The versions winit-appkit already uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+
 # winit's macOS backend, vendored at the version dioxus-native pins and
 # patched (see patches/winit-appkit/PATCH.md): its text input client answered
 # no questions about the text around the caret, so macOS's press-and-hold

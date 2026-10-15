@@ -32,6 +32,10 @@ pub fn run(doc: &mut Doc, gesture: Host) -> bool {
         }
         Host::Paste => paste(doc, true),
         Host::PastePlain => paste(doc, false),
+        Host::CharacterPalette => {
+            character_palette();
+            false
+        }
         Host::Save => {
             doc.save();
             // `save` reports through `status` either way; the status line
@@ -80,3 +84,19 @@ fn paste(doc: &mut Doc, rich: bool) -> bool {
         _ => false,
     }
 }
+
+/// Open the emoji and symbols picker — what *Edit ▸ Emoji & Symbols* does,
+/// for an app with no Edit menu. Its choice arrives as an `Ime::Commit`
+/// (see `patches/winit-appkit/PATCH.md`).
+#[cfg(target_os = "macos")]
+fn character_palette() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    // Keys are handled on the main thread, where winit delivers them.
+    if let Some(mtm) = MainThreadMarker::new() {
+        NSApplication::sharedApplication(mtm).orderFrontCharacterPalette(None);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn character_palette() {}
