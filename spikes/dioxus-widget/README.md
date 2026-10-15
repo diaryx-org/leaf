@@ -403,8 +403,9 @@ every step its own undo. The editor *draws* the caret at that cursor
 instead and leaves core's where `edit_composing` put it.
 
 Unit-tested (a dead key, a kana composition folding into one undo, a
-withdrawn composition, a composition over a selection); **not yet exercised
-with a real input method in the app.**
+withdrawn composition, a composition over a selection). In the app on macOS,
+dead keys work (⌥E E → é, ⌥U O → ö); a multi-step input method such as
+Japanese has not been tried yet.
 
 **Still not at parity**, all frontend work: dictation, tables, images, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, the source view, find and replace, spellcheck and
