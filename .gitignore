@@ -1,4 +1,9 @@
 /target
+# Each spike under spikes/ is its own Cargo workspace, so its build directory
+# is not the root `/target` above. Their lockfiles *are* committed, as the
+# mermaid spike's is: a spike is a result, and it should still build.
+/spikes/*/target/
+/spikes/*/*/target/
 /.obsidian
 /.claude/*
 !/.claude/settings.json
