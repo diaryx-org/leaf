@@ -438,6 +438,15 @@ define_class!(
             let has_marked = self.hasMarkedText();
             let pending_commit = self.ivars().pending_commit.get();
             let ime_enabled = self.is_ime_enabled();
+            leaf_trace(|| {
+                format!(
+                    "winit insertText {string:?} replacement={:?} in_key_down={} state {:?} \
+                     marked={has_marked} pending_commit={pending_commit}",
+                    (replacement_range.location, replacement_range.length),
+                    self.ivars().in_key_down.get(),
+                    self.ivars().ime_state.get(),
+                )
+            });
 
             // Clear preedit if there is marked text.
             if has_marked {
@@ -590,10 +599,24 @@ define_class!(
                 self.ivars().accent_menu.set(false);
             }
 
-            if (!had_ime_input || self.ivars().forward_key_to_app.get())
+            let forward = (!had_ime_input || self.ivars().forward_key_to_app.get())
                 && !swallowed_repeat
-                && !for_the_menu
-            {
+                && !for_the_menu;
+            leaf_trace(|| {
+                format!(
+                    "winit keyDown {:?} repeat={} state {:?}->{:?} activity={} menu={} \
+                     had_ime_input={} forward_key={} => forward={forward}",
+                    event.characters().map(|c| c.to_string()),
+                    event.isARepeat(),
+                    old_ime_state,
+                    self.ivars().ime_state.get(),
+                    self.ivars().text_activity.get(),
+                    self.ivars().accent_menu.get(),
+                    had_ime_input,
+                    self.ivars().forward_key_to_app.get(),
+                )
+            });
+            if forward {
                 let key_event = create_key_event(&event, true, event.isARepeat());
                 self.queue_event(WindowEvent::KeyboardInput {
                     device_id: None,
@@ -1452,6 +1475,16 @@ fn replace_event(event: &NSEvent, option_as_alt: OptionAsAlt) -> Retained<NSEven
 ///
 /// The mapping is monotone non-decreasing, so applying it to the location and end of an
 /// `NSRange` (where `location <= end`) can never produce an inverted byte range.
+/// leaf patch: with `LEAF_TRACE` set, say on stderr what the text input
+/// client decided — the editor's own trace, one layer down.
+fn leaf_trace(line: impl FnOnce() -> String) {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("LEAF_TRACE").is_some()) {
+        eprintln!("{}", line());
+    }
+}
+
 /// leaf patch: a string's length in UTF-16 code units, AppKit's unit.
 fn utf16_len(s: &str) -> usize {
     s.encode_utf16().count()
