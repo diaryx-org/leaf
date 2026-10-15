@@ -1,0 +1,38 @@
+# The tour the README's findings come from. Run from spikes/leaf-ply:
+#   cp tour/test.md /tmp/test.md
+#   cargo run --release -- /tmp/test.md --script tour/tour.txt
+# (it edits the file in memory and never saves). Screenshots land in out/.
+
+shot out/01-open.png
+check
+# Click the end of the heading and type there.
+click 400 60
+type XYZ
+dump
+# Drag across the first line, bold it, undo it all.
+drag 150 110 420 110
+key B ctrl
+dump
+shot out/02-bold.png
+key Z ctrl
+key Z ctrl
+key Z ctrl
+dump
+# The source view, and back.
+key E ctrl
+shot out/03-source.png
+key E ctrl
+# Up/Down over visual lines, then a selection across them.
+key Home ctrl
+key Down
+key Down
+key Down shift
+key Down shift
+dump
+shot out/04-vertical.png
+# A click on a wrapped line.
+click 300 133
+type [hit]
+dump
+stat
+quit

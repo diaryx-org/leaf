@@ -1,0 +1,14 @@
+[package]
+name = "leaf-ply-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Spike: leaf-core's WYSIWYG editor drawn and driven through Ply (ply-engine)."
+
+# Its own workspace, like spikes/mermaid-native, so leaf itself never depends
+# on Ply or macroquad.
+[workspace]
+
+[dependencies]
+leaf-core = { path = "../../crates/leaf-core" }
+ply-engine = { version = "1.1", default-features = false }
