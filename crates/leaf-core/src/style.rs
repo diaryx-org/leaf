@@ -39,6 +39,80 @@ fn attr<'a>(attrs: &'a [(String, Option<String>)], key: &str) -> Option<&'a str>
         .and_then(|(_, v)| v.as_deref())
 }
 
+/// The value a node's `style` attribute gives the CSS `property`: as written,
+/// less a trailing `!important`, which says how a value cascades and not what
+/// it is. `None` where the node has no `style`, the `style` does not declare
+/// the property, or it is not CSS.
+///
+/// `style` is where the presentation vocabulary is written, so that a browser,
+/// an Obsidian or a Typora renders it with no leaf present: `text-align`,
+/// `line-height`, `font-size`, `font-family` and `color`, each holding the
+/// token the matching type's `name` spells. The CSS is read by `fig-css`,
+/// which is also what rewrites it, so a declaration another app wrote there is
+/// kept.
+fn declared(attrs: &[(String, Option<String>)], property: &str) -> Option<String> {
+    let value = fig_css::declaration(attr(attrs, "style")?, property)?;
+    let value = value.trim();
+    let value = match value.len().checked_sub("!important".len()) {
+        Some(at)
+            if value.is_char_boundary(at) && value[at..].eq_ignore_ascii_case("!important") =>
+        {
+            value[..at].trim_end()
+        }
+        _ => value,
+    };
+    Some(value.to_string())
+}
+
+/// A presentation property read off a node: from the CSS `property` its
+/// `style` declares, or — where the `style` does not declare it — from the
+/// attribute leaf 0.2 wrote the same property under, so a document saved
+/// before the vocabulary moved into `style` draws as it did.
+///
+/// A declaration wins outright, even one this vocabulary cannot read (a
+/// `font-size: 16px` from elsewhere answers `None`, not the `data-size` beside
+/// it): it is what every other renderer draws, and the editor draws the same.
+fn read<T>(
+    attrs: &[(String, Option<String>)],
+    property: &str,
+    css: impl FnOnce(&str) -> Option<T>,
+    legacy: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    match declared(attrs, property) {
+        Some(value) => css(&value),
+        None => legacy(),
+    }
+}
+
+/// The first family of a CSS `font-family` list, unquoted — `"Gill Sans",
+/// sans-serif` is `Gill Sans` — or `None` for an empty list. An unquoted
+/// family's runs of whitespace are one space, as CSS reads them.
+fn first_family(list: &str) -> Option<String> {
+    let list = list.trim_start();
+    let mut chars = list.chars();
+    let family = match chars.next()? {
+        q @ ('\'' | '"') => {
+            let mut out = String::new();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => out.extend(chars.next()),
+                    c if c == q => break,
+                    c => out.push(c),
+                }
+            }
+            out
+        }
+        _ => list
+            .split(',')
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+    (!family.trim().is_empty()).then_some(family)
+}
+
 /// What a glyph *is*, typographically — the semantic role a frontend maps to its
 /// own presentation. Mutually exclusive per glyph (a glyph is a heading, or a
 /// link, or body text — not two at once); the compositional emphasis a run can
@@ -177,6 +251,25 @@ impl MarkColor {
         }
     }
 
+    /// The ink a `style` spells this name with — `color: #d24b3f` for red — and
+    /// the one triple [`TextColor`] reads back as the name rather than as an
+    /// exact colour, so the theme keeps both of its inks for it.
+    ///
+    /// The mid-tones `presentation.css` has always fallen back to, each clearing
+    /// 4:1 against white and against a near-black page: a renderer that is not
+    /// leaf draws this one ink in both appearances, and it has to read in both.
+    pub const fn hex(self) -> &'static str {
+        match self {
+            Self::Red => "#d24b3f",
+            Self::Orange => "#b96c12",
+            Self::Yellow => "#9a7b12",
+            Self::Green => "#2e8b57",
+            Self::Blue => "#3d7fd6",
+            Self::Purple => "#a855c9",
+            Self::Brown => "#a9713c",
+        }
+    }
+
     /// This colour's position in [`ALL`](Self::ALL) — the index a frontend's
     /// own palette array is keyed by, the way [`Role::Heading`]'s level keys a
     /// heading ramp.
@@ -234,7 +327,22 @@ impl Align {
     /// reason: this module stays free of twig as well as of any toolkit, and
     /// both the block walker and the caret query hand over the same
     /// `node.attrs`.
+    ///
+    /// CSS's `text-align` first, and the `class` token leaf 0.2 wrote where the
+    /// `style` does not declare one.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
+        read(
+            attrs,
+            "text-align",
+            |v| Self::from_token(&v.to_ascii_lowercase()),
+            || Self::from_legacy(attrs),
+        )
+    }
+
+    /// The alignment a `class` token names — how leaf 0.2 spelled it, still
+    /// read so a document saved then draws as it did, and taken out by the
+    /// gesture that writes `text-align` in its place.
+    pub fn from_legacy(attrs: &[(String, Option<String>)]) -> Option<Self> {
         attr(attrs, "class")?
             .split_whitespace()
             .find_map(Self::from_token)
@@ -303,7 +411,7 @@ impl LineSpacing {
     /// The spacing a block's attributes name, if any — twig records it under
     /// `data-line-height`.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attr(attrs, "data-line-height").and_then(Self::from_attr)
+        LineHeight::from_attrs(attrs)?.step()
     }
 
     /// Read a `data-line-height` value. `None` for anything that is not one of
@@ -381,7 +489,7 @@ impl SizeStep {
     /// The size a run's or block's attributes name, if any — twig records it
     /// under `data-size`.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attr(attrs, "data-size").and_then(Self::from_attr)
+        FontSize::from_attrs(attrs)?.step()
     }
 
     /// Read a `data-size` value. `None` for a name outside the vocabulary — a
@@ -488,7 +596,7 @@ impl FontFamily {
     /// The face a run's or block's attributes name, if any — twig records it
     /// under `data-font`.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attr(attrs, "data-font").and_then(Self::from_attr)
+        FontFace::from_attrs(attrs)?.generic()
     }
 
     /// Read a `data-font` value. `None` for a concrete family name, which is
@@ -668,8 +776,18 @@ pub enum FontSize {
 impl FontSize {
     /// The size a run's or block's attributes name, if any — twig records it
     /// under `data-size`.
+    ///
+    /// CSS's `font-size` first, and leaf 0.2's `data-size` where the `style`
+    /// does not declare one. The value grammar is the same either way, because
+    /// it was always CSS's: a keyword is read without regard to case, as CSS
+    /// reads one.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attr(attrs, "data-size").and_then(Self::from_attr)
+        read(
+            attrs,
+            "font-size",
+            |v| Self::from_attr(&v.to_ascii_lowercase()),
+            || attr(attrs, "data-size").and_then(Self::from_attr),
+        )
     }
 
     /// Read a `data-size` value: one of CSS's seven keywords, or a `<number>pt`.
@@ -745,8 +863,14 @@ pub enum LineHeight {
 impl LineHeight {
     /// The spacing a block's attributes name, if any — twig records it under
     /// `data-line-height`.
+    ///
+    /// CSS's `line-height` first — a unitless number, which is the one
+    /// spelling of a multiple — and leaf 0.2's `data-line-height` where the
+    /// `style` does not declare one.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attr(attrs, "data-line-height").and_then(Self::from_attr)
+        read(attrs, "line-height", Self::from_attr, || {
+            attr(attrs, "data-line-height").and_then(Self::from_attr)
+        })
     }
 
     /// Read a `data-line-height` value: one of the three names, or any positive
@@ -851,8 +975,42 @@ impl TextColor {
     /// under `data-color`, the key a `mark` node carries its *highlight's*
     /// colour under. The two never collide: a `mark` is a `mark` and a span is
     /// a span.
+    ///
+    /// CSS's `color` first, and leaf 0.2's `data-color` where the `style` does
+    /// not declare one. A `color` that is one of the seven names' own inks
+    /// ([`MarkColor::hex`]) is read as that name, which is how a name survives
+    /// being written as a triple another app can draw.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attr(attrs, "data-color").and_then(Self::from_attr)
+        read(attrs, "color", Self::from_css, || {
+            attr(attrs, "data-color").and_then(Self::from_attr)
+        })
+    }
+
+    /// Read a CSS `color`: [`from_attr`](Self::from_attr)'s grammar, without
+    /// regard to case, with a triple that is one of the seven names' inks read
+    /// as the name.
+    pub fn from_css(value: &str) -> Option<Self> {
+        match Self::from_attr(&value.to_ascii_lowercase())? {
+            Self::Rgb { r, g, b } => {
+                let hex = format!("#{r:02x}{g:02x}{b:02x}");
+                Some(match MarkColor::ALL.into_iter().find(|c| c.hex() == hex) {
+                    Some(named) => Self::Named(named),
+                    None => Self::Rgb { r, g, b },
+                })
+            }
+            named => Some(named),
+        }
+    }
+
+    /// The value a `style` spells it with: a name as its ink
+    /// ([`MarkColor::hex`]), which every renderer draws and
+    /// [`from_css`](Self::from_css) reads back as the name, and a triple as
+    /// itself.
+    pub fn css_value(self) -> Cow<'static, str> {
+        match self {
+            Self::Named(c) => Cow::Borrowed(c.hex()),
+            Self::Rgb { .. } => self.name(),
+        }
     }
 
     /// Read a `data-color` value: one of the seven names, `#rrggbb`, or the
@@ -933,8 +1091,32 @@ pub enum FontFace {
 impl FontFace {
     /// The face a run's or block's attributes name, if any — twig records it
     /// under `data-font`.
+    ///
+    /// CSS's `font-family` first — its first family, unquoted, since a list's
+    /// later families are fallbacks for a renderer without the first — and leaf
+    /// 0.2's `data-font` where the `style` does not declare one.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attr(attrs, "data-font").and_then(Self::from_attr)
+        read(
+            attrs,
+            "font-family",
+            |v| Self::from_attr(&first_family(v)?),
+            || attr(attrs, "data-font").and_then(Self::from_attr),
+        )
+    }
+
+    /// The value a `style` spells it with: a generic as its keyword, and a
+    /// family name in single quotes, which CSS needs around a name that is not
+    /// a plain identifier and reads the same around one that is.
+    ///
+    /// `None` for a name with a quote or a backslash in it, which has no
+    /// spelling every format reads back: twig refuses a `"` in an attribute
+    /// value, and a backslash is an escape to CSS and to djot both.
+    pub fn css_value(&self) -> Option<Cow<'_, str>> {
+        match self {
+            Self::Generic(generic) => Some(Cow::Borrowed(generic.name())),
+            Self::Named(name) if name.contains(['\'', '"', '\\']) => None,
+            Self::Named(name) => Some(Cow::Owned(format!("'{name}'"))),
+        }
     }
 
     /// Read a `data-font` value: one of the four generics, or any other

@@ -967,7 +967,7 @@ mod tests {
     }
 
     /// ⌥a steps the block's alignment through the two a terminal can draw and
-    /// back to left, writing the `class` token each time and saying where it
+    /// back to left, writing `text-align` into `style` each time and saying where it
     /// landed. Justify is deliberately not a notch — see [`cycle_alignment`].
     #[test]
     fn alt_a_cycles_the_alignment_through_what_a_terminal_can_draw() {
@@ -976,11 +976,19 @@ mod tests {
         let mut state = EditorState::new();
 
         handle_key(&mut d, alt('a'), &mut state);
-        assert!(d.source.contains("{.center}"), "{}", d.source);
+        assert!(
+            d.source.contains("{style=\"text-align: center\"}"),
+            "{}",
+            d.source
+        );
         assert_eq!(d.status.as_deref(), Some("alignment: center"));
 
         handle_key(&mut d, alt('a'), &mut state);
-        assert!(d.source.contains("{.right}"), "{}", d.source);
+        assert!(
+            d.source.contains("{style=\"text-align: right\"}"),
+            "{}",
+            d.source
+        );
         assert_eq!(d.status.as_deref(), Some("alignment: right"));
 
         handle_key(&mut d, alt('a'), &mut state);

@@ -9,27 +9,30 @@ fn fmt_doc(body: &str, format: Format) -> Doc {
 }
 
 /// Alignment is a block property, so the gesture is `set_block_attrs` on
-/// the caret's block whatever is selected — and each format spells it its
-/// own way: djot's `{…}` line above the block, a `<div>` around it in
+/// the caret's block whatever is selected — written as CSS's `text-align`
+/// in `style`, which each format spells its own way: djot's `{…}` line above the block, a `<div>` around it in
 /// Markdown (the format has nowhere else to put it), the tag in HTML.
 #[test]
 fn set_alignment_spells_the_class_the_format_s_own_way() {
     let mut dj = fmt_doc("hello\n", Format::Djot);
     dj.caret = 1;
     dj.set_alignment(Some(Align::Center));
-    assert_eq!(dj.source, "{.center}\nhello\n");
+    assert_eq!(dj.source, "{style=\"text-align: center\"}\nhello\n");
     assert!(dj.dirty);
     assert_eq!(dj.status, None);
 
     let mut md = fmt_doc("hello\n", Format::Markdown);
     md.caret = 1;
     md.set_alignment(Some(Align::Right));
-    assert_eq!(md.source, "<div class=\"right\">\n\nhello\n\n</div>\n");
+    assert_eq!(
+        md.source,
+        "<div style=\"text-align: right\">\n\nhello\n\n</div>\n"
+    );
 
     let mut html = fmt_doc("<p>hello</p>\n", Format::Html);
     html.caret = html.source.find("hello").unwrap();
     html.set_alignment(Some(Align::Justify));
-    assert_eq!(html.source, "<p class=\"justify\">hello</p>\n");
+    assert_eq!(html.source, "<p style=\"text-align: justify\">hello</p>\n");
 }
 
 /// Each gesture edits **one key and keeps the rest** — twig's contract is
@@ -44,12 +47,17 @@ fn a_presentation_gesture_keeps_every_attribute_it_did_not_write() {
     );
     d.caret = d.source.find("hello").unwrap();
     d.set_alignment(Some(Align::Right));
-    // `center` goes, `lead` stays, and neither the id nor the spacing is
-    // touched.
+    // leaf 0.2's `center` goes and the alignment moves into `style`; `lead`
+    // stays, and neither the id nor the spacing is touched.
     // The serializer picks the order; what matters is which keys survive.
     assert!(d.source.contains(".lead"), "{:?}", d.source);
-    assert!(d.source.contains(".right"), "{:?}", d.source);
+    assert!(
+        d.source.contains("style=\"text-align: right\""),
+        "{:?}",
+        d.source
+    );
     assert!(!d.source.contains(".center"), "{:?}", d.source);
+    assert!(!d.source.contains(".right"), "{:?}", d.source);
     assert!(d.source.contains("#intro"), "{:?}", d.source);
     assert!(
         d.source.contains("data-line-height=\"1.5\""),
@@ -62,10 +70,17 @@ fn a_presentation_gesture_keeps_every_attribute_it_did_not_write() {
         Some(LineHeight::Step(LineSpacing::OneHalf))
     );
 
-    // And the other way round: the spacing gesture leaves the classes be.
+    // And the other way round: the spacing gesture leaves the classes and
+    // the alignment be, and moves its own key into `style` beside it.
     d.set_line_spacing(Some(LineHeight::Step(LineSpacing::Double)));
     assert!(d.source.contains(".lead"), "{:?}", d.source);
-    assert!(d.source.contains(".right"), "{:?}", d.source);
+    assert!(
+        d.source
+            .contains("style=\"text-align: right; line-height: 2\""),
+        "{:?}",
+        d.source
+    );
+    assert!(!d.source.contains("data-line-height"), "{:?}", d.source);
     assert_eq!(
         d.line_spacing_at_caret(),
         Some(LineHeight::Step(LineSpacing::Double))
@@ -94,11 +109,14 @@ fn none_clears_a_key_and_an_empty_set_unwraps_the_block() {
     let mut md = fmt_doc("hello\n", Format::Markdown);
     md.caret = 1;
     md.set_alignment(Some(Align::Center));
-    assert_eq!(md.source, "<div class=\"center\">\n\nhello\n\n</div>\n");
+    assert_eq!(
+        md.source,
+        "<div style=\"text-align: center\">\n\nhello\n\n</div>\n"
+    );
     md.caret = md.source.find("hello").unwrap();
     md.set_line_spacing(Some(LineHeight::Step(LineSpacing::OneFifteen)));
     assert_eq!(
-        md.source, "<div class=\"center\" data-line-height=\"1.15\">\n\nhello\n\n</div>\n",
+        md.source, "<div style=\"text-align: center; line-height: 1.15\">\n\nhello\n\n</div>\n",
         "the second key rewrites the div rather than nesting a second"
     );
     md.caret = md.source.find("hello").unwrap();
@@ -118,7 +136,7 @@ fn a_run_gesture_wraps_a_selection_and_sets_the_block_without_one() {
     dj.anchor = Some(2);
     dj.caret = 5;
     dj.set_font_size(Some(FontSize::Step(SizeStep::Large)));
-    assert_eq!(dj.source, "a [big]{data-size=\"large\"} b\n");
+    assert_eq!(dj.source, "a [big]{style=\"font-size: large\"} b\n");
     assert_eq!(
         dj.font_size_at_caret(),
         Some(FontSize::Step(SizeStep::Large))
@@ -128,7 +146,9 @@ fn a_run_gesture_wraps_a_selection_and_sets_the_block_without_one() {
     md.anchor = Some(2);
     md.caret = 5;
     md.set_text_color(Some(TextColor::Named(MarkColor::Blue)));
-    assert_eq!(md.source, "a <span data-color=\"blue\">big</span> b\n");
+    // A name is written as its ink, which every renderer draws, and read
+    // back as the name, whose two inks the theme owns.
+    assert_eq!(md.source, "a <span style=\"color: #3d7fd6\">big</span> b\n");
     assert_eq!(
         md.text_color_at_caret(),
         Some(TextColor::Named(MarkColor::Blue))
@@ -138,7 +158,10 @@ fn a_run_gesture_wraps_a_selection_and_sets_the_block_without_one() {
     let mut block = fmt_doc("a big b\n", Format::Djot);
     block.caret = 3;
     block.set_font_family(Some(FontFace::Generic(FontFamily::Monospace)));
-    assert_eq!(block.source, "{data-font=\"monospace\"}\na big b\n");
+    assert_eq!(
+        block.source,
+        "{style=\"font-family: monospace\"}\na big b\n"
+    );
     assert_eq!(
         block.font_family_at_caret(),
         Some(FontFace::Generic(FontFamily::Monospace))
@@ -157,7 +180,7 @@ fn an_exact_value_round_trips_through_the_gesture_and_the_query() {
     d.anchor = Some(2);
     d.caret = 5;
     d.set_font_size(FontSize::points(14.0));
-    assert_eq!(d.source, "a [big]{data-size=\"14pt\"} b\n");
+    assert_eq!(d.source, "a [big]{style=\"font-size: 14pt\"} b\n");
     assert_eq!(d.font_size_at_caret(), FontSize::points(14.0));
 
     // Colour, onto the same span — the gesture keeps the size it finds.
@@ -168,7 +191,7 @@ fn an_exact_value_round_trips_through_the_gesture_and_the_query() {
     }));
     assert_eq!(
         d.source,
-        "a [big]{data-size=\"14pt\" data-color=\"#c03030\"} b\n"
+        "a [big]{style=\"font-size: 14pt; color: #c03030\"} b\n"
     );
     assert_eq!(
         d.text_color_at_caret(),
@@ -179,10 +202,10 @@ fn an_exact_value_round_trips_through_the_gesture_and_the_query() {
         })
     );
 
-    // Face: a family name, as given.
+    // Face: a family name, as given, quoted as CSS quotes a family.
     d.set_font_family(Some(FontFace::Named("Garamond".into())));
     assert!(
-        d.source.contains("data-font=\"Garamond\""),
+        d.source.contains("font-family: 'Garamond'"),
         "{:?}",
         d.source
     );
@@ -195,17 +218,18 @@ fn an_exact_value_round_trips_through_the_gesture_and_the_query() {
     let mut block = fmt_doc("hello\n", Format::Djot);
     block.caret = 1;
     block.set_line_spacing(LineHeight::ratio(1.3));
-    assert_eq!(block.source, "{data-line-height=\"1.3\"}\nhello\n");
+    assert_eq!(block.source, "{style=\"line-height: 1.3\"}\nhello\n");
     assert_eq!(block.line_spacing_at_caret(), LineHeight::ratio(1.3));
 
     // And a value spelled long is written back short, so the same press
-    // twice writes the same bytes: `14.0pt` in, `14pt` out.
+    // twice writes the same bytes: `14.0pt` in, `14pt` out — here from leaf
+    // 0.2's `data-size`, which the press moves into `style`.
     let mut long = fmt_doc("{data-size=\"14.0pt\"}\nhello\n", Format::Djot);
     long.caret = long.source.find("hello").unwrap();
     assert_eq!(long.font_size_at_caret(), FontSize::points(14.0));
     let in_force = long.font_size_at_caret();
     long.set_font_size(in_force);
-    assert_eq!(long.source, "{data-size=\"14pt\"}\nhello\n");
+    assert_eq!(long.source, "{style=\"font-size: 14pt\"}\nhello\n");
 }
 
 /// A value the grammar does not cover is what it was before the vocabulary
@@ -240,7 +264,7 @@ fn a_value_outside_the_grammar_is_carried_and_the_menu_ticks_the_default() {
     // carried value ever changes.
     d.caret = d.source.find("hello").unwrap();
     d.set_font_size(FontSize::points(12.0));
-    assert!(d.source.contains("data-size=\"12pt\""), "{:?}", d.source);
+    assert!(d.source.contains("font-size: 12pt"), "{:?}", d.source);
     assert!(!d.source.contains("huge"), "{:?}", d.source);
 }
 
@@ -295,15 +319,15 @@ fn a_second_run_gesture_re_styles_the_span_and_none_unwraps_it() {
     d.anchor = Some(2);
     d.caret = 5;
     d.set_font_size(Some(FontSize::Step(SizeStep::Large)));
-    assert_eq!(d.source, "a [big]{data-size=\"large\"} b\n");
+    assert_eq!(d.source, "a [big]{style=\"font-size: large\"} b\n");
 
     // The selection `wrap_range_attrs` left behind covers the whole span;
     // colouring it now keeps the size, because the gesture reads the span's
     // attributes before it edits its own key.
     d.set_text_color(Some(TextColor::Named(MarkColor::Red)));
     assert_eq!(
-        d.source, "a [big]{data-size=\"large\" data-color=\"red\"} b\n",
-        "one span, both keys"
+        d.source, "a [big]{style=\"font-size: large; color: #d24b3f\"} b\n",
+        "one span, both properties"
     );
     assert_eq!(
         d.font_size_at_caret(),
@@ -315,7 +339,7 @@ fn a_second_run_gesture_re_styles_the_span_and_none_unwraps_it() {
     );
 
     d.set_text_color(None);
-    assert_eq!(d.source, "a [big]{data-size=\"large\"} b\n");
+    assert_eq!(d.source, "a [big]{style=\"font-size: large\"} b\n");
     d.set_font_size(None);
     assert_eq!(d.source, "a big b\n", "the last key unwraps the span");
     assert_eq!(d.font_size_at_caret(), None);
@@ -390,7 +414,7 @@ fn a_djot_fenced_div_is_not_an_attributed_span() {
     d.set_text_color(Some(TextColor::Named(MarkColor::Red)));
     assert_eq!(
         d.source,
-        "{.center data-size=\"small\" #box}\n:::\nhello [world]{data-color=\"red\"}\n:::\n",
+        "{.center data-size=\"small\" #box}\n:::\nhello [world]{style=\"color: #d24b3f\"}\n:::\n",
         "the span carries its own key and nothing of the div's"
     );
 
@@ -469,50 +493,61 @@ fn clearing_a_property_an_enclosing_div_names_says_so_and_writes_nothing() {
     assert_eq!(own.status, None);
 }
 
-/// An edited key is rewritten **where it stands**. The proposal's worked
-/// example is the test: a paragraph that came in as `id="intro"
-/// class="lead center" data-line-height="1.5"` and is right-aligned goes
-/// out as the same list with one token changed. Removing the key and
-/// pushing it back shuffled a document's attributes on every press.
+/// An edited key is rewritten **where it stands**, and an edited
+/// declaration the same way inside `style`. Removing the key and pushing it
+/// back shuffled a document's attributes on every press. A paragraph from
+/// elsewhere, with its own `style`, keeps the attribute order and the
+/// declarations it came with, and leaf's properties go in beside them.
 #[test]
 fn an_edited_key_keeps_its_place_among_the_attributes() {
     let mut html = fmt_doc(
-        "<p id=\"intro\" class=\"lead center\" data-line-height=\"1.5\">hello</p>\n",
+        "<p id=\"intro\" style=\"color: #333; text-align: center\" class=\"lead\">hello</p>\n",
         Format::Html,
     );
     html.caret = html.source.find("hello").unwrap();
     html.set_alignment(Some(Align::Right));
     assert_eq!(
         html.source,
-        "<p id=\"intro\" class=\"lead right\" data-line-height=\"1.5\">hello</p>\n"
+        "<p id=\"intro\" style=\"color: #333; text-align: right\" class=\"lead\">hello</p>\n"
     );
 
-    // A `data-` key the same way, and a key the block did not have still
-    // goes on the end.
+    // A property the block did not have goes on the end of `style`.
     html.caret = html.source.find("hello").unwrap();
     html.set_line_spacing(Some(LineHeight::Step(LineSpacing::Double)));
     assert_eq!(
         html.source,
-        "<p id=\"intro\" class=\"lead right\" data-line-height=\"2\">hello</p>\n"
+        "<p id=\"intro\" style=\"color: #333; text-align: right; line-height: 2\" class=\"lead\">hello</p>\n"
     );
-    html.caret = html.source.find("hello").unwrap();
-    html.set_font_size(Some(FontSize::Step(SizeStep::Large)));
+
+    // A leaf 0.2 paragraph: the alignment's token leaves `class` and its
+    // property goes into a `style` on the end, and the spacing it did not
+    // touch stays where it was, in the spelling it was in.
+    let mut old = fmt_doc(
+        "<p id=\"intro\" class=\"lead center\" data-line-height=\"1.5\">hello</p>\n",
+        Format::Html,
+    );
+    old.caret = old.source.find("hello").unwrap();
+    old.set_alignment(Some(Align::Right));
     assert_eq!(
-        html.source,
-        "<p id=\"intro\" class=\"lead right\" data-line-height=\"2\" data-size=\"large\">hello</p>\n"
+        old.source,
+        "<p id=\"intro\" class=\"lead\" data-line-height=\"1.5\" style=\"text-align: right\">hello</p>\n"
+    );
+    assert_eq!(
+        old.line_spacing_at_caret(),
+        Some(LineHeight::Step(LineSpacing::OneHalf))
     );
 
     // Djot writes the same list in its own spelling, and the order is the
     // author's there too.
     let mut dj = fmt_doc(
-        "{#intro .lead .center data-line-height=\"1.5\"}\nhello\n",
+        "{#intro style=\"color: #333; text-align: center\" .lead}\nhello\n",
         Format::Djot,
     );
     dj.caret = dj.source.find("hello").unwrap();
     dj.set_alignment(Some(Align::Right));
     assert_eq!(
         dj.source,
-        "{#intro .lead .right data-line-height=\"1.5\"}\nhello\n"
+        "{#intro style=\"color: #333; text-align: right\" .lead}\nhello\n"
     );
 }
 
@@ -963,7 +998,7 @@ fn a_markdown_block_gesture_keeps_the_caret_on_its_text() {
     md.set_alignment(Some(Align::Center));
     assert_eq!(
         md.source,
-        "<div class=\"center\">\n\nthe quick brown fox\n\n</div>\n"
+        "<div style=\"text-align: center\">\n\nthe quick brown fox\n\n</div>\n"
     );
     assert_eq!(word(&md), 2, "the caret left its word: {}", md.caret);
     assert_eq!(md.alignment_at_caret(), Some(Align::Center));
@@ -972,7 +1007,7 @@ fn a_markdown_block_gesture_keeps_the_caret_on_its_text() {
     // and the second press reaches the same block rather than nothing.
     md.set_alignment(Some(Align::Right));
     assert_eq!(
-        md.source, "<div class=\"right\">\n\nthe quick brown fox\n\n</div>\n",
+        md.source, "<div style=\"text-align: right\">\n\nthe quick brown fox\n\n</div>\n",
         "a second press re-styles the div"
     );
     assert_eq!(md.status, None);
@@ -982,7 +1017,7 @@ fn a_markdown_block_gesture_keeps_the_caret_on_its_text() {
     md.set_line_spacing(Some(LineHeight::Step(LineSpacing::Double)));
     assert_eq!(
         md.source,
-        "<div class=\"right\" data-line-height=\"2\">\n\nthe quick brown fox\n\n</div>\n"
+        "<div style=\"text-align: right; line-height: 2\">\n\nthe quick brown fox\n\n</div>\n"
     );
     assert_eq!(word(&md), 2);
     assert_eq!(
@@ -994,7 +1029,7 @@ fn a_markdown_block_gesture_keeps_the_caret_on_its_text() {
     md.set_alignment(None);
     assert_eq!(
         md.source,
-        "<div data-line-height=\"2\">\n\nthe quick brown fox\n\n</div>\n"
+        "<div style=\"line-height: 2\">\n\nthe quick brown fox\n\n</div>\n"
     );
     assert_eq!(word(&md), 2);
     md.set_line_spacing(None);
@@ -1015,19 +1050,25 @@ fn a_djot_attribute_line_keeps_the_caret_on_its_text() {
     dj.caret = dj.source.find("brown").unwrap() + 2;
 
     dj.set_alignment(Some(Align::Center));
-    assert_eq!(dj.source, "{.center}\nthe quick brown fox\n");
+    assert_eq!(
+        dj.source,
+        "{style=\"text-align: center\"}\nthe quick brown fox\n"
+    );
     assert_eq!(word(&dj), 2);
     assert_eq!(dj.alignment_at_caret(), Some(Align::Center));
 
     dj.set_line_spacing(Some(LineHeight::Step(LineSpacing::Double)));
     assert_eq!(
-        dj.source, "{.center data-line-height=\"2\"}\nthe quick brown fox\n",
+        dj.source, "{style=\"text-align: center; line-height: 2\"}\nthe quick brown fox\n",
         "a second press edits the line the first wrote"
     );
     assert_eq!(word(&dj), 2);
 
     dj.set_alignment(None);
-    assert_eq!(dj.source, "{data-line-height=\"2\"}\nthe quick brown fox\n");
+    assert_eq!(
+        dj.source,
+        "{style=\"line-height: 2\"}\nthe quick brown fox\n"
+    );
     assert_eq!(word(&dj), 2);
 
     dj.set_line_spacing(None);
@@ -1049,7 +1090,7 @@ fn a_block_gesture_carries_a_selection_and_a_heading_caret_too() {
     md.set_font_size(Some(FontSize::Step(SizeStep::Large)));
     assert_eq!(
         md.source,
-        "<div data-size=\"large\">\n\nthe quick brown fox\n\n</div>\n"
+        "<div style=\"font-size: large\">\n\nthe quick brown fox\n\n</div>\n"
     );
     assert_eq!(md.caret - md.source.find("brown").unwrap(), 2);
     assert_eq!(
@@ -1079,7 +1120,7 @@ fn a_block_gesture_carries_a_selection_and_a_heading_caret_too() {
     h.set_alignment(Some(Align::Right));
     assert_eq!(
         h.source,
-        "<div class=\"right\">\n\n# hi there\n\n</div>\n\nbody\n"
+        "<div style=\"text-align: right\">\n\n# hi there\n\n</div>\n\nbody\n"
     );
     assert_eq!(h.caret, h.source.find("there").unwrap() + 1);
     assert_eq!(h.alignment_at_caret(), Some(Align::Right));
@@ -1362,7 +1403,7 @@ fn backspace_that_empties_a_centred_paragraph_takes_its_div_with_the_letter() {
     d.set_alignment(Some(Align::Center));
     assert_eq!(
         d.source,
-        "Try the toolbar.\n\n<div class=\"center\">\n\nT\n\n</div>\n"
+        "Try the toolbar.\n\n<div style=\"text-align: center\">\n\nT\n\n</div>\n"
     );
     d.backspace();
     assert_eq!(d.source, "Try the toolbar.\n\n\n");
@@ -1402,7 +1443,10 @@ fn backspace_that_empties_a_centred_paragraph_takes_its_djot_attrs_line_too() {
     d.build_visual(80);
     d.caret = d.source.len() - 1;
     d.set_alignment(Some(Align::Center));
-    assert_eq!(d.source, "Try the toolbar.\n\n{.center}\nT\n");
+    assert_eq!(
+        d.source,
+        "Try the toolbar.\n\n{style=\"text-align: center\"}\nT\n"
+    );
     d.backspace();
     assert_eq!(d.source, "Try the toolbar.\n\n\n");
     assert_eq!(d.caret, 18);
@@ -1604,4 +1648,140 @@ fn delete_at_a_block_end_joins_the_next_block_into_it() {
     d.delete_forward();
     assert_eq!(d.source, src);
     assert!(d.caret > 5, "the caret stepped forward");
+}
+
+/// The vocabulary is read out of a `style` another app wrote: CSS's own
+/// property names, its keywords in any case, `!important` and all. A
+/// declaration this vocabulary cannot read is still what every other
+/// renderer draws, so it wins over leaf 0.2's attribute beside it and the
+/// menu ticks *Default*.
+#[test]
+fn a_style_from_elsewhere_is_read_as_css() {
+    let mut d = fmt_doc(
+        "<p style=\"TEXT-ALIGN:Center;font-size: X-Large !important;line-height:1.50\">hi</p>\n",
+        Format::Html,
+    );
+    d.caret = d.source.find("hi").unwrap();
+    assert_eq!(d.alignment_at_caret(), Some(Align::Center));
+    assert_eq!(
+        d.font_size_at_caret(),
+        Some(FontSize::Step(SizeStep::XLarge))
+    );
+    assert_eq!(
+        d.line_spacing_at_caret(),
+        Some(LineHeight::Step(LineSpacing::OneHalf))
+    );
+
+    let mut px = fmt_doc(
+        "<p style=\"font-size: 16px\" data-size=\"large\">hi</p>\n",
+        Format::Html,
+    );
+    px.caret = px.source.find("hi").unwrap();
+    assert_eq!(px.font_size_at_caret(), None, "the declaration wins");
+}
+
+/// A colour leaf names is written as that name's ink, so another app draws
+/// it, and the ink is read back as the name, so the theme keeps both of its
+/// inks for it. Any other triple is exact, and CSS's own colour keywords
+/// that share a name with the vocabulary read as that name.
+#[test]
+fn a_named_colour_is_its_ink_in_style_and_its_name_in_leaf() {
+    let colour = |style: &str| {
+        let mut d = fmt_doc(&format!("<p style=\"{style}\">hi</p>\n"), Format::Html);
+        d.caret = d.source.find("hi").unwrap();
+        d.text_color_at_caret()
+    };
+    for c in MarkColor::ALL {
+        assert_eq!(
+            colour(&format!("color: {}", c.hex().to_uppercase())),
+            Some(TextColor::Named(c))
+        );
+    }
+    assert_eq!(colour("color: Red"), Some(TextColor::Named(MarkColor::Red)));
+    assert_eq!(
+        colour("color: #d24b40"),
+        Some(TextColor::Rgb {
+            r: 0xd2,
+            g: 0x4b,
+            b: 0x40
+        })
+    );
+    assert_eq!(colour("color: rgb(1, 2, 3)"), None);
+}
+
+/// A face is the first family of CSS's list, unquoted; the rest are a
+/// renderer's fallbacks. A family name is written in single quotes and
+/// reads back as the name it was.
+#[test]
+fn a_family_is_the_first_of_the_list_and_is_written_quoted() {
+    let face = |style: &str| {
+        let mut d = fmt_doc(&format!("<p style='{style}'>hi</p>\n"), Format::Html);
+        d.caret = d.source.find("hi").unwrap();
+        d.font_family_at_caret()
+    };
+    assert_eq!(
+        face("font-family: \"Gill Sans\", sans-serif"),
+        Some(FontFace::Named("Gill Sans".into()))
+    );
+    assert_eq!(
+        face("font-family: Times   New Roman, serif"),
+        Some(FontFace::Named("Times New Roman".into()))
+    );
+    assert_eq!(
+        face("font-family: SERIF"),
+        Some(FontFace::Generic(FontFamily::Serif))
+    );
+
+    let mut d = fmt_doc("hello\n", Format::Djot);
+    d.caret = 1;
+    d.set_font_family(Some(FontFace::Named("Gill Sans".into())));
+    assert_eq!(d.source, "{style=\"font-family: 'Gill Sans'\"}\nhello\n");
+    assert_eq!(
+        d.font_family_at_caret(),
+        Some(FontFace::Named("Gill Sans".into()))
+    );
+
+    // A quote or a backslash in the name has no spelling every format reads
+    // back — twig refuses a `"` in an attribute, and a backslash is an
+    // escape to CSS and to djot both — so the press says so and writes
+    // nothing.
+    for name in ["O'Neil Sans", "Say \"Hi\"", "Back\\slash"] {
+        let mut d = fmt_doc("hello\n", Format::Markdown);
+        d.caret = 1;
+        d.set_font_family(Some(FontFace::Named(name.into())));
+        assert_eq!(d.source, "hello\n");
+        assert_eq!(
+            d.status.as_deref(),
+            Some("font: a family name with a quote or a backslash in it cannot be written")
+        );
+    }
+}
+
+/// A `style` that is not CSS `fig-css` can edit is refused out loud rather
+/// than rewritten whole, which would lose what another app wrote there.
+#[test]
+fn a_style_that_is_not_css_is_left_alone() {
+    let src = "<p style=\"color: red; }\">hi</p>\n";
+    let mut d = fmt_doc(src, Format::Html);
+    d.caret = d.source.find("hi").unwrap();
+    d.set_alignment(Some(Align::Center));
+    assert_eq!(d.source, src);
+    assert_eq!(
+        d.status.as_deref(),
+        Some("alignment: the style attribute is not CSS leaf can edit")
+    );
+}
+
+/// AsciiDoc keeps leaf 0.2's spelling: its `style` is a positional
+/// attribute that means something else, and a role and a named attribute
+/// are what it has for the vocabulary.
+#[test]
+fn asciidoc_keeps_the_class_and_data_spelling() {
+    let mut a = fmt_doc("hello\n", Format::Asciidoc);
+    a.caret = 1;
+    a.set_alignment(Some(Align::Center));
+    a.caret = a.source.find("hello").unwrap();
+    a.set_line_spacing(Some(LineHeight::Step(LineSpacing::OneHalf)));
+    assert_eq!(a.source, "[.center,data-line-height=1.5]\nhello\n");
+    assert_eq!(a.alignment_at_caret(), Some(Align::Center));
 }
