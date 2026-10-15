@@ -2129,6 +2129,14 @@ impl WindowDelegate {
             _ => return Err(ImeRequestError::NotSupported),
         };
 
+        // leaf patch: keep the text around the caret for the text input
+        // client's queries (see `WinitView::selected_range`).
+        if self.view().ime_capabilities().unwrap().surrounding_text() {
+            if let Some(text) = request_data.surrounding_text.clone() {
+                self.view().set_ime_surrounding_text(Some(text));
+            }
+        }
+
         if let Some((spot, size)) = request_data.cursor_area {
             if self.view().ime_capabilities().unwrap().cursor_area() {
                 let scale_factor = self.scale_factor();

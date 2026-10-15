@@ -89,6 +89,27 @@ impl Composer {
         }
     }
 
+    /// The input method wants text around the caret gone before its next
+    /// step — press-and-hold taking out the `e` it offers accents for. Part
+    /// of the composition, so choosing `é` and the `e` it replaced undo
+    /// together.
+    pub fn delete_surrounding(&mut self, doc: &mut Doc, before: usize, after: usize) {
+        let caret = doc.caret;
+        let src = &doc.source;
+        let mut start = caret.saturating_sub(before);
+        while !src.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut end = (caret + after).min(src.len());
+        while !src.is_char_boundary(end) {
+            end += 1;
+        }
+        if start < end {
+            doc.edit_composing(start, end, "");
+            self.open = true;
+        }
+    }
+
     /// What the next step replaces: the marked text, or else the selection,
     /// or else nothing at the caret.
     fn target(&self, doc: &Doc) -> (usize, usize) {
@@ -97,6 +118,35 @@ impl Composer {
             None => doc.selection().unwrap_or((doc.caret, doc.caret)),
         }
     }
+}
+
+/// The text around the caret for the input method — the caret's source
+/// line, cut to winit's limit around the caret — as (text, cursor, anchor)
+/// in bytes of that text. `None` while composing: the input method asks
+/// about text *outside* its preedit, and the editor writes the preedit into
+/// the document, so a report then would describe the wrong text.
+pub fn surrounding(doc: &Doc, composer: &Composer) -> Option<(String, usize, usize)> {
+    if composer.marked.is_some() {
+        return None;
+    }
+    const MAX: usize = 4000;
+    let src = &doc.source;
+    let caret = doc.caret.min(src.len());
+    let mut start = src[..caret].rfind('\n').map_or(0, |i| i + 1);
+    let mut end = src[caret..].find('\n').map_or(src.len(), |i| caret + i);
+    // A line longer than the limit keeps the half around the caret.
+    if end - start > MAX {
+        start = caret.saturating_sub(MAX / 2).max(start);
+        end = (start + MAX).min(end);
+        while !src.is_char_boundary(start) {
+            start += 1;
+        }
+        while !src.is_char_boundary(end) {
+            end -= 1;
+        }
+    }
+    let anchor = doc.anchor.unwrap_or(caret).clamp(start, end);
+    Some((src[start..end].to_owned(), caret - start, anchor - start))
 }
 
 #[cfg(test)]
@@ -162,6 +212,33 @@ mod tests {
         let mut c = Composer::default();
         c.commit(&mut d, "やあ");
         assert_eq!(d.source, "やあ\n");
+    }
+
+    /// Press-and-hold, as the patched winit reports it: the typed `e` is
+    /// deleted, marked again as the preedit, and replaced by the accent.
+    #[test]
+    fn press_and_hold_replaces_the_letter_it_was_held_on() {
+        let mut d = doc("caf\n");
+        d.place_caret(3, false);
+        d.insert("e");
+        let mut c = Composer::default();
+        c.delete_surrounding(&mut d, 1, 0);
+        c.preedit(&mut d, "e", Some((1, 1)));
+        c.preedit(&mut d, "", None);
+        c.commit(&mut d, "é");
+        assert_eq!(d.source, "café\n");
+        // The accent undoes back to the letter that was held.
+        d.undo();
+        assert_eq!(d.source, "cafe\n");
+    }
+
+    #[test]
+    fn the_surrounding_text_is_the_caret_line() {
+        let mut d = doc("one\ntwo three\n");
+        d.place_caret(7, false);
+        let (text, cursor, anchor) = surrounding(&d, &Composer::default()).unwrap();
+        assert_eq!(text, "two three");
+        assert_eq!((cursor, anchor), (3, 3));
     }
 
     #[test]

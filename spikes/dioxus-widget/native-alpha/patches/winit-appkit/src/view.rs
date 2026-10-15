@@ -23,7 +23,7 @@ use winit_core::event::{
     PointerKind, PointerSource, TouchPhase, WindowEvent,
 };
 use winit_core::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey};
-use winit_core::window::ImeCapabilities;
+use winit_core::window::{ImeCapabilities, ImeSurroundingText};
 
 use super::app_state::AppState;
 use super::cursor::{default_cursor, invisible_cursor};
@@ -148,6 +148,22 @@ pub struct ViewState {
 
     /// The state of the `Option` as `Alt`.
     option_as_alt: Cell<OptionAsAlt>,
+
+    // leaf patch: the text around the caret, as the application last reported
+    // it with `ImeRequestData::with_surrounding_text`. What `selectedRange` and
+    // `attributedSubstringForProposedRange:` answer from, and what a
+    // `replacementRange` is resolved against — without it the input system
+    // cannot see the character before the caret, so press-and-hold never
+    // opens its accent menu.
+    surrounding: RefCell<Option<ImeSurroundingText>>,
+    /// leaf patch: inside `keyDown:`'s `interpretKeyEvents:`, so `insertText:`
+    /// can tell a keystroke's own text (which `KeyboardInput` carries) from
+    /// text inserted with no key at all — the emoji picker, dictation.
+    in_key_down: Cell<bool>,
+    /// leaf patch: whether `interpretKeyEvents:` reached the client at all —
+    /// inserted, marked or commanded. A key repeat the input system swallowed
+    /// without any of those is press-and-hold holding the key, not typing.
+    text_activity: Cell<bool>,
 }
 
 define_class!(
@@ -256,6 +272,13 @@ define_class!(
         #[unsafe(method(selectedRange))]
         fn selected_range(&self) -> NSRange {
             let _entered = debug_span!("selectedRange").entered();
+            // leaf patch: answer from the surrounding text when the
+            // application reported it.
+            if let Some(s) = &*self.ivars().surrounding.borrow() {
+                let (lo, hi) = (s.cursor().min(s.anchor()), s.cursor().max(s.anchor()));
+                let start = utf16_len(&s.text()[..lo]);
+                return NSRange::new(start, utf16_len(&s.text()[lo..hi]));
+            }
             // Documented to return `{NSNotFound, 0}` if there is no selection.
             NSRange::new(NSNotFound as NSUInteger, 0)
         }
@@ -265,10 +288,16 @@ define_class!(
             &self,
             string: &NSObject,
             selected_range: NSRange,
-            _replacement_range: NSRange,
+            replacement_range: NSRange,
         ) {
-            // TODO: Use _replacement_range, requires changing the event to report surrounding text.
             let _entered = debug_span!("setMarkedText:selectedRange:replacementRange:").entered();
+            self.ivars().text_activity.set(true);
+            // leaf patch: marking text that is already in the document —
+            // press-and-hold marks the character it is offering accents for —
+            // takes that text out first, so the preedit stands in its place.
+            if !self.hasMarkedText() {
+                self.delete_replaced(replacement_range);
+            }
 
             let (marked_text, string) = if let Some(string) =
                 string.downcast_ref::<NSAttributedString>()
@@ -348,12 +377,13 @@ define_class!(
         #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
         fn attributed_substring_for_proposed_range(
             &self,
-            _range: NSRange,
-            _actual_range: *mut NSRange,
+            range: NSRange,
+            actual_range: *mut NSRange,
         ) -> Option<Retained<NSAttributedString>> {
             let _entered =
                 trace_span!("attributedSubstringForProposedRange:actualRange:").entered();
-            None
+            // leaf patch: the surrounding text the application reported.
+            self.surrounding_substring(range, actual_range)
         }
 
         #[unsafe(method(characterIndexForPoint:))]
@@ -382,9 +412,9 @@ define_class!(
         }
 
         #[unsafe(method(insertText:replacementRange:))]
-        fn insert_text(&self, string: &NSObject, _replacement_range: NSRange) {
-            // TODO: Use _replacement_range, requires changing the event to report surrounding text.
+        fn insert_text(&self, string: &NSObject, replacement_range: NSRange) {
             let _entered = debug_span!("insertText:replacementRange:").entered();
+            self.ivars().text_activity.set(true);
 
             let string = if let Some(string) = string.downcast_ref::<NSAttributedString>() {
                 string.string().to_string()
@@ -412,6 +442,21 @@ define_class!(
                 self.ivars().pending_commit.set(false);
                 self.queue_event(WindowEvent::Ime(Ime::Commit(string)));
                 self.ivars().ime_state.set(ImeState::Committed);
+            } else if !is_control && self.delete_replaced(replacement_range) {
+                // leaf patch: text that replaces text already in the document —
+                // press-and-hold's accent, chosen with a click or a number key.
+                // The replaced text went as `DeleteSurrounding`; this is its
+                // replacement, and the key that chose it is not typing.
+                self.queue_ime_enabled();
+                self.queue_event(WindowEvent::Ime(Ime::Commit(string)));
+                self.ivars().ime_state.set(ImeState::Committed);
+            } else if !is_control && !self.ivars().in_key_down.get() {
+                // leaf patch: text with no keystroke behind it — the emoji and
+                // symbols picker, dictation, a service. No `KeyboardInput`
+                // will carry it, so this is the only way it reaches the app.
+                // Not `Committed`: that would swallow the next real key.
+                self.queue_ime_enabled();
+                self.queue_event(WindowEvent::Ime(Ime::Commit(string)));
             }
         }
 
@@ -430,6 +475,7 @@ define_class!(
             }
 
             self.ivars().forward_key_to_app.set(true);
+            self.ivars().text_activity.set(true);
 
             if self.hasMarkedText() && self.ivars().ime_state.get() == ImeState::Preedit {
                 // Leave preedit so that we also report the key-up for this key.
@@ -481,9 +527,12 @@ define_class!(
             // we must send the `KeyboardInput` event during IME if it triggered
             // `doCommandBySelector`. (doCommandBySelector means that the keyboard input
             // is not handled by IME and should be handled by the application)
+            self.ivars().text_activity.set(false);
             if self.ivars().ime_capabilities.get().is_some() {
                 let events_for_nsview = NSArray::from_slice(&[&*event]);
+                self.ivars().in_key_down.set(true);
                 self.interpretKeyEvents(&events_for_nsview);
+                self.ivars().in_key_down.set(false);
 
                 // If the text was committed we must treat the next keyboard event as IME related.
                 if self.ivars().ime_state.get() == ImeState::Committed {
@@ -505,7 +554,15 @@ define_class!(
                 _ => old_ime_state != self.ivars().ime_state.get(),
             };
 
-            if !had_ime_input || self.ivars().forward_key_to_app.get() {
+            // leaf patch: a repeat the input system took without inserting,
+            // marking or commanding anything is press-and-hold holding the
+            // key while its accent menu is up — forwarding it would type the
+            // letter over and over underneath the menu.
+            let swallowed_repeat = event.isARepeat()
+                && self.ivars().ime_capabilities.get().is_some()
+                && !self.ivars().text_activity.get();
+
+            if (!had_ime_input || self.ivars().forward_key_to_app.get()) && !swallowed_repeat {
                 let key_event = create_key_event(&event, true, event.isARepeat());
                 self.queue_event(WindowEvent::KeyboardInput {
                     device_id: None,
@@ -839,6 +896,9 @@ impl WinitView {
             marked_text: Default::default(),
             next_click_is_activation: Default::default(),
             option_as_alt: Cell::new(option_as_alt),
+            surrounding: Default::default(),
+            in_key_down: Default::default(),
+            text_activity: Default::default(),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         *this.ivars().input_source.borrow_mut() = this.current_input_source();
@@ -1007,6 +1067,67 @@ impl WinitView {
 
     pub(super) fn ime_capabilities(&self) -> Option<ImeCapabilities> {
         self.ivars().ime_capabilities.get()
+    }
+
+    /// leaf patch: `attributedSubstringForProposedRange:actualRange:` over the
+    /// surrounding text the application reported.
+    fn surrounding_substring(
+        &self,
+        range: NSRange,
+        actual_range: *mut NSRange,
+    ) -> Option<Retained<NSAttributedString>> {
+        let surrounding = self.ivars().surrounding.borrow();
+        let text = surrounding.as_ref()?.text();
+        let len = utf16_len(text);
+        if range.location > len {
+            return None;
+        }
+        let end = range.end().min(len);
+        let lo = utf16_to_utf8_offset(text, range.location);
+        let hi = utf16_to_utf8_offset(text, end);
+        if !actual_range.is_null() {
+            // SAFETY: AppKit passes either null or a valid out-pointer.
+            unsafe { *actual_range = NSRange::new(range.location, end - range.location) };
+        }
+        Some(NSAttributedString::from_nsstring(&NSString::from_str(&text[lo..hi])))
+    }
+
+    /// leaf patch: the text around the caret, from the application.
+    pub(super) fn set_ime_surrounding_text(&self, text: Option<ImeSurroundingText>) {
+        *self.ivars().surrounding.borrow_mut() = text;
+    }
+
+    /// leaf patch: `Ime::Enabled` if the application has not been told yet,
+    /// as the event's docs promise before any `Commit`.
+    fn queue_ime_enabled(&self) {
+        if self.ivars().ime_state.get() == ImeState::Disabled {
+            *self.ivars().input_source.borrow_mut() = self.current_input_source();
+            self.queue_event(WindowEvent::Ime(Ime::Enabled));
+            self.ivars().ime_state.set(ImeState::Ground);
+        }
+    }
+
+    /// leaf patch: resolve a `replacementRange` against the surrounding text
+    /// and ask the application to delete it, as `Ime::DeleteSurrounding`
+    /// relative to the caret. Returns whether there was anything to delete.
+    fn delete_replaced(&self, range: NSRange) -> bool {
+        if range.location == NSNotFound as NSUInteger || range.length == 0 {
+            return false;
+        }
+        let deleted = {
+            let surrounding = self.ivars().surrounding.borrow();
+            let Some(s) = surrounding.as_ref() else { return false };
+            let lo = utf16_to_utf8_offset(s.text(), range.location);
+            let hi = utf16_to_utf8_offset(s.text(), range.end());
+            let cursor = s.cursor().min(s.anchor());
+            (lo < hi).then(|| (cursor.saturating_sub(lo), hi.saturating_sub(cursor.max(lo))))
+        };
+        let Some((before_bytes, after_bytes)) = deleted else { return false };
+        self.queue_ime_enabled();
+        self.queue_event(WindowEvent::Ime(Ime::DeleteSurrounding { before_bytes, after_bytes }));
+        // The text it described is gone; the application reports anew.
+        *self.ivars().surrounding.borrow_mut() = None;
+        true
     }
 
     pub(super) fn set_ime_cursor_area(&self, position: NSPoint, size: NSSize) {
@@ -1299,6 +1420,11 @@ fn replace_event(event: &NSEvent, option_as_alt: OptionAsAlt) -> Retained<NSEven
 ///
 /// The mapping is monotone non-decreasing, so applying it to the location and end of an
 /// `NSRange` (where `location <= end`) can never produce an inverted byte range.
+/// leaf patch: a string's length in UTF-16 code units, AppKit's unit.
+fn utf16_len(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
 fn utf16_to_utf8_offset(s: &str, utf16_offset: usize) -> usize {
     let mut utf16_pos = 0;
     for (utf8_pos, ch) in s.char_indices() {

@@ -42,7 +42,9 @@ use dioxus::html::{Code, Key, Modifiers};
 use dioxus_native::winit;
 use dioxus_native::winit::dpi::{LogicalPosition, LogicalSize};
 use dioxus_native::winit::event::{Ime, WindowEvent};
-use dioxus_native::winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
+use dioxus_native::winit::window::{
+    ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData, ImeSurroundingText,
+};
 use dioxus_widget_spike::frame::Frame;
 use dioxus_widget_spike::rows::{Marks, RowHandle, RowView};
 use dioxus_widget_spike::style::STYLESHEET;
@@ -416,18 +418,25 @@ fn App() -> Element {
         }
     };
     // Tell the input method where the caret is, so its candidate window and
-    // a dead key's accent menu open beside it.
+    // the accent menu open beside it, and what text surrounds it, so
+    // press-and-hold can see the letter it offers accents for.
     let ime_area = {
         let (window, caret_at) = (window.clone(), caret_at.clone());
+        let (doc, composer) = (doc.clone(), composer.clone());
         move || {
             let Some((row, line, x)) = caret_at() else { return };
             let lays = lays.peek();
             let Some(l) = lays.get(row).and_then(|l| l.0.lines.get(line)) else { return };
             let y = layout.peek().top(row) - *top.peek() + l.top as f64;
-            let _ = window.request_ime_update(ImeRequest::Update(ImeRequestData::default().with_cursor_area(
+            let mut data = ImeRequestData::default().with_cursor_area(
                 LogicalPosition::new(row::PAD + x as f64, y).into(),
                 LogicalSize::new(2.0, l.height as f64).into(),
-            )));
+            );
+            let around = ime::surrounding(&doc.borrow(), &composer.borrow());
+            if let Some(text) = around.and_then(|(t, c, a)| ImeSurroundingText::new(t, c, a).ok()) {
+                data = data.with_surrounding_text(text);
+            }
+            let _ = window.request_ime_update(ImeRequest::Update(data));
         }
     };
     // The input method, allowed on the window once; see `ime.rs` for why
@@ -435,10 +444,14 @@ fn App() -> Element {
     use_hook({
         let window = window.clone();
         move || {
+            // Surrounding text needs the patched winit-appkit to be heard
+            // on macOS (see `patches/winit-appkit/PATCH.md`); winit asks
+            // for some with the capability, so an empty line to start.
             let request = ImeEnableRequest::new(
-                ImeCapabilities::new().with_cursor_area(),
+                ImeCapabilities::new().with_cursor_area().with_surrounding_text(),
                 ImeRequestData::default()
-                    .with_cursor_area(LogicalPosition::new(0.0, 0.0).into(), LogicalSize::new(2.0, LINE).into()),
+                    .with_cursor_area(LogicalPosition::new(0.0, 0.0).into(), LogicalSize::new(2.0, LINE).into())
+                    .with_surrounding_text(ImeSurroundingText::new(String::new(), 0, 0).expect("an empty excerpt")),
             );
             if let Some(request) = request {
                 let _ = window.request_ime_update(ImeRequest::Enable(request));
@@ -456,6 +469,9 @@ fn App() -> Element {
             match ime {
                 Ime::Preedit(text, cursor) => c.preedit(&mut d, text, *cursor),
                 Ime::Commit(text) => c.commit(&mut d, text),
+                Ime::DeleteSurrounding { before_bytes, after_bytes } => {
+                    c.delete_surrounding(&mut d, *before_bytes, *after_bytes)
+                }
                 Ime::Disabled => c.settle(&mut d),
                 _ => return,
             }
@@ -480,6 +496,10 @@ fn App() -> Element {
                 }
             }
             WindowEvent::ModifiersChanged(m) => mods = m.state(),
+            // A click moved the caret: on the button's release, which winit
+            // reports after Blitz has handled the press, tell the input
+            // method where it went and what is around it now.
+            WindowEvent::PointerButton { state, .. } if !state.is_pressed() => ime_area(),
             // Blitz paints nothing while the window is covered, so a capture
             // of a covered window is its last frame — which looks exactly
             // like a hung editor. Said here so the trace tells them apart.
