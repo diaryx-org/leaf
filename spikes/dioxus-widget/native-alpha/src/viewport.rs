@@ -12,7 +12,9 @@
 //! drifting slightly, never as a row drawn in the wrong place, because the
 //! rendered rows are laid out for real.
 
-/// One body line: the stylesheet's `15px/1.5`.
+/// A nominal body line, for a height wanted before any text is set (the
+/// input method's first caret, a floor on the viewport) and for the tests.
+/// The real one is the settings' (`text::Type::line`).
 pub const LINE: f64 = 15.0 * 1.5;
 
 /// Rows rendered beyond each edge of the viewport, so a fast scroll shows

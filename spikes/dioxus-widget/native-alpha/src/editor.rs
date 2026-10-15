@@ -29,21 +29,21 @@ use crate::blocks::{self, Block};
 use crate::find::{BarView, Find};
 use crate::ime::Composer;
 use crate::motion::Press;
+use crate::prefs::PrefsView;
 use crate::row::LayoutHandle;
+use crate::settings::Settings;
 use crate::source::SourceRows;
 use crate::status;
-use crate::text::{Fonts, Kind, SIZE};
+use crate::text::{Fonts, Kind, Type};
 use crate::trace::trace;
 use crate::viewport::{LINE, Layout};
 
 /// The status line's height, in CSS pixels — `.status` in the stylesheet.
 pub const STATUS: f64 = 24.0;
 
-/// The widest the text column grows, in CSS pixels.
-pub const MEASURE: f32 = 680.0;
-
-/// The source view's: 82 Menlo cells (0.602em each) at the body size.
-const SOURCE_MEASURE: f32 = 82.0 * 0.602 * SIZE;
+/// The source view's measure: 82 code cells, a line wrapped at 80 with room
+/// for the caret — which is how most markup is written.
+const SOURCE_CELLS: f32 = 82.0;
 
 /// The editor's own height in CSS pixels: the window's surface, less the
 /// status line.
@@ -57,15 +57,36 @@ pub fn window_width(physical: u32, scale: f64) -> f32 {
 }
 
 /// The text column's width in CSS pixels: the window less the side padding,
-/// up to a measure that reads as prose — the Swift editor's column width —
-/// or, in the source view, one that fits a line wrapped at 80 columns, which
-/// is how most markup is written.
-pub fn column_width(window: f32, view: View) -> f32 {
-    let measure = match view {
-        View::Wysiwyg => MEASURE,
-        View::Source => SOURCE_MEASURE,
-    };
-    (window - 2.0 * crate::row::PAD as f32).clamp(SIZE * 10.0, measure)
+/// up to `measure` — the Swift editor's rule, its measure counted in
+/// characters of the body face and so following the size and the zoom — and
+/// never narrower than ten ems.
+pub fn column_width(window: f32, measure: Option<f32>, size: f32) -> f32 {
+    let room = window - 2.0 * crate::row::PAD as f32;
+    measure.map_or(room, |m| room.min(m)).max(size * 10.0)
+}
+
+/// The measure in pixels, for each view.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Measures {
+    pub wysiwyg: Option<f32>,
+    pub source: f32,
+}
+
+impl Measures {
+    /// From the column-width choice and the faces as `fonts` sets them.
+    pub fn of(settings: &Settings, fonts: &mut Fonts) -> Self {
+        Self {
+            wysiwyg: settings.column.chars().map(|c| c * fonts.char_width()),
+            source: SOURCE_CELLS * fonts.cell_width(),
+        }
+    }
+
+    pub fn of_view(&self, view: View) -> Option<f32> {
+        match view {
+            View::Wysiwyg => self.wysiwyg,
+            View::Source => Some(self.source),
+        }
+    }
 }
 
 /// What the editor keeps between events.
@@ -91,6 +112,11 @@ pub struct State {
     /// The x a run of ↑/↓ aims for, kept across the lines it passes through
     /// so a short line does not pull the caret left for good.
     pub goal: Cell<Option<f32>>,
+    /// The display choices (`settings.rs`), and the text zoom over them.
+    pub settings: RefCell<Settings>,
+    pub zoom: Cell<f32>,
+    /// The column's measure in each view, for the type `fonts` sets.
+    pub measures: Cell<Measures>,
 }
 
 /// What the render reads. Each is a signal, so the page re-renders when an
@@ -122,6 +148,10 @@ pub struct Signals {
     pub win_w: Signal<f32>,
     /// The column the rows were last laid out for; set by `repaint`.
     pub width: Signal<f32>,
+    /// The type the rows are set in, which the stylesheet writes out.
+    pub ty: Signal<Type>,
+    /// What the settings panel draws.
+    pub prefs: Signal<PrefsView>,
 }
 
 impl Signals {
@@ -141,7 +171,9 @@ impl Signals {
             top: use_signal(|| 0.0),
             height: use_signal(|| viewport_height(size.height, scale)),
             win_w: use_signal(|| window_width(size.width, scale)),
-            width: use_signal(|| MEASURE),
+            width: use_signal(|| 0.0),
+            ty: use_signal(Type::default),
+            prefs: use_signal(PrefsView::default),
         }
     }
 }
@@ -164,6 +196,7 @@ pub fn set<T: 'static>(mut s: Signal<T>, v: T) {
 #[derive(Default)]
 struct Layouts {
     width: f32,
+    ty: Type,
     by_row: HashMap<*const RowView, (RowHandle, Kind, LayoutHandle)>,
 }
 
@@ -176,13 +209,16 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(doc: Doc, window: Arc<dyn Window>, sig: Signals) -> Self {
+        let settings = Settings::load();
+        let mut fonts = Fonts::new(settings.ty(1.0));
+        let measures = Measures::of(&settings, &mut fonts);
         let st = State {
             doc: RefCell::new(doc),
             window,
             frame: RefCell::default(),
             srows: RefCell::default(),
             shown: Cell::new(None),
-            fonts: RefCell::new(Fonts::new()),
+            fonts: RefCell::new(fonts),
             layouts: RefCell::default(),
             block_cache: RefCell::default(),
             composer: RefCell::default(),
@@ -190,6 +226,9 @@ impl Editor {
             title: RefCell::default(),
             last_press: Cell::new(None),
             goal: Cell::new(None),
+            settings: RefCell::new(settings),
+            zoom: Cell::new(1.0),
+            measures: Cell::new(measures),
         };
         Self { st: Rc::new(st), sig }
     }
@@ -252,12 +291,14 @@ impl Editor {
         };
         let t1 = Instant::now();
 
-        let w = column_width(*self.sig.win_w.peek(), doc.view);
+        let mut fonts = st.fonts.borrow_mut();
+        let w = column_width(*self.sig.win_w.peek(), st.measures.get().of_view(doc.view), fonts.ty().size);
         if w != *self.sig.width.peek() {
             set(self.sig.width, w);
         }
         let mut layouts = st.layouts.borrow_mut();
-        let mut fonts = st.fonts.borrow_mut();
+        // A new type is a new layout for every row, as a new width is.
+        let same = layouts.width == w && layouts.ty == *fonts.ty();
         let mut kept = HashMap::with_capacity(handles.len());
         let mut laid = 0;
         let row_lays: Vec<LayoutHandle> = handles
@@ -266,7 +307,7 @@ impl Editor {
             .map(|(h, &k)| {
                 let key = Rc::as_ptr(&h.0);
                 let l = match layouts.by_row.get(&key) {
-                    Some((_, kind, l)) if layouts.width == w && *kind == k => l.clone(),
+                    Some((_, kind, l)) if same && *kind == k => l.clone(),
                     _ => {
                         laid += 1;
                         LayoutHandle(Rc::new(fonts.layout(&h.0, w, k)))
@@ -278,6 +319,9 @@ impl Editor {
             .collect();
         layouts.by_row = kept;
         layouts.width = w;
+        if !same {
+            layouts.ty = fonts.ty().clone();
+        }
 
         // What is drawn in place of rows; each stands in for its rows'
         // heights, its first row holding its whole height.

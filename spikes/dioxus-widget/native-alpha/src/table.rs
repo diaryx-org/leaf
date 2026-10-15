@@ -340,7 +340,7 @@ mod tests {
     fn a_table_lays_out_taller_than_its_rows_of_text() {
         let d = doc(TABLE);
         let v = view_of(&d.vmap.tables[0], usize::MAX, None, None);
-        let l = layout(&mut Fonts::new(), &v, 600.0);
+        let l = layout(&mut Fonts::new(crate::text::Type::default()), &v, 600.0);
         assert_eq!(l.cols.len(), 2);
         assert_eq!(l.rows.len(), 3);
         assert!(l.height > 3.0 * crate::viewport::LINE as f32);

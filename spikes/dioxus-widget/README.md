@@ -496,6 +496,49 @@ Checked on macOS: alignment (`:---`, `---:`), a wrapping cell, a bold shaded
 head, a table in a quote; a click into a word in a cell, typing there, ↓ to
 the cell below, and the source saved as expected.
 
+### Dark mode, settings and text zoom
+
+**Dark mode needs no Rust.** Blitz turns winit's theme into the stylesheet's
+`prefers-color-scheme` and recascades on `ThemeChanged` (blitz-dom's
+`DeviceChanges::COLOR_SCHEME`), and Stylo has CSS custom properties. So every
+colour — the parent's `STYLESHEET` and `native-alpha/src/view.rs`'s chrome —
+is a `var(--…)`, set once in a light `:root` and once under
+`@media (prefers-color-scheme: dark)`, with the Swift editor's values
+(`Palette` in `LeafUI/Platform.swift`: AppKit's semantic colours as each
+appearance resolves them, its syntax pairs, its 28% highlighter washes). A
+test fails if a property is used but not set, set for one appearance only, or
+a literal colour appears outside the two palettes. The one Rust is a
+`request_redraw` on `ThemeChanged`, which Blitz handles without asking for a
+frame.
+
+**Settings (⌘,, Leaf ▸ Settings…)** are Swift's `SettingsView` choices with
+its values: font and code font, size (14/16/19), line spacing
+(1.3/1.5/1.75/2), column width (52/68/88 characters, or full) — plus
+Appearance (System/Light/Dark, through `Window::set_theme`), which Swift does
+not have and which is how to see the dark stylesheet without switching the
+whole Mac. They are a panel in the window, not a window of their own:
+dioxus-native's `launch` opens one window. The font menus are a short list of
+installed faces rather than every family. Choices persist in
+`~/Library/Application Support/leaf-native-spike/settings.toml`
+(`LEAF_SETTINGS` names another file).
+
+The faces, size and leading that were `text.rs` constants are one runtime
+`text::Type`, held by `Fonts` and written into the stylesheet by
+`view::css(&Type)`, so parley measures what Blitz draws; a change relays out
+every row (the layout cache is keyed by type as well as width) and drops the
+tables' cache. The column's measure is counted in characters of the body face
+— `Fonts::char_width`, Swift's `averageCharWidth`, measured the same way — so
+it follows the face, the size and the zoom.
+
+**Text zoom (⌘+ / ⌘− / ⌘0)** scales the type through browser-like steps
+(50–300%) and reflows; it is not saved. Blitz has its own *page* zoom on
+⌘= / ⌘- / ⌘0 (blitz-shell's `window.rs`, matched on the physical key with
+⌘ or ⌃): it scales CSS pixels, which leaves the editor's window width and the
+viewport in the wrong units. The editor wins by naming the three chords as
+View menu items: macOS hands a key equivalent to the menu before the window,
+so Blitz never sees them. ⇧⌘= (⌘+ typed with Shift) is not the menu item's
+equivalent; see "Checked" below for what it does.
+
 ### Working on the native editor
 
 `native-alpha/src/main.rs` is only the app's wiring: every event source —
@@ -520,7 +563,7 @@ covered by others does not paint — see `occluded` in the trace.
 **Still not at parity**, all frontend work: dictation, images, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, spellcheck and
 autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a
-toolbar, Save As / New / Open, settings and dark mode, print and PDF,
+toolbar, Save As / New / Open, print and PDF,
 accessibility.
 
 ## The verdict

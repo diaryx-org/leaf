@@ -20,7 +20,9 @@
 //! - [`blocks`]: what is drawn in place of rows — tables ([`table`]) now,
 //!   media next. **Adding a kind of block is that file.**
 //! - [`find`] / [`findbar`], [`file`], [`host`], [`ime`], [`status`].
-//! - [`view`]: the stylesheet and the page.
+//! - [`settings`]: the display choices and the zoom; [`prefs`] puts them
+//!   in effect and draws the panel (⌘,).
+//! - [`view`]: the stylesheet — light and dark — and the page.
 //!
 //! `LEAF_TRACE=1` logs keys, pointer events and repaint timings to stderr;
 //! `LEAF_OUTLINE=1` outlines every visual line and run.
@@ -43,7 +45,9 @@ mod input;
 mod keys;
 mod menu;
 mod motion;
+mod prefs;
 mod row;
+mod settings;
 mod source;
 mod status;
 mod table;
@@ -103,7 +107,7 @@ fn App() -> Element {
     use_hook({
         let ed = ed.clone();
         move || {
-            ed.repaint();
+            ed.apply_settings();
             ed.enable_ime();
         }
     });
@@ -150,6 +154,13 @@ fn App() -> Element {
             // of a covered window is its last frame — which looks exactly like
             // a hung editor. Said here so the trace tells them apart.
             WindowEvent::Occluded(o) => trace(|| format!("occluded {o}")),
+            // Light or dark. Blitz turns the theme into the stylesheet's
+            // `prefers-color-scheme` and restyles, but asks for no frame, so
+            // the window would wait for the next event to show it.
+            WindowEvent::ThemeChanged(theme) => {
+                trace(|| format!("theme {theme:?}"));
+                ed.st.window.request_redraw();
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Some((key, code, m)) = keys::pressed(event, mods) {
                     ed.key(key, code, m);

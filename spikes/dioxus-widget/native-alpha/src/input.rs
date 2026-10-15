@@ -19,6 +19,8 @@
 use dioxus::html::{Code, Key, Modifiers};
 use leaf_core::{BlockKind, Doc, InlineKind};
 
+pub use crate::prefs::ZoomCommand;
+
 /// What a key did, for the host to act on what it does not own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -40,6 +42,10 @@ pub enum Action {
     /// The find bar: open it (⌘F, or ⌥⌘F with replace), or step through its
     /// matches (⌘G, ⇧⌘G).
     Find(FindCommand),
+    /// The text zoom: ⌘+ (or ⌘=), ⌘−, ⌘0.
+    Zoom(ZoomCommand),
+    /// ⌘, — the settings panel.
+    Settings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -153,6 +159,12 @@ fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Acti
         Code::Digit9 if shift => return done(doc.toggle_blockquote()),
         Code::BracketRight if !shift => return done(doc.indent()),
         Code::BracketLeft if !shift => return done(doc.outdent()),
+        // ⌘= and ⇧⌘= alike, as a Mac app takes ⌘+ on a layout where + is
+        // shifted.
+        Code::Equal if !alt => return Action::Zoom(ZoomCommand::In),
+        Code::Minus if !alt && !shift => return Action::Zoom(ZoomCommand::Out),
+        Code::Digit0 if !alt && !shift => return Action::Zoom(ZoomCommand::Reset),
+        Code::Comma if !alt && !shift => return Action::Settings,
         _ => {}
     }
     match key {
@@ -368,5 +380,18 @@ mod tests {
             apply_key(&mut d, &Key::F1, Code::F1, Modifiers::empty()),
             Action::Ignored
         );
+    }
+
+    #[test]
+    fn the_zoom_and_settings_chords_are_the_hosts_and_type_nothing() {
+        let mut d = doc("hello\n");
+        let before = d.source.clone();
+        let z = |a| Action::Zoom(a);
+        assert_eq!(press(&mut d, ch("="), Code::Equal, CMD), z(ZoomCommand::In));
+        assert_eq!(press(&mut d, ch("+"), Code::Equal, CMD | Modifiers::SHIFT), z(ZoomCommand::In));
+        assert_eq!(press(&mut d, ch("-"), Code::Minus, CMD), z(ZoomCommand::Out));
+        assert_eq!(press(&mut d, ch("0"), Code::Digit0, CMD), z(ZoomCommand::Reset));
+        assert_eq!(press(&mut d, ch(","), Code::Comma, CMD), Action::Settings);
+        assert_eq!(d.source, before);
     }
 }

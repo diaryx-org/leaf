@@ -30,13 +30,41 @@ use parley::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-/// Body text: the Swift editor's default face, then fallbacks.
-pub const BODY: &str = r#""Iowan Old Style", Georgia, serif"#;
-/// Code, tables, and anything else core spells in character cells.
-pub const MONO: &str = "Menlo, monospace";
-/// The stylesheet's `15px/1.5`.
-pub const SIZE: f32 = 15.0;
-const LEADING: f32 = 1.5;
+/// How the text is set: the faces, the size and the leading. One value, held
+/// by [`Fonts`] and written into the stylesheet (`view.rs`), so parley
+/// measures exactly what Blitz draws — the two must never disagree, or every
+/// click lands a few glyphs off. The settings and the zoom (`settings.rs`)
+/// make one; changing it is a relayout of every row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Type {
+    /// Body text, as a CSS family list: the face, then fallbacks.
+    pub body: String,
+    /// Code, tables, and anything else core spells in character cells.
+    pub mono: String,
+    /// The body size, in CSS pixels.
+    pub size: f32,
+    /// The line box over the size: CSS's unitless `line-height`.
+    pub leading: f32,
+}
+
+impl Default for Type {
+    /// The Swift editor's defaults: Iowan Old Style at 16 on 1.5.
+    fn default() -> Self {
+        Self {
+            body: r#""Iowan Old Style", Georgia, serif"#.into(),
+            mono: "Menlo, monospace".into(),
+            size: 16.0,
+            leading: 1.5,
+        }
+    }
+}
+
+impl Type {
+    /// One body line's height.
+    pub fn line(&self) -> f32 {
+        self.size * self.leading
+    }
+}
 
 /// How a row is set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -55,14 +83,47 @@ pub enum Kind {
 pub struct Fonts {
     fcx: FontContext,
     lcx: LayoutContext<()>,
+    ty: Type,
 }
 
 impl Fonts {
-    pub fn new() -> Self {
+    pub fn new(ty: Type) -> Self {
         Self {
             fcx: FontContext::new(),
             lcx: LayoutContext::new(),
+            ty,
         }
+    }
+
+    pub fn ty(&self) -> &Type {
+        &self.ty
+    }
+
+    /// Set the text in another type. Every layout made before is stale.
+    pub fn set_ty(&mut self, ty: Type) {
+        self.ty = ty;
+    }
+
+    /// Whether the system has a family by this name — a settings choice
+    /// that is not installed would only fall back to the next in its list.
+    pub fn has_family(&mut self, name: &str) -> bool {
+        self.fcx.collection.family_by_name(name).is_some()
+    }
+
+    /// The mean advance of a lowercase body character, the alphabet and a
+    /// space: what turns a measure in characters into pixels — the Swift
+    /// editor's `averageCharWidth`, measured off the real font the same way.
+    pub fn char_width(&mut self) -> f32 {
+        const SAMPLE: &str = "abcdefghijklmnopqrstuvwxyz ";
+        let w = self.build(&[plain(SAMPLE)], Kind::Prose, None).layout.width();
+        w / SAMPLE.len() as f32
+    }
+
+    /// One character cell of the code face.
+    pub fn cell_width(&mut self) -> f32 {
+        const SAMPLE: &str = "0000000000";
+        let w = self.build(&[plain(SAMPLE)], Kind::Cells, None).layout.width();
+        w / SAMPLE.len() as f32
     }
 
     /// Lay one row out `width` pixels wide.
@@ -82,7 +143,8 @@ impl Fonts {
         // few pixels of width, which hung every wrapped paragraph's lines
         // that far in.
         let prefix_w = if prefix.is_empty() { 0.0 } else { pre.layout.width() };
-        let max = (kind != Kind::Cells).then(|| (width - prefix_w).max(SIZE * 4.0));
+        let line = self.ty.line();
+        let max = (kind != Kind::Cells).then(|| (width - prefix_w).max(self.ty.size * 4.0));
         let mut body = self.build(body, kind, max);
         if align != Alignment::Start && max.is_some() {
             body.layout.align(align, AlignmentOptions::default());
@@ -102,13 +164,13 @@ impl Fonts {
             .collect();
         // An empty row still has a line to hold the caret.
         if lines.is_empty() {
-            let h = pre.layout.lines().next().map_or(SIZE * LEADING, |l| l.metrics().line_height);
+            let h = pre.layout.lines().next().map_or(line, |l| l.metrics().line_height);
             lines.push(Line { bytes: 0..0, top: 0.0, height: h });
         }
         // A line is at least the body's own height, as a CSS line box is at
         // least its strut: a line of superscript alone is still 22.5px.
         for l in &mut lines {
-            l.height = l.height.max(SIZE * LEADING);
+            l.height = l.height.max(line);
         }
         let height = lines.iter().map(|l| l.height).sum();
         let width = prefix_w + body.layout.width();
@@ -134,14 +196,15 @@ impl Fonts {
             text.push_str(&r.text);
             ranges.push(start..text.len());
         }
+        let ty = &self.ty;
         let mut b = self.lcx.ranged_builder(&mut self.fcx, &text, 1.0, true);
-        b.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Borrowed(
-            if kind == Kind::Prose { BODY } else { MONO },
+        b.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(
+            if kind == Kind::Prose { ty.body.clone() } else { ty.mono.clone() },
         ))));
-        b.push_default(StyleProperty::FontSize(SIZE));
-        b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(LEADING)));
+        b.push_default(StyleProperty::FontSize(ty.size));
+        b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(ty.leading)));
         for (r, range) in runs.iter().zip(&ranges) {
-            for property in style_of(&r.class, kind == Kind::Source) {
+            for property in style_of(&r.class, kind == Kind::Source, ty) {
                 b.push(property, range.clone());
             }
         }
@@ -154,7 +217,8 @@ impl Fonts {
 /// The CSS in `style.rs` and `LAYOUT`, as the parley properties that change
 /// a glyph's advance or a line's height. Colour and decoration change
 /// neither, so they are left to the stylesheet alone.
-fn style_of(class: &str, uniform: bool) -> Vec<StyleProperty<'static, ()>> {
+fn style_of(class: &str, uniform: bool, ty: &Type) -> Vec<StyleProperty<'static, ()>> {
+    let size = ty.size;
     let mut out = Vec::new();
     for c in class.split(' ') {
         match c {
@@ -162,17 +226,22 @@ fn style_of(class: &str, uniform: bool) -> Vec<StyleProperty<'static, ()>> {
             "h1" | "h2" | "h3" | "sup" | "sub" if uniform => out.push(StyleProperty::FontWeight(
                 if c.starts_with('h') { FontWeight::BOLD } else { FontWeight::NORMAL },
             )),
-            "h1" => out.extend([StyleProperty::FontSize(SIZE * 2.0), StyleProperty::FontWeight(FontWeight::BOLD)]),
-            "h2" => out.extend([StyleProperty::FontSize(SIZE * 1.6), StyleProperty::FontWeight(FontWeight::BOLD)]),
-            "h3" => out.extend([StyleProperty::FontSize(SIZE * 1.3), StyleProperty::FontWeight(FontWeight::BOLD)]),
+            "h1" => out.extend([StyleProperty::FontSize(size * 2.0), StyleProperty::FontWeight(FontWeight::BOLD)]),
+            "h2" => out.extend([StyleProperty::FontSize(size * 1.6), StyleProperty::FontWeight(FontWeight::BOLD)]),
+            "h3" => out.extend([StyleProperty::FontSize(size * 1.3), StyleProperty::FontWeight(FontWeight::BOLD)]),
             "h4" | "h5" | "h6" | "b" => out.push(StyleProperty::FontWeight(FontWeight::BOLD)),
             "i" | "t-comment" => out.push(StyleProperty::FontStyle(FontStyle::Italic)),
-            "code" => out.push(StyleProperty::FontFamily(FontFamily::Source(Cow::Borrowed(MONO)))),
-            "sup" | "sub" => out.push(StyleProperty::FontSize(SIZE * 0.8)),
+            "code" => out.push(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(ty.mono.clone())))),
+            "sup" | "sub" => out.push(StyleProperty::FontSize(size * 0.8)),
             _ => {}
         }
     }
     out
+}
+
+/// A run of body text with no style of its own.
+fn plain(text: &str) -> Run {
+    Run { text: text.into(), class: "g".into(), src: None }
 }
 
 fn has_class(r: &Run, name: &str) -> bool {
@@ -321,17 +390,17 @@ mod tests {
 
     #[test]
     fn a_long_row_wraps_and_every_line_is_a_body_line_tall() {
-        let mut f = Fonts::new();
+        let mut f = Fonts::new(Type::default());
         let l = f.layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Prose);
         assert!(l.lines.len() >= 3, "{} lines", l.lines.len());
-        assert!(l.lines.iter().all(|x| x.height >= SIZE * LEADING));
+        assert!(l.lines.iter().all(|x| x.height >= Type::default().line()));
         assert_eq!(l.lines.first().unwrap().bytes.start, 0);
         assert_eq!(l.lines.last().unwrap().bytes.end, PROSE.len());
     }
 
     #[test]
     fn a_column_round_trips_through_its_x() {
-        let mut f = Fonts::new();
+        let mut f = Fonts::new(Type::default());
         let l = f.layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Prose);
         for col in [0, 5, 40, 90, PROSE.len()] {
             let (line, x) = l.caret(col);
@@ -341,7 +410,7 @@ mod tests {
 
     #[test]
     fn a_list_item_hangs_its_body_under_the_marker() {
-        let mut f = Fonts::new();
+        let mut f = Fonts::new(Type::default());
         let l = f.layout(&row(vec![run("• ", "g marker"), run(PROSE, "g")]), 300.0, Kind::Prose);
         assert_eq!(l.prefix_cols, 2);
         assert!(l.prefix_w > 0.0);
@@ -354,7 +423,7 @@ mod tests {
 
     #[test]
     fn a_paragraph_has_no_prefix_to_hang_under() {
-        let mut f = Fonts::new();
+        let mut f = Fonts::new(Type::default());
         let l = f.layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Prose);
         assert_eq!(l.prefix_w, 0.0);
         assert_eq!(l.col_at(1, 0.0), l.edge(1, false));
@@ -362,16 +431,16 @@ mod tests {
 
     #[test]
     fn a_code_row_never_wraps() {
-        let mut f = Fonts::new();
+        let mut f = Fonts::new(Type::default());
         let l = f.layout(&row(vec![run(PROSE, "g code")]), 300.0, Kind::Cells);
         assert_eq!(l.lines.len(), 1);
     }
 
     #[test]
     fn a_heading_line_is_taller() {
-        let mut f = Fonts::new();
+        let mut f = Fonts::new(Type::default());
         let l = f.layout(&row(vec![run("Title", "g h1 b")]), 600.0, Kind::Prose);
-        assert!((l.height - SIZE * 2.0 * LEADING).abs() < 0.5, "{}", l.height);
+        assert!((l.height - Type::default().line() * 2.0).abs() < 0.5, "{}", l.height);
     }
 
     #[test]
@@ -387,19 +456,63 @@ mod tests {
 
     #[test]
     fn a_source_line_wraps_and_a_heading_stays_body_height() {
-        let mut f = Fonts::new();
+        let mut f = Fonts::new(Type::default());
         let l = f.layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Source);
         assert!(l.lines.len() > 1);
         let h = f.layout(&row(vec![run("# Title", "g h1 b")]), 600.0, Kind::Source);
-        assert!((h.height - SIZE * LEADING).abs() < 0.5, "{}", h.height);
+        assert!((h.height - Type::default().line()).abs() < 0.5, "{}", h.height);
     }
 
     #[test]
     fn an_empty_row_has_one_line() {
-        let mut f = Fonts::new();
+        let mut f = Fonts::new(Type::default());
         let l = f.layout(&row(vec![]), 600.0, Kind::Prose);
         assert_eq!(l.lines.len(), 1);
         assert_eq!(l.caret(0).0, 0);
     }
-}
 
+    #[test]
+    fn a_larger_size_or_leading_sets_taller_lines() {
+        let base = Type::default();
+        let mut f = Fonts::new(base.clone());
+        let one = f.layout(&row(vec![run("Text", "g")]), 600.0, Kind::Prose).height;
+        assert!((one - base.line()).abs() < 0.5, "{one}");
+        f.set_ty(Type { size: 20.0, ..base.clone() });
+        let bigger = f.layout(&row(vec![run("Text", "g")]), 600.0, Kind::Prose).height;
+        assert!((bigger - 30.0).abs() < 0.5, "{bigger}");
+        f.set_ty(Type { leading: 2.0, ..base });
+        let looser = f.layout(&row(vec![run("Text", "g")]), 600.0, Kind::Prose).height;
+        assert!((looser - 32.0).abs() < 0.5, "{looser}");
+    }
+
+    #[test]
+    fn a_larger_size_wraps_sooner_and_still_round_trips() {
+        let mut f = Fonts::new(Type::default());
+        let small = f.layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Prose).lines.len();
+        f.set_ty(Type { size: 24.0, ..Type::default() });
+        let l = f.layout(&row(vec![run(PROSE, "g")]), 300.0, Kind::Prose);
+        assert!(l.lines.len() > small, "{} vs {small}", l.lines.len());
+        for col in [0, 7, 50, PROSE.len()] {
+            let (line, x) = l.caret(col);
+            assert_eq!(l.col_at(line, x + 0.5), col);
+        }
+    }
+
+    #[test]
+    fn a_character_is_wider_at_a_larger_size() {
+        let mut f = Fonts::new(Type::default());
+        let (body, cell) = (f.char_width(), f.cell_width());
+        // Menlo's cell is 0.602em; a lowercase serif letter about half an em.
+        assert!((cell - 0.602 * 16.0).abs() < 0.2, "{cell}");
+        assert!(body > 16.0 * 0.3 && body < 16.0 * 0.6, "{body}");
+        f.set_ty(Type { size: 32.0, ..Type::default() });
+        assert!((f.char_width() - 2.0 * body).abs() < 0.2);
+    }
+
+    #[test]
+    fn a_family_is_known_by_name() {
+        let mut f = Fonts::new(Type::default());
+        assert!(f.has_family("Menlo"));
+        assert!(!f.has_family("No Such Face Anywhere"));
+    }
+}
