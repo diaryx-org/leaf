@@ -37,7 +37,7 @@ line did, until the line stopped being drawn as a place to type (the same
 commit as this file).
 
 **Repro.** `incremental_build_matches_a_fresh_build_across_edits` in
-`doc.rs`, with
+`doc/tests/rich_view.rs`, with
 `"<div data-line-height=\"1.5\">\n\nI cry\n\nknees\n\n\n\n</div>\n\nafter\n"`
 added to its corpus, fails at step 21.
 

@@ -71,7 +71,7 @@ as node kinds in every language: djot's `$`…`` natively, Markdown's `$…$`
 behind a flag, AsciiDoc's `stem:[…]`. What is missing is the thing that turns
 the text between the delimiters into a picture.
 
-[`parse_extensions`]: ../../crates/leaf-core/src/doc.rs
+[`parse_extensions`]: ../../crates/leaf-core/src/doc/mod.rs
 
 ## What was considered
 
@@ -240,4 +240,4 @@ place that number is felt — the web task measures it, and if it is too much
 the web frontend has the option the others do not, `ratex-svg`'s `<text>`
 mode over KaTeX's webfont CSS.
 
-[`block_media_stop`]: ../../crates/leaf-core/src/wysiwyg.rs
+[`block_media_stop`]: ../../crates/leaf-core/src/wysiwyg/visual_map.rs
