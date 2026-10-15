@@ -455,10 +455,19 @@ define_class!(
                 // leaf patch: text that replaces text already in the document —
                 // press-and-hold's accent, chosen with a click or a number key.
                 // The replaced text went as `DeleteSurrounding`; this is its
-                // replacement, and the key that chose it is not typing.
+                // replacement.
                 self.queue_ime_enabled();
                 self.queue_event(WindowEvent::Ime(Ime::Commit(string)));
-                self.ivars().ime_state.set(ImeState::Committed);
+                // `Committed` tells `keyDown:` that the key it is handling was
+                // the input method's, not typing — true only when this
+                // insertion happened *during* a keypress. The accent menu
+                // inserts after the key that picked from it has returned, so
+                // there `Committed` was left for the next key, which then
+                // vanished: the first letter typed after an accent, or the
+                // ⌘Z meant to undo it.
+                if self.ivars().in_key_down.get() {
+                    self.ivars().ime_state.set(ImeState::Committed);
+                }
             } else if !is_control && !self.ivars().in_key_down.get() {
                 // leaf patch: text with no keystroke behind it — the emoji and
                 // symbols picker, dictation, a service. No `KeyboardInput`

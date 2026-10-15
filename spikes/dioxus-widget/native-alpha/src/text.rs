@@ -26,7 +26,8 @@ use parley::{
     Affinity, Cursor, FontContext, FontFamily, FontStyle, FontWeight, Layout, LayoutContext,
     LineHeight, StyleProperty,
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Body text: the Swift editor's default face, then fallbacks.
 pub const BODY: &str = r#""Iowan Old Style", Georgia, serif"#;
@@ -252,19 +253,24 @@ impl RowLayout {
     }
 }
 
-/// Display columns, the unit core's `click` and `caret_col` speak.
+/// Display columns, the unit core's `click` and `caret_col` speak — counted
+/// as core counts them (`leaf_core::text_width`), per grapheme cluster: a
+/// family emoji is five codepoints and one 2-column character. Summing each
+/// codepoint's width made it 6, so a caret core placed after it mapped to a
+/// byte *inside* it, the run split there, and the halves shaped apart.
 pub fn cols(s: &str) -> usize {
-    s.chars().map(|c| c.width().unwrap_or(0)).sum()
+    UnicodeWidthStr::width(s)
 }
 
-/// The byte at which `col` display columns of `s` have passed.
+/// The byte at which `col` display columns of `s` have passed — always a
+/// grapheme cluster's boundary, never inside one.
 pub fn byte_of_col(s: &str, col: usize) -> usize {
     let mut seen = 0;
-    for (i, c) in s.char_indices() {
+    for (i, cluster) in s.grapheme_indices(true) {
         if seen >= col {
             return i;
         }
-        seen += c.width().unwrap_or(0);
+        seen += UnicodeWidthStr::width(cluster);
     }
     s.len()
 }
@@ -337,6 +343,17 @@ mod tests {
         let mut f = Fonts::new();
         let l = f.layout(&row(vec![run("Title", "g h1 b")]), 600.0, false);
         assert!((l.height - SIZE * 2.0 * LEADING).abs() < 0.5, "{}", l.height);
+    }
+
+    #[test]
+    fn a_family_emoji_is_one_two_column_character() {
+        let family = "👨‍👩‍👧";
+        let s = format!("a{family}b");
+        assert_eq!(cols(family), 2);
+        assert_eq!(byte_of_col(&s, 1), 1);
+        assert_eq!(byte_of_col(&s, 3), 1 + family.len());
+        // A column inside it lands at its end, never between its codepoints.
+        assert_eq!(byte_of_col(&s, 2), 1 + family.len());
     }
 
     #[test]

@@ -1212,6 +1212,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "parley",
  "tokio",
+ "unicode-segmentation",
  "unicode-width",
 ]
 
