@@ -54,7 +54,7 @@ applied to the other origin.
 
 ## The proposal
 
-One rule, in `wysiwyg.rs`'s block walker, for a container whose origin is
+One rule, in `wysiwyg/builder`'s block walker, for a container whose origin is
 `Element` and whose tag is neither `video` nor `audio` (those already fold to
 a media placeholder):
 

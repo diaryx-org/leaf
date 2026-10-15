@@ -3,7 +3,7 @@
 //  What a *link* can do beyond being opened — the two things that gave a
 //  destination finer granularity than the file it names.
 //
-//  Core already tests that `locate` finds the right block (`doc.rs`); what these
+//  Core already tests that `locate` finds the right block (`doc/tests/links.rs`); what these
 //  cover is the layer over it: that a bare `#v2` is recognized as this
 //  document's business and not the host's, that a peek draws the block a locator
 //  names rather than the document's opening, and that a locator naming nothing

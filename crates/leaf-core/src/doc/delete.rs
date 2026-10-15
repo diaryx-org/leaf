@@ -521,7 +521,7 @@ impl Doc {
     /// The source span of an in-cell hard break (`<br>`) touching the caret on the
     /// `edge` side — the byte range to delete whole. A table row is one source
     /// line, so its break is spelled `<br>` yet drawn as a single newline glyph
-    /// (see `wysiwyg.rs`); a delete over it must take every byte, or a one-byte
+    /// (see `wysiwyg`); a delete over it must take every byte, or a one-byte
     /// step strands a broken `<br` in the cell. `Backward` matches a break ending
     /// at the caret (Backspace), `Forward` one starting at it (Delete). `None`
     /// when no such break is adjacent. Only the in-cell break is spelled `<br>`

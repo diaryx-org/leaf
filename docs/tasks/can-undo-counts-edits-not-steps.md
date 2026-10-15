@@ -21,7 +21,7 @@ waits on nothing now: provui takes leaf from git, and its lock (`17dd988`,
 2026-10-06) already carries the fix. `DocumentSession` drops its "walk on
 when the body did not move" special case.
 
-**Where.** `crates/leaf-core/src/doc.rs`, `undo_steps` / `redo_steps`, and
+**Where.** `crates/leaf-core/src/doc/undo.rs`, `undo_steps` / `redo_steps`, and
 `Doc::undo` / `Doc::redo` beside them.
 
 **What.** `Doc` keeps `undo_steps` as a counter it increments once per edit,

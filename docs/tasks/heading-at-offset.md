@@ -15,7 +15,7 @@ and it waits on nothing now: provui takes leaf from git, and its lock
 (`17dd988`, 2026-10-06) already carries `heading_at`. `DocumentSession::heading_at_caret`
 delegates to leaf, and `twig` leaves `provui-core`'s manifest.
 
-**Where.** `crates/leaf-core/src/doc.rs`, beside `link_destination_at_caret`
+**Where.** `crates/leaf-core/src/doc/under_caret.rs`, beside `link_destination_at_caret`
 and `locate`.
 
 **What.** `Doc` answers "which link is the caret in" and "where does this

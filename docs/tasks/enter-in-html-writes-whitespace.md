@@ -30,4 +30,4 @@ rows are unchanged and the source has grown by one newline.
 **Done when.** Enter in HTML writes elements: `<p></p>` for an empty
 paragraph and `<br>` for a soft line. The map draws only what those
 elements draw. `enter_and_backspace_anywhere_show_what_they_write_and_undo_in_one_step`
-in `doc.rs` runs its HTML cases, which were left out of it for this task.
+in `doc/tests/enter.rs` runs its HTML cases, which were left out of it for this task.
