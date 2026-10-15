@@ -70,6 +70,11 @@ rfd = "0.17"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+# The context menu (`menu::show_context`): the window's NSView, through the
+# handle winit already exposes, and the main queue to pop the menu up from.
+# Both already in the tree, through winit and objc2.
+raw-window-handle = "0.6"
+dispatch2 = "0.3"
 
 # winit's macOS backend, vendored at the version dioxus-native pins and
 # patched (see patches/winit-appkit/PATCH.md): its text input client answered

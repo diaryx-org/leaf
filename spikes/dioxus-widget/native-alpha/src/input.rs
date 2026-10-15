@@ -17,7 +17,7 @@
 //! Swift editor's ⌃0–⌃6 and ⌃K live.
 
 use dioxus::html::{Code, Key, Modifiers};
-use leaf_core::{BlockKind, Doc, InlineKind};
+use leaf_core::{Alignment, BlockKind, Doc, InlineKind};
 
 /// What a key did, for the host to act on what it does not own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -61,6 +61,47 @@ pub enum Host {
     /// ⌃⌘Space: the emoji and symbols picker, which AppKit hangs on an Edit
     /// menu item this app has no menu bar to hold.
     CharacterPalette,
+}
+
+/// The Table menu's items. The Swift editor gives none of them a shortcut,
+/// so the menu sends each as itself rather than as a chord — but the edit is
+/// still made here, beside the keys, where it can be tested.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TableCommand {
+    /// A table of [`TABLE_ROWS`] body rows and `cols` columns at the caret.
+    Insert { cols: usize },
+    InsertRow { below: bool },
+    DeleteRow,
+    InsertColumn { right: bool },
+    DeleteColumn,
+    Align(Alignment),
+    MoveRow { down: bool },
+    MoveColumn { right: bool },
+}
+
+/// Body rows under the header of an inserted table — Swift's
+/// `TableRows.defaultRows`.
+pub const TABLE_ROWS: usize = 2;
+
+/// Apply a Table menu item. Every item but Insert acts on the caret's table,
+/// and outside one is [`Action::Ignored`] — the menu disables them there, but
+/// a menu's state can lag the caret by a frame.
+pub fn apply_table(doc: &mut Doc, cmd: TableCommand) -> Action {
+    use TableCommand::*;
+    if !matches!(cmd, Insert { .. }) && !doc.caret_in_table() {
+        return Action::Ignored;
+    }
+    match cmd {
+        Insert { cols } => doc.insert_table(TABLE_ROWS, cols),
+        InsertRow { below } => doc.table_insert_row(below),
+        DeleteRow => doc.table_delete_row(),
+        InsertColumn { right } => doc.table_insert_column(right),
+        DeleteColumn => doc.table_delete_column(),
+        Align(a) => doc.table_set_alignment(a),
+        MoveRow { down } => doc.table_move_row(down),
+        MoveColumn { right } => doc.table_move_column(right),
+    }
+    Action::Handled
 }
 
 /// ⌘ arrives from winit as `SUPER` — not `META`, which `keyboard-types`
@@ -359,6 +400,86 @@ mod tests {
             apply_key(&mut d, &ch("ƒ"), Code::KeyF, CMD | Modifiers::ALT),
             Action::Find(FindCommand::Open { replace: true })
         );
+    }
+
+    const GRID: &str = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+
+    /// A document holding [`GRID`], the caret on the cell holding `cell`.
+    fn grid_at(cell: &str) -> Doc {
+        let mut d = doc(GRID);
+        let at = d.source.find(cell).expect("the cell");
+        d.place_caret(at, false);
+        d
+    }
+
+    fn table(d: &mut Doc, cmd: TableCommand) -> Action {
+        let a = apply_table(d, cmd);
+        d.build_visual(80);
+        a
+    }
+
+    #[test]
+    fn insert_table_writes_a_grid_and_lands_in_it() {
+        let mut d = doc("x\n");
+        d.place_caret(1, false);
+        assert_eq!(table(&mut d, TableCommand::Insert { cols: 3 }), Action::Handled);
+        let head = d.source.lines().find(|l| l.starts_with('|')).expect("a table row");
+        assert_eq!(head.matches('|').count(), 4, "{:?}", d.source);
+        let rows = d.source.lines().filter(|l| l.starts_with('|')).count();
+        assert_eq!(rows, 2 + TABLE_ROWS, "head, rule and body: {:?}", d.source);
+        assert!(d.caret_in_table());
+    }
+
+    #[test]
+    fn row_commands_act_on_the_carets_row() {
+        let mut d = grid_at("1");
+        table(&mut d, TableCommand::InsertRow { below: true });
+        assert_eq!(d.source.lines().count(), 5, "{:?}", d.source);
+        let mut d = grid_at("1");
+        table(&mut d, TableCommand::DeleteRow);
+        assert!(!d.source.contains('1') && d.source.contains('3'), "{:?}", d.source);
+        let mut d = grid_at("1");
+        table(&mut d, TableCommand::MoveRow { down: true });
+        assert!(d.source.find('3') < d.source.find('1'), "{:?}", d.source);
+    }
+
+    #[test]
+    fn column_commands_act_on_the_carets_column() {
+        let mut d = grid_at("1");
+        table(&mut d, TableCommand::InsertColumn { right: true });
+        assert_eq!(d.source.lines().next().map(|l| l.matches('|').count()), Some(4), "{:?}", d.source);
+        let mut d = grid_at("1");
+        table(&mut d, TableCommand::DeleteColumn);
+        assert!(!d.source.contains('a') && d.source.contains('b'), "{:?}", d.source);
+        let mut d = grid_at("1");
+        table(&mut d, TableCommand::MoveColumn { right: true });
+        let head = d.source.lines().next().unwrap_or_default();
+        assert!(head.find('b') < head.find('a'), "{:?}", d.source);
+    }
+
+    #[test]
+    fn align_sets_the_carets_column_rule() {
+        let mut d = grid_at("2");
+        table(&mut d, TableCommand::Align(Alignment::Right));
+        let rule = d.source.lines().nth(1).unwrap_or_default();
+        let cells: Vec<&str> = rule.split('|').map(str::trim).filter(|c| !c.is_empty()).collect();
+        assert_eq!(cells, ["---", "---:"], "only the caret's column: {:?}", d.source);
+    }
+
+    #[test]
+    fn table_commands_outside_a_table_do_nothing() {
+        let mut d = doc("para\n\n| a |\n|---|\n| 1 |\n");
+        d.place_caret(1, false);
+        let before = d.source.clone();
+        for cmd in [
+            TableCommand::InsertRow { below: true },
+            TableCommand::DeleteColumn,
+            TableCommand::Align(Alignment::Center),
+            TableCommand::MoveRow { down: true },
+        ] {
+            assert_eq!(table(&mut d, cmd), Action::Ignored);
+        }
+        assert_eq!(d.source, before);
     }
 
     #[test]

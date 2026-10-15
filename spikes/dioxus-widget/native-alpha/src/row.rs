@@ -33,9 +33,37 @@ pub enum Target {
 #[derive(Clone, Copy, Debug)]
 pub enum Pointer {
     /// The button went down; ⇧ extends the selection.
-    Press { at: Target, line: usize, x: f32, extend: bool },
+    Press { at: Target, line: usize, x: f32, extend: bool, mode: PressMode },
     /// It moved with the button held: a drag-select.
     Drag { at: Target, line: usize, x: f32 },
+}
+
+/// What a press is for, beyond placing the caret.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PressMode {
+    /// A plain press (or ⇧-press).
+    Place,
+    /// ⌘-press: follow the link or footnote under it.
+    Follow,
+    /// The secondary button, or ⌃-press: the context menu.
+    Context,
+}
+
+/// What a press asks for, from its button and modifiers — shared by every
+/// line and every block, so a picture right-clicks like text does. Answers
+/// whether it extends the selection (⇧), and its mode.
+pub fn press_mode(e: &MouseEvent) -> (bool, PressMode) {
+    let m = e.modifiers();
+    let extend = m.contains(Modifiers::SHIFT);
+    // ⌘ arrives as `SUPER`, as it does on a key.
+    let mode = if e.trigger_button() == Some(MouseButton::Secondary) || m.contains(Modifiers::CONTROL) {
+        PressMode::Context
+    } else if m.intersects(Modifiers::SUPER | Modifiers::META) {
+        PressMode::Follow
+    } else {
+        PressMode::Place
+    };
+    (extend, mode)
 }
 
 /// Where a row sends what the pointer did on it. A context rather than a prop
@@ -109,8 +137,8 @@ pub fn Line(sink: PointerSink, at: Target, origin: f64, line: usize, indent: f32
         div { class: "line", style: "padding-left: {indent}px",
             onmousedown: move |e: MouseEvent| {
                 let x = (e.client_coordinates().x - origin) as f32;
-                let extend = e.modifiers().contains(Modifiers::SHIFT);
-                (sink.0)(Pointer::Press { at, line, x, extend });
+                let (extend, mode) = press_mode(&e);
+                (sink.0)(Pointer::Press { at, line, x, extend, mode });
             },
             onmousemove: move |e: MouseEvent| {
                 if e.held_buttons().contains(MouseButton::Primary) {

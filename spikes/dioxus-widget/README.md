@@ -518,6 +518,42 @@ poster (or a dark 16:9 box) under a play badge, audio a fixed-height chip,
 and a picture that would not load a dashed chip with its alt text. A web URL
 or `data:` URI also gets the chip, because nothing reads its size before
 layout.
+### Table editing, links and the context menu
+
+**Format ▸ Table** is Swift's `TableRows`: Insert Table (2 × 2), Insert Table
+With 3–5 columns, insert and delete rows and columns, Align Column, and move
+a row or column — each one `Doc` call (`insert_table`, `table_insert_row`, …),
+made by `input::apply_table`. Swift gives none of them a shortcut, so they are
+`menu::Command::Table` items rather than chords; everything but Insert is
+disabled while `caret_in_table()` is false, re-asked when the caret or the
+text moves, and a no-op there regardless.
+
+**⌘-click** follows what it lands on, Swift's order: a footnote reference to
+its note and a note back to its reference (`footnote_at`,
+`footnote_definition_at`), else a link — a `#fragment` to the place `locate`
+finds, a URL or an existing file beside the document to `open`
+(`native-alpha/src/link.rs`). **Right-click** (or ⌃-click) places the caret
+unless it lands inside the selection, then pops up Go to Note / Back to
+Reference, Open Link and Copy Link when they apply, Cut and Copy with a
+selection, then Paste, Paste and Match Style and Select All — the clipboard
+items replaying the Edit menu's chords. muda shows it over the window's
+NSView, but from the main dispatch queue rather than the click's handler: a
+context menu runs a nested event loop, and winit panics when it is handed an
+event while its handler is still borrowed.
+
+A ⌘-click or right-click also takes no drag after it: the hand settling
+between press and release arrives as a drag, which extended a selection from
+wherever following the link had put the caret.
+
+Checked on macOS: the Table menu present, its grid items disabled outside a
+table, and Insert Row Below, Align Column ▸ Right and Move Column Right on a
+cell, saved as expected; the context menu on a link (Open Link to a
+`#fragment`), on plain text (no Cut or Copy), and inside a selection (kept,
+with Cut and Copy); Select All from it; ⌘-click from a reference to its note
+and from the note back. Not tried on screen: Copy Link, and a URL or file
+handed to the system — the resolution is unit-tested. A click on a note's own
+`[1]` marker lands on the line above (core's mapping of that decoration), so
+following back is a ⌘-click on the note's text.
 
 ### Working on the native editor
 
@@ -526,7 +562,8 @@ the window's keys and IME, the menu bar, the pointer, a file dialog's task —
 holds an `Editor` (`editor.rs`) and calls a method on it. Where a change goes:
 
 - **A command**: a key binding in `input.rs`, and a menu item in `menu.rs`
-  given as that chord. Nothing else; the menu replays the chord.
+  given as that chord. Nothing else; the menu replays the chord. One with no
+  shortcut is a `menu::Command` variant, run in `dispatch.rs`.
 - **Something drawn in place of rows** (media, a formula, a diagram): a
   variant in `blocks.rs` — its builder step, render arm and hit-test — and a
   module of its own for what it draws, as `table.rs` is for tables. Repaint,
@@ -542,8 +579,8 @@ covered by others does not paint — see `occluded` in the trace.
 
 **Still not at parity**, all frontend work: dictation, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, video and audio playback, spellcheck and
-autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a
-toolbar, Save As / New / Open, settings and dark mode, print and PDF,
+autocorrect, Writing Tools and data detectors in the context menu, link
+peeks, block drag, a toolbar, settings and dark mode, print and PDF,
 accessibility.
 
 ## The verdict

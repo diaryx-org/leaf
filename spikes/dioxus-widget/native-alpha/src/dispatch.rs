@@ -17,7 +17,7 @@ use dioxus_native::winit::window::{
 use crate::editor::Editor;
 use crate::file::FileAction;
 use crate::find::{Focus, Outcome};
-use crate::input::{Action, FindCommand, Host, apply_key};
+use crate::input::{Action, FindCommand, Host, apply_key, apply_table};
 use crate::menu::Command;
 use crate::trace::trace;
 use crate::viewport::LINE;
@@ -107,6 +107,24 @@ impl Editor {
             Command::New => self.file(FileAction::New),
             Command::Open => self.file(FileAction::Open),
             Command::SaveAs => self.file(FileAction::SaveAs),
+            Command::Table(cmd) => {
+                // A composition in progress is the document's before a
+                // table is re-spelled around it, as before a key.
+                self.st.composer.borrow_mut().settle(&mut self.st.doc.borrow_mut());
+                let action = apply_table(&mut self.st.doc.borrow_mut(), cmd);
+                trace(|| format!("table {cmd:?} -> {action:?}"));
+                if action == Action::Handled {
+                    self.refresh();
+                    self.ime_area();
+                }
+            }
+            Command::OpenLink => {
+                self.open_link();
+            }
+            Command::CopyLink => self.copy_link(),
+            Command::FollowFootnote => {
+                self.follow_footnote();
+            }
         }
     }
 

@@ -8,8 +8,8 @@
 //! the menu before the view ever sees it — replays the chord through the same
 //! key handler. So a command is defined once, the menu cannot disagree with
 //! the keyboard, and the find bar's fields still get ⌘V while they have focus.
-//! Only what no key binding does — New, Open, Save As — is an action of its
-//! own.
+//! Only what no key binding does — New, Open, Save As, the Table menu, the
+//! context menu's link and footnote items — is an action of its own.
 //!
 //! The app menu's Quit, Hide, Services and the Window menu are AppKit's own
 //! (`PredefinedMenuItem`): they act on the application, not the document.
@@ -18,8 +18,12 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use dioxus::html::{Code, Key, Modifiers};
+use leaf_core::Alignment;
 use muda::accelerator::Accelerator;
 use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+
+use crate::input::TableCommand;
+use crate::link::Footnote;
 
 /// What choosing a menu item does.
 #[derive(Clone, Debug, PartialEq)]
@@ -29,23 +33,45 @@ pub enum Command {
     New,
     Open,
     SaveAs,
+    /// A Table menu item; see [`TableCommand`].
+    Table(TableCommand),
+    /// The context menu's: follow or copy the link at the caret, follow the
+    /// footnote there.
+    OpenLink,
+    CopyLink,
+    FollowFootnote,
 }
 
 /// The menu bar, kept alive for as long as the app, and what its items do.
 pub struct AppMenu {
     _menu: Menu,
     commands: HashMap<MenuId, Command>,
+    /// The Table menu's items that act on the caret's table, and whether they
+    /// are enabled now.
+    table_items: Vec<MenuItem>,
+    in_table: std::cell::Cell<bool>,
 }
 
 impl AppMenu {
-    /// What an item chosen since the last call asked for, if anything.
+    /// What an item chosen since the last call asked for, if anything — from
+    /// the menu bar or from a context menu.
     pub fn next(&self) -> Option<Command> {
         while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if let Some(c) = self.commands.get(&event.id) {
-                return Some(c.clone());
+            if let Some(c) = self.commands.get(&event.id).cloned().or_else(|| context_command(&event.id)) {
+                return Some(c);
             }
         }
         None
+    }
+
+    /// Enable the Table menu's row, column and alignment items only while the
+    /// caret is in a table, as Swift's `.disabled(!editor.caretInTable)`.
+    pub fn set_in_table(&self, yes: bool) {
+        if self.in_table.replace(yes) != yes {
+            for item in &self.table_items {
+                item.set_enabled(yes);
+            }
+        }
     }
 }
 
@@ -138,6 +164,8 @@ pub fn install() -> AppMenu {
     sep(&format);
     b.chord(&format, "Move Block Up", Key::ArrowUp, Code::ArrowUp, ALT);
     b.chord(&format, "Move Block Down", Key::ArrowDown, Code::ArrowDown, ALT);
+    sep(&format);
+    let _ = format.append(&table_menu(&mut b));
 
     let view = Submenu::new("View", true);
     b.chord(&view, "Source View", ch("e"), Code::KeyE, CMD);
@@ -159,13 +187,165 @@ pub fn install() -> AppMenu {
     let menu = Menu::with_items(&[&app, &file, &edit, &format, &view, &window]).expect("the menu bar");
     menu.init_for_nsapp();
     window.set_as_windows_menu_for_nsapp();
-    AppMenu { _menu: menu, commands: b.commands }
+    AppMenu { _menu: menu, commands: b.commands, table_items: b.table_items, in_table: true.into() }
 }
+
+/// Format ▸ Table, as Swift's `TableRows` lays it out — none of it with a
+/// shortcut, there or here.
+#[cfg(target_os = "macos")]
+fn table_menu(b: &mut Builder) -> Submenu {
+    use TableCommand::*;
+    let t = |c| Command::Table(c);
+    let table = Submenu::new("Table", true);
+    b.add(&table, "Insert Table", t(Insert { cols: 2 }), None);
+    let with = Submenu::new("Insert Table With", true);
+    for n in 3..=5 {
+        b.add(&with, &format!("{n} Columns"), t(Insert { cols: n }), None);
+    }
+    let _ = table.append(&with);
+    // Everything below acts on the caret's table.
+    let grid = |b: &mut Builder, m: &Submenu, label: &str, c| {
+        let item = b.add(m, label, t(c), None);
+        b.table_items.push(item);
+    };
+    sep(&table);
+    grid(b, &table, "Insert Row Above", InsertRow { below: false });
+    grid(b, &table, "Insert Row Below", InsertRow { below: true });
+    grid(b, &table, "Delete Row", DeleteRow);
+    sep(&table);
+    grid(b, &table, "Insert Column Left", InsertColumn { right: false });
+    grid(b, &table, "Insert Column Right", InsertColumn { right: true });
+    grid(b, &table, "Delete Column", DeleteColumn);
+    sep(&table);
+    let align = Submenu::new("Align Column", true);
+    grid(b, &align, "Left", Align(Alignment::Left));
+    grid(b, &align, "Center", Align(Alignment::Center));
+    grid(b, &align, "Right", Align(Alignment::Right));
+    grid(b, &align, "Default", Align(Alignment::Default));
+    let _ = table.append(&align);
+    sep(&table);
+    grid(b, &table, "Move Row Up", MoveRow { down: false });
+    grid(b, &table, "Move Row Down", MoveRow { down: true });
+    grid(b, &table, "Move Column Left", MoveColumn { right: false });
+    grid(b, &table, "Move Column Right", MoveColumn { right: true });
+    table
+}
+
+/// What a right-click offers, read off the caret after the click placed it.
+pub struct Context {
+    pub selection: bool,
+    pub link: bool,
+    pub footnote: Option<Footnote>,
+}
+
+/// The context menu's items. Their ids are fixed, so [`AppMenu::next`] knows
+/// them without the menu that showed them: it is built afresh for each
+/// right-click and gone by the time its choice is read.
+const CONTEXT: &[(&str, &str)] = &[
+    ("leaf.context.note", "Go to Note"),
+    ("leaf.context.reference", "Back to Reference"),
+    ("leaf.context.open-link", "Open Link"),
+    ("leaf.context.copy-link", "Copy Link"),
+    ("leaf.context.cut", "Cut"),
+    ("leaf.context.copy", "Copy"),
+    ("leaf.context.paste", "Paste"),
+    ("leaf.context.paste-plain", "Paste and Match Style"),
+    ("leaf.context.select-all", "Select All"),
+];
+
+fn context_command(id: &MenuId) -> Option<Command> {
+    let ch = |c: &str, code, mods| Some(Command::Chord(Key::Character(c.into()), code, mods));
+    match id.as_ref().strip_prefix("leaf.context.")? {
+        "note" | "reference" => Some(Command::FollowFootnote),
+        "open-link" => Some(Command::OpenLink),
+        "copy-link" => Some(Command::CopyLink),
+        // The clipboard items are the Edit menu's chords, replayed.
+        "cut" => ch("x", Code::KeyX, CMD),
+        "copy" => ch("c", Code::KeyC, CMD),
+        "paste" => ch("v", Code::KeyV, CMD),
+        "paste-plain" => ch("v", Code::KeyV, CMD | SHIFT | ALT),
+        "select-all" => ch("a", Code::KeyA, CMD),
+        _ => None,
+    }
+}
+
+/// The ids, in order, that a right-click with `cx` offers — Swift's
+/// `menu(for:)`: a footnote or a link first, then Cut and Copy when there is
+/// a selection, then Paste, Paste and Match Style and Select All. `None` is
+/// a separator.
+fn context_items(cx: &Context) -> Vec<Option<&'static str>> {
+    let mut ids = Vec::new();
+    match cx.footnote {
+        Some(Footnote::GoToNote) => ids.push(Some("leaf.context.note")),
+        Some(Footnote::BackToReference) => ids.push(Some("leaf.context.reference")),
+        None => {}
+    }
+    if cx.link {
+        ids.extend([Some("leaf.context.open-link"), Some("leaf.context.copy-link")]);
+    }
+    if !ids.is_empty() {
+        ids.push(None);
+    }
+    if cx.selection {
+        ids.extend([Some("leaf.context.cut"), Some("leaf.context.copy")]);
+    }
+    ids.extend([
+        Some("leaf.context.paste"),
+        Some("leaf.context.paste-plain"),
+        Some("leaf.context.select-all"),
+    ]);
+    ids
+}
+
+/// Pop up the context menu at the pointer, over the window's view.
+///
+/// Not now but on the main queue's next turn: the click that asks for it
+/// arrives inside winit's event handler, and a context menu runs a nested
+/// event loop that would hand winit its next event while that handler is
+/// still borrowed — a panic ("tried to handle event while another event is
+/// currently being handled"). From the main queue it runs as the menu bar's
+/// tracking does, between events. Its choice arrives as a [`MenuEvent`], read
+/// by [`AppMenu::next`].
+#[cfg(target_os = "macos")]
+pub fn show_context(window: &dyn dioxus_native::winit::window::Window, cx: &Context) {
+    use muda::ContextMenu;
+    use raw_window_handle::RawWindowHandle;
+    let Ok(handle) = window.rwh_06_window_handle().window_handle() else { return };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+    let view = h.ns_view.as_ptr() as usize;
+
+    let menu = Menu::new();
+    for id in context_items(cx) {
+        match id {
+            Some(id) => {
+                let label = CONTEXT.iter().find(|(i, _)| *i == id).map_or(id, |(_, l)| l);
+                let _ = menu.append(&MenuItem::with_id(id, label, true, None));
+            }
+            None => {
+                let _ = menu.append(&PredefinedMenuItem::separator());
+            }
+        }
+    }
+    /// The menu, moved to the main queue: `exec_async` asks for `Send`, and
+    /// the main queue runs it on the thread it was built on.
+    struct OnMain(Menu);
+    unsafe impl Send for OnMain {}
+    let menu = OnMain(menu);
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        let menu = menu;
+        // SAFETY: the window's view, which outlives the app's only window;
+        // `None` pops the menu up at the pointer.
+        unsafe { menu.0.show_context_menu_for_nsview(view as *const _, None) };
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn show_context(_window: &dyn dioxus_native::winit::window::Window, _cx: &Context) {}
 
 /// No menu bar but macOS's yet: the keyboard has every command regardless.
 #[cfg(not(target_os = "macos"))]
 pub fn install() -> AppMenu {
-    AppMenu { _menu: Menu::new(), commands: HashMap::new() }
+    AppMenu { _menu: Menu::new(), commands: HashMap::new(), table_items: Vec::new(), in_table: true.into() }
 }
 
 fn sep(m: &Submenu) {
@@ -175,6 +355,7 @@ fn sep(m: &Submenu) {
 #[derive(Default)]
 struct Builder {
     commands: HashMap<MenuId, Command>,
+    table_items: Vec<MenuItem>,
 }
 
 impl Builder {
@@ -183,12 +364,13 @@ impl Builder {
         self.add(menu, label, Command::Chord(key, code, mods), Some((mods, code)));
     }
 
-    fn add(&mut self, menu: &Submenu, label: &str, command: Command, shortcut: Option<(Modifiers, Code)>) {
+    fn add(&mut self, menu: &Submenu, label: &str, command: Command, shortcut: Option<(Modifiers, Code)>) -> MenuItem {
         let id = MenuId::new(format!("leaf.{}", self.commands.len()));
         let accel = shortcut.and_then(|(m, c)| accelerator(m, c));
         let item = MenuItem::with_id(id.clone(), label, true, accel);
         let _ = menu.append(&item);
         self.commands.insert(id, command);
+        item
     }
 }
 
@@ -214,5 +396,27 @@ mod tests {
     fn a_chord_becomes_its_menu_shortcut() {
         let a = accelerator(CMD | SHIFT, Code::Digit8).expect("an accelerator");
         assert_eq!(a, Accelerator::from_str("Shift+Cmd+Digit8").expect("a parse"));
+    }
+
+    #[test]
+    fn a_context_menu_leads_with_the_link_and_offers_cut_only_with_a_selection() {
+        let ids = |cx| context_items(&cx).into_iter().map(|i| i.unwrap_or("-")).collect::<Vec<_>>();
+        let plain = ids(Context { selection: false, link: false, footnote: None });
+        assert_eq!(plain, ["leaf.context.paste", "leaf.context.paste-plain", "leaf.context.select-all"]);
+        let link = ids(Context { selection: true, link: true, footnote: None });
+        assert_eq!(&link[..4], ["leaf.context.open-link", "leaf.context.copy-link", "-", "leaf.context.cut"]);
+        let note = ids(Context { selection: false, link: false, footnote: Some(Footnote::BackToReference) });
+        assert_eq!(&note[..2], ["leaf.context.reference", "-"]);
+    }
+
+    #[test]
+    fn every_context_item_has_a_label_and_a_command() {
+        for (id, _) in CONTEXT {
+            assert!(context_command(&MenuId::new(*id)).is_some(), "{id}");
+        }
+        assert_eq!(
+            context_command(&MenuId::new("leaf.context.paste-plain")),
+            Some(Command::Chord(Key::Character("v".into()), Code::KeyV, CMD | SHIFT | ALT))
+        );
     }
 }

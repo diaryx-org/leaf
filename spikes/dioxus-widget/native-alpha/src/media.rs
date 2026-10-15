@@ -28,14 +28,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use dioxus::html::Modifiers;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use dioxus_widget_spike::rows::{RowView, Run};
 use dioxus_widget_spike::style::class_of;
 use leaf_core::{ColorScheme, Glyph, MediaInfo, MediaKind, Role, VRow};
 
-use crate::row::{LayoutHandle, PAD, Pointer, PointerSink, Seg, Target, lines};
+use crate::row::{LayoutHandle, PAD, Pointer, PointerSink, Seg, Target, lines, press_mode};
 use crate::text::{Fonts, Kind};
 
 /// Room above and below a box, so it does not crowd the prose.
@@ -358,8 +357,8 @@ pub fn MediaBlock(block: Block) -> Element {
                                       height: {block.height()}px; padding: {GAP}px 0;",
             onmousedown: move |e: MouseEvent| {
                 let x = (e.client_coordinates().x - PAD) as f32;
-                let extend = e.modifiers().contains(Modifiers::SHIFT);
-                (sink.0)(Pointer::Press { at: Target::Block { first }, line: 0, x, extend });
+                let (extend, mode) = press_mode(&e);
+                (sink.0)(Pointer::Press { at: Target::Block { first }, line: 0, x, extend, mode });
             },
             onmousemove: move |e: MouseEvent| {
                 if e.held_buttons().contains(MouseButton::Primary) {
