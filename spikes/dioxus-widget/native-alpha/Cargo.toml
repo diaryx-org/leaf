@@ -37,3 +37,8 @@ arboard = "3.7"
 # Already in the tree: dioxus-native builds and enters a tokio runtime with
 # timers enabled, which is what makes `tokio::time::sleep` work in a task.
 tokio = { version = "1", default-features = false, features = ["time"] }
+# Text layout, for proportional rows (`text.rs`). The same parley Blitz shapes
+# with, at the version it pins, so both measure the same glyphs.
+parley = "=0.12.0"
+# Display columns — core's unit for a caret column — as core counts them.
+unicode-width = "0.2"

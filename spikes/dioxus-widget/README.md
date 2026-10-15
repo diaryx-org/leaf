@@ -348,18 +348,45 @@ None of these is hard to live with once found, and each is a Blitz bug or a
 "0.8-alpha" means in practice.
 
 One leaf finding came out of it: `Doc::counts()` is 130 ms at 5 200 rows, so a
-status line that asks per keystroke stalls the window badly enough that Blitz
-stops painting. The editor counts after 400 ms without an edit, as core's own
-doc says to.
+status line that asks per keystroke lags every keystroke by that much. The
+editor counts after 400 ms without an edit, as core's own doc says to.
 
-**Still not at parity**, all frontend work: proportional text (the editor is
-monospace by the same caret decision as the rest of the spike), IME and
+One trap for anyone testing it: Blitz paints nothing while macOS reports the
+window **occluded** — covered by other windows — so a capture of a covered
+window is its last frame, and looks exactly like a hung editor. It cost this
+spike an afternoon of chasing a "freeze" that was never there; `LEAF_TRACE`
+now logs `occluded true/false` so the two can be told apart.
+
+### Proportional text
+
+"What it would take" item 4 is done the way the Swift editor does it. Core
+builds one *unwrapped* row per block (`build_visual_unwrapped`), and
+`native-alpha/src/text.rs` lays each out with **parley** — the engine Blitz
+shapes with, over the same system font collection, in the same CSS family
+lists (Iowan Old Style for body, Menlo for code and tables) — breaking it at
+the column's pixel width. Each visual line renders as its own
+`white-space: pre` div, so Blitz never wraps anything: parley's breaks are the
+truth, and only a sub-glyph x could drift between the two. A click is
+`Cursor::from_point` on its line, a byte, a display column, `Doc::click`; the
+caret was already an inline span, so it sits after the right glyph in any
+font. ↑/↓, Home/End and ⌘←/→ move by *visual* line from the caret's x with a
+sticky goal x, Swift's rule, because core's own motion knows only its rows.
+List items hang under their text; a quote's gutter repeats on every line.
+
+Measured on the corpus: a click lands the caret between the two letters
+under the pointer, ↑ keeps its x across lines, End stops at the wrapped
+line's end. Laying out all 4 601 rows of the 200× corpus takes 70 ms (once, and
+on a width change); a keystroke lays out the rows it changed — a Return 3 of
+them, because layouts are cached by row handle and the frame keeps a shifted
+row's handle.
+
+**Still not at parity**, all frontend work: IME and
 dictation, tables, images, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, the source view, find and replace, spellcheck and
 autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a
 toolbar, Save As / New / Open, settings and dark mode, print and PDF,
-accessibility. "What it would take" item 4 — proportional text and a measured
-caret — is the one the rest wait on.
+accessibility. Tables are core's box-drawn picture, kept monospace so it
+still lines up, rather than a drawn grid.
 
 ## The verdict
 

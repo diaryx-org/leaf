@@ -30,6 +30,13 @@ pub enum Action {
     Host(Host),
     /// A page of motion: the host knows how many rows a page is.
     Page { down: bool, extend: bool },
+    /// Up or down one *visual* line. Core's `move_up` moves by its own rows,
+    /// which unwrapped are whole blocks; only the layout knows where a
+    /// wrapped line is, so the host moves by geometry, as Swift does.
+    Vertical { down: bool, extend: bool },
+    /// To the start or end of the visual line — Home/End and ⌘←/→ — which
+    /// again only the layout knows.
+    LineEdge { end: bool, extend: bool },
 }
 
 /// The gestures a document cannot complete by itself.
@@ -110,10 +117,10 @@ pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Actio
         Key::ArrowDown if alt => done(doc.move_block_down()),
         Key::ArrowLeft => done(doc.move_left(shift)),
         Key::ArrowRight => done(doc.move_right(shift)),
-        Key::ArrowUp => done(doc.move_up(shift)),
-        Key::ArrowDown => done(doc.move_down(shift)),
-        Key::Home => done(doc.move_home(shift)),
-        Key::End => done(doc.move_end(shift)),
+        Key::ArrowUp => Action::Vertical { down: false, extend: shift },
+        Key::ArrowDown => Action::Vertical { down: true, extend: shift },
+        Key::Home => Action::LineEdge { end: false, extend: shift },
+        Key::End => Action::LineEdge { end: true, extend: shift },
         Key::PageUp => Action::Page { down: false, extend: shift },
         Key::PageDown => Action::Page { down: true, extend: shift },
         _ => Action::Ignored,
@@ -135,10 +142,9 @@ fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Acti
     match key {
         Key::ArrowUp => return done(doc.move_doc_start(shift)),
         Key::ArrowDown => return done(doc.move_doc_end(shift)),
-        // Ends of the line. Swift goes to the *visual* line's ends by
-        // geometry; a monospace row is a visual line, so core's are the same.
-        Key::ArrowLeft => return done(doc.move_home(shift)),
-        Key::ArrowRight => return done(doc.move_end(shift)),
+        // Ends of the visual line, by geometry, as Swift does.
+        Key::ArrowLeft => return Action::LineEdge { end: false, extend: shift },
+        Key::ArrowRight => return Action::LineEdge { end: true, extend: shift },
         Key::Backspace => return done(doc.delete_to_line_start()),
         _ => {}
     }
@@ -178,7 +184,9 @@ fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Acti
 }
 
 /// ⌃ chords, on Apple only: the paragraph style menu and the Emacs keys
-/// Cocoa text views honour.
+/// Cocoa text views honour. ⌃A and ⌃E are the *paragraph's* ends, which in an
+/// unwrapped row are core's own `move_home`/`move_end`; ⌃N and ⌃P are visual
+/// lines, like the arrows.
 fn control(doc: &mut Doc, key: &Key, code: Code, shift: bool) -> Action {
     let done = |_: ()| Action::Handled;
     let level = match code {
@@ -205,8 +213,8 @@ fn control(doc: &mut Doc, key: &Key, code: Code, shift: bool) -> Action {
         "k" => done(doc.delete_to_line_end()),
         "f" => done(doc.move_right(shift)),
         "b" => done(doc.move_left(shift)),
-        "n" => done(doc.move_down(shift)),
-        "p" => done(doc.move_up(shift)),
+        "n" => Action::Vertical { down: true, extend: shift },
+        "p" => Action::Vertical { down: false, extend: shift },
         "d" => done(doc.delete_forward()),
         "h" => done(doc.backspace()),
         _ => Action::Ignored,

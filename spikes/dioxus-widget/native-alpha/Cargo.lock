@@ -1323,7 +1323,9 @@ dependencies = [
  "dioxus-native",
  "dioxus-widget-spike",
  "leaf-core",
+ "parley",
  "tokio",
+ "unicode-width",
 ]
 
 [[package]]

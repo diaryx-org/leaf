@@ -7,10 +7,14 @@
 //! ```
 //!
 //! An editor, not just a first paint, working toward the Swift editor
-//! (`apps/leaf-editor`): its key bindings ([`input`]), the clipboard and the
-//! file ([`host`]), click, double- and triple-click, drag-select and task
-//! boxes, a status line — over the parent's [`Frame`], so a keystroke renders
-//! one row and memoizes the rest, and only the rows in view ([`viewport`]).
+//! (`apps/leaf-editor`): proportional text wrapped and hit-tested by parley
+//! ([`text`]), its key bindings ([`input`]), the clipboard and the file
+//! ([`host`]), click, double- and triple-click, drag-select and task boxes,
+//! a status line — over the parent's [`Frame`], so a keystroke renders one
+//! row and memoizes the rest, and only the rows in view ([`viewport`]).
+//!
+//! `LEAF_TRACE=1` logs keys, pointer events and repaint timings to stderr;
+//! `LEAF_OUTLINE=1` outlines every visual line and run.
 //!
 //! The markup is duplicated from the parent's `editor.rs` rather than shared,
 //! because `rsx!` builds types from *its* Dioxus and the two versions cannot
@@ -22,9 +26,11 @@ mod host;
 mod input;
 mod keys;
 mod row;
+mod text;
 mod viewport;
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -35,26 +41,31 @@ use dioxus::html::{Code, Key, Modifiers};
 use dioxus_native::winit;
 use dioxus_native::winit::event::WindowEvent;
 use dioxus_widget_spike::frame::Frame;
-use dioxus_widget_spike::rows::{Marks, RowHandle};
+use dioxus_widget_spike::rows::{Marks, RowHandle, RowView};
 use dioxus_widget_spike::style::STYLESHEET;
 use leaf_core::{Doc, Format};
 
 use crate::input::{Action, apply_key};
-use crate::row::{Pointer, PointerSink, Row};
+use crate::row::{LayoutHandle, Pointer, PointerSink, Row};
+use crate::text::{BODY, Fonts, MONO, SIZE};
 use crate::viewport::{LINE, Layout};
 
-const WRAP: usize = 80;
-
-/// The status line's height, in CSS pixels — `.status` in [`LAYOUT`].
+/// The status line's height, in CSS pixels — `.status` in [`layout_css`].
 const STATUS: f64 = 24.0;
 
 /// Presses closer together than this, on the same row, count as one double-
 /// or triple-click — the system default on macOS.
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 
-/// What this binary adds to the parent's stylesheet: `.leaf` as a fixed
-/// viewport the editor scrolls itself (see `App`), a known left edge for
-/// [`row::PAD`], the inline caret `row.rs` draws, and the status line.
+/// What this binary adds to the parent's stylesheet: proportional body text
+/// with code and tables in cells, in the families `text.rs` measures with;
+/// `.leaf` as a viewport the editor scrolls itself (see `App`); a known left
+/// edge for [`row::PAD`]; the inline caret `row.rs` draws; the status line.
+///
+/// A function only because the families are `text.rs`'s constants, and the
+/// two must never disagree: a face Blitz draws in and parley does not
+/// measure is every click landing a few glyphs off.
+//
 // Two Blitz behaviours shape this, both found the hard way:
 //
 // - It paints the first frame of an `overflow: hidden` element and not the
@@ -63,9 +74,18 @@ const MULTI_CLICK: Duration = Duration::from_millis(500);
 //   has no fixed height: its box is as tall as the rows in it, shifted up by
 //   the scroll, and the window cuts it off. The status line is pinned to the
 //   window's bottom over it, in a stacking layer of its own.
-const LAYOUT: &str = "html, body { margin: 0; overflow: hidden; height: 100vh; }
-body { position: relative; }
-.leaf { padding: 0 16px; box-sizing: border-box; }
+fn layout_css() -> String {
+    format!(
+        "html, body {{ margin: 0; overflow: hidden; height: 100vh; }}
+body {{ position: relative; }}
+.leaf {{ padding: 0 16px; box-sizing: border-box; font-family: {BODY}; font-size: {SIZE}px; }}
+.leaf .row.code, .leaf .row.table, .leaf .code {{ font-family: {MONO}; }}
+.leaf .line {{ min-height: 1.5em; }}
+{REST}"
+    )
+}
+
+const REST: &str = "
 .leaf .caret-in { display: inline-block; width: 0; height: 1.2em;
                   border-left: 2px solid #1a73e8; margin-right: -2px;
                   vertical-align: text-bottom; }
@@ -107,6 +127,15 @@ fn viewport_height(physical: u32, scale: f64) -> f64 {
     (physical as f64 / scale - STATUS).max(LINE)
 }
 
+/// The text column's width in CSS pixels: the window less the side padding,
+/// up to a measure that reads as prose — the Swift editor's column width.
+fn column_width(physical: u32, scale: f64) -> f32 {
+    ((physical as f64 / scale - 2.0 * row::PAD) as f32).clamp(SIZE * 10.0, MEASURE)
+}
+
+/// The widest the text column grows, in CSS pixels.
+const MEASURE: f32 = 680.0;
+
 /// The last press, for counting a double- and triple-click.
 #[derive(Clone, Copy)]
 struct Press {
@@ -116,22 +145,40 @@ struct Press {
     count: u8,
 }
 
+/// Every row's layout, reused while its handle and the column width hold.
+/// Keyed by the handle's address: the frame keeps an unchanged row's `Rc`
+/// even when an edit above it shifts its index, so a Return relays out the
+/// rows it touched, not every row below.
+#[derive(Default)]
+struct Layouts {
+    width: f32,
+    by_row: HashMap<*const RowView, LayoutHandle>,
+}
+
 #[allow(non_snake_case)]
 fn App() -> Element {
     let path = use_context::<Opened>().0;
     let doc = use_hook(|| {
         let mut d = open(path);
-        d.build_visual(WRAP);
+        d.build_visual_unwrapped();
         Rc::new(RefCell::new(d))
     });
     let frame = use_hook(|| Rc::new(RefCell::new(Frame::default())));
+    let fonts = use_hook(|| Rc::new(RefCell::new(Fonts::new())));
+    let cache = use_hook(|| Rc::new(RefCell::new(Layouts::default())));
     let last_press = use_hook(|| Rc::new(Cell::new(None::<Press>)));
+    // The x a run of ↑/↓ aims for, kept across the lines it passes through
+    // so a short line does not pull the caret left for good.
+    let goal = use_hook(|| Rc::new(Cell::new(None::<f32>)));
     // The word count, as of a revision; see `recount`.
     let words = use_signal(|| None::<(u64, usize)>);
     let mut rows = use_signal(Vec::<RowHandle>::new);
+    let mut lays = use_signal(Vec::<LayoutHandle>::new);
+    let mut monos = use_signal(Vec::<bool>::new);
     let mut layout = use_signal(Layout::default);
     let mut status = use_signal(String::new);
-    // The viewport: how far down the document it starts, and how tall it is.
+    // The viewport: how far down the document it starts, how tall it is, and
+    // how wide the text column is.
     //
     // The editor scrolls itself rather than letting `.leaf` overflow. Blitz
     // can scroll an element, but only from a task — `MountedData::scroll` —
@@ -140,35 +187,73 @@ fn App() -> Element {
     // Owning the offset makes following the caret a signal write, and makes
     // the virtualized window exact: the rows drawn are the rows in view.
     //
-    // The height is the window's, from winit: dioxus-native implements
-    // neither `onresize` nor a measurement outside a task.
+    // The size is the window's, from winit: dioxus-native implements neither
+    // `onresize` nor a measurement outside a task.
     let window = dioxus_native::use_window();
     let mut top = use_signal(|| 0.0_f64);
     let mut height = use_signal(|| viewport_height(window.surface_size().height, window.scale_factor()));
-    // The first paint, and every repaint after a key or a click. Answers the
-    // caret's row, for the viewport to follow.
+    let mut width = use_signal(|| column_width(window.surface_size().width, window.scale_factor()));
+
+    // The first paint, and every repaint after a key, a click or a resize.
+    // Answers the caret's row, for the viewport to follow.
     let repaint = {
         let doc_rc = doc.clone();
-        let (doc, frame) = (doc.clone(), frame.clone());
+        let (doc, frame, fonts, cache) = (doc.clone(), frame.clone(), fonts.clone(), cache.clone());
         move || -> Option<usize> {
             let t0 = Instant::now();
             let mut doc = doc.borrow_mut();
-            doc.build_visual(WRAP);
+            doc.build_visual_unwrapped();
             let t1 = Instant::now();
             let marks = Marks::of(&doc.vmap, doc.caret, doc.anchor);
             let mut frame = frame.borrow_mut();
             let handles = frame.update(&doc.vmap, &marks).to_vec();
             let t2 = Instant::now();
-            layout.set(Layout::of(handles.iter().map(|h| &*h.0)));
-            rows.set(handles);
+
+            // A table's picture is box-drawn in character cells, so its rows
+            // stay monospace, as code does.
+            let mut mono: Vec<bool> = handles.iter().map(|h| h.0.code).collect();
+            for t in &doc.vmap.tables {
+                for r in t.rows_span.clone() {
+                    if let Some(m) = mono.get_mut(r) {
+                        *m = true;
+                    }
+                }
+            }
+            let w = *width.peek();
+            let mut cache = cache.borrow_mut();
+            let mut fonts = fonts.borrow_mut();
+            let mut kept = HashMap::with_capacity(handles.len());
+            let mut laid = 0;
+            let row_lays: Vec<LayoutHandle> = handles
+                .iter()
+                .zip(&mono)
+                .map(|(h, &m)| {
+                    let key = Rc::as_ptr(&h.0);
+                    let l = match cache.by_row.get(&key) {
+                        Some(l) if cache.width == w => l.clone(),
+                        _ => {
+                            laid += 1;
+                            LayoutHandle(Rc::new(fonts.layout(&h.0, w, m)))
+                        }
+                    };
+                    kept.insert(key, l.clone());
+                    l
+                })
+                .collect();
+            cache.by_row = kept;
+            cache.width = w;
             let t3 = Instant::now();
+
+            layout.set(Layout::of(row_lays.iter().map(|l| l.0.height as f64)));
+            rows.set(handles);
+            lays.set(row_lays);
+            monos.set(mono);
             status.set(status_line(&doc));
             if words.peek().is_none_or(|(r, _)| r != doc.revision()) {
                 recount(doc_rc.clone(), doc.revision(), words);
             }
-            let t4 = Instant::now();
-            trace(|| format!("repaint: build {:.1?} frame {:.1?} layout {:.1?} status {:.1?}; {} rows rebuilt",
-                t1 - t0, t2 - t1, t3 - t2, t4 - t3, frame.last.rebuilt));
+            trace(|| format!("repaint: build {:.1?} frame {:.1?} text {:.1?} ({laid} rows laid out); {} rows rebuilt",
+                t1 - t0, t2 - t1, t3 - t2, frame.last.rebuilt));
             marks.caret.map(|(r, _)| r)
         }
     };
@@ -209,37 +294,101 @@ fn App() -> Element {
     use_context_provider({
         let doc = doc.clone();
         let repaint = repaint.clone();
+        let goal = goal.clone();
         move || {
             PointerSink(Rc::new(move |p| {
-                pointer(&mut doc.borrow_mut(), &last_press, p);
-                trace(|| format!("{p:?} -> caret {} anchor {:?}", doc.borrow().caret, doc.borrow().anchor));
+                goal.set(None);
+                let (row, line, x) = match p {
+                    Pointer::Press { row, line, x, .. } | Pointer::Drag { row, line, x } => (row, line, x),
+                };
+                let Some(col) = lays.peek().get(row).map(|l| l.0.col_at(line, x)) else {
+                    return;
+                };
+                pointer(&mut doc.borrow_mut(), &last_press, p, row, col);
+                trace(|| format!("{p:?} -> col {col}, caret {} anchor {:?}", doc.borrow().caret, doc.borrow().anchor));
                 (repaint.clone())();
             }))
         }
     });
 
+    // Where the caret is in the layout: its row, its visual line, its x.
+    let caret_at = {
+        let doc = doc.clone();
+        move || -> Option<(usize, usize, f32)> {
+            let doc = doc.borrow();
+            let (row, col) = doc.vmap.pos_of_offset(doc.caret);
+            let lays = lays.peek();
+            let (line, x) = lays.get(row)?.0.caret(col);
+            Some((row, line, x))
+        }
+    };
+
+    // One visual line up or down, by geometry: the line above or below in
+    // this row, or the nearest caret-holding row's last or first line, at the
+    // goal x. Swift's rule, which core cannot apply to rows it never wrapped.
+    let vertical = {
+        let (doc, goal, caret_at) = (doc.clone(), goal.clone(), caret_at.clone());
+        move |down: bool, extend: bool| {
+            let Some((row, line, x)) = caret_at() else { return };
+            let aim = goal.get().unwrap_or(x);
+            let lays = lays.peek();
+            let rows = rows.peek();
+            let holds = |r: usize| rows.get(r).is_some_and(|h| !h.0.decoration);
+            let target = if down {
+                if line + 1 < lays[row].0.lines.len() {
+                    Some((row, line + 1))
+                } else {
+                    (row + 1..rows.len()).find(|&r| holds(r)).map(|r| (r, 0))
+                }
+            } else if line > 0 {
+                Some((row, line - 1))
+            } else {
+                (0..row).rev().find(|&r| holds(r)).map(|r| (r, lays[r].0.lines.len() - 1))
+            };
+            let mut doc = doc.borrow_mut();
+            match target {
+                Some((r, l)) => doc.click(r, lays[r].0.col_at(l, aim), extend),
+                // Past the first or last line: to the document's edge, as a
+                // text view does.
+                None if down => doc.move_doc_end(extend),
+                None => doc.move_doc_start(extend),
+            }
+            goal.set(Some(aim));
+        }
+    };
+
     // The keyboard, from winit — see `keys.rs` for why not `onkeydown`.
     let mut on_key = {
         let doc = doc.clone();
         let mut repaint = repaint.clone();
+        let goal = goal.clone();
         move |key: Key, code: Code, mods: Modifiers| {
             let action = apply_key(&mut doc.borrow_mut(), &key, code, mods);
             trace(|| format!("key {key:?} {code:?} {mods:?} -> {action:?}"));
+            if !matches!(action, Action::Vertical { .. } | Action::Page { .. } | Action::Ignored) {
+                goal.set(None);
+            }
             let changed = match action {
                 Action::Ignored => return,
                 Action::Handled => true,
                 Action::Host(h) => host::run(&mut doc.borrow_mut(), h),
+                Action::Vertical { down, extend } => {
+                    vertical(down, extend);
+                    true
+                }
                 Action::Page { down, extend } => {
-                    // A page is the viewport less a line of overlap, in rows
-                    // of body height — Swift's and gpui's rule.
-                    let rows = ((*height.peek() / LINE) as usize).saturating_sub(1).max(1);
-                    let mut doc = doc.borrow_mut();
-                    for _ in 0..rows {
-                        if down {
-                            doc.move_down(extend);
-                        } else {
-                            doc.move_up(extend);
-                        }
+                    // A page is the viewport less a line of overlap, in body
+                    // lines — Swift's and gpui's rule.
+                    let lines = ((*height.peek() / LINE) as usize).saturating_sub(1).max(1);
+                    for _ in 0..lines {
+                        vertical(down, extend);
+                    }
+                    true
+                }
+                Action::LineEdge { end, extend } => {
+                    if let Some((row, line, _)) = caret_at() {
+                        let col = lays.peek()[row].0.edge(line, end);
+                        doc.borrow_mut().click(row, col, extend);
                     }
                     true
                 }
@@ -250,17 +399,30 @@ fn App() -> Element {
         }
     };
     let mut mods = winit::keyboard::ModifiersState::empty();
-    dioxus_native::use_window_event(move |event, _| match event {
-        WindowEvent::SurfaceResized(size) => {
-            height.set(viewport_height(size.height, window.scale_factor()));
-        }
-        WindowEvent::ModifiersChanged(m) => mods = m.state(),
-        WindowEvent::KeyboardInput { event, .. } => {
-            if let Some((key, code, m)) = keys::pressed(event, mods) {
-                on_key(key, code, m);
+    dioxus_native::use_window_event({
+        let mut repaint = repaint.clone();
+        move |event, _| match event {
+            WindowEvent::SurfaceResized(size) => {
+                let scale = window.scale_factor();
+                height.set(viewport_height(size.height, scale));
+                let w = column_width(size.width, scale);
+                if w != *width.peek() {
+                    width.set(w);
+                    repaint();
+                }
             }
+            WindowEvent::ModifiersChanged(m) => mods = m.state(),
+            // Blitz paints nothing while the window is covered, so a capture
+            // of a covered window is its last frame — which looks exactly
+            // like a hung editor. Said here so the trace tells them apart.
+            WindowEvent::Occluded(o) => trace(|| format!("occluded {o}")),
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let Some((key, code, m)) = keys::pressed(event, mods) {
+                    on_key(key, code, m);
+                }
+            }
+            _ => {}
         }
-        _ => {}
     });
 
     // A click in the blank space under the last row: core opens a paragraph
@@ -280,21 +442,28 @@ fn App() -> Element {
     // The first drawn row is `top - above` above the viewport's top edge.
     let shift = layout.top(first) - *top.read();
     let rows = rows.read();
+    let lays = lays.read();
+    let monos = monos.read();
+    let column = *width.read() + 2.0 * row::PAD as f32;
+    let mut css = layout_css();
+    if std::env::var_os("LEAF_OUTLINE").is_some() {
+        css.push_str(".leaf .line { outline: 1px solid #f00; } .leaf .line > span { outline: 1px solid #0a0; }");
+    }
 
     rsx! {
         style { {STYLESHEET} }
-        style { {LAYOUT} }
+        style { {css} }
         // The mouse's default actions are cancelled: they are Blitz's own
         // text selection, drawn over leaf's, and the focus changes that made
         // `onkeydown` unreliable (see `keys.rs`). Not `onpointerdown`:
         // cancelling the pointer event stops Blitz dispatching `mousedown`.
-        div { class: "leaf",
+        div { class: "leaf", style: "width: {column}px",
             onwheel: on_wheel,
             onmousedown: move |e: MouseEvent| e.prevent_default(),
             onclick: move |e: MouseEvent| e.prevent_default(),
             div { style: "height: 0; margin-top: {shift}px" }
             for i in first..last {
-                Row { key: "{i}", index: i, row: rows[i].clone() }
+                Row { key: "{i}", index: i, row: rows[i].clone(), layout: lays[i].clone(), mono: monos[i] }
             }
             // Room under the last row, as a page has, so there is somewhere
             // to click past the end.
@@ -313,12 +482,13 @@ fn App() -> Element {
     }
 }
 
-/// Apply a pointer gesture: a press places the caret, or on a task box ticks
-/// it; a second and third press in quick succession select the word and the
-/// block; a drag extends the selection from wherever the press left it.
-fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer) {
+/// Apply a pointer gesture at a resolved (row, column): a press places the
+/// caret, or on a task box ticks it; a second and third press in quick
+/// succession select the word and the block; a drag extends the selection
+/// from wherever the press left it.
+fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer, row: usize, col: usize) {
     match p {
-        Pointer::Press { row, col, extend } => {
+        Pointer::Press { extend, .. } => {
             let now = Instant::now();
             let count = match last.get() {
                 Some(l) if !extend && l.row == row && now - l.at < MULTI_CLICK => l.count % 3 + 1,
@@ -346,12 +516,12 @@ fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer) {
                 _ => doc.click(row, col, extend),
             }
         }
-        Pointer::Drag { row, col } => {
-            // A move that has not left the pressed cell is the hand settling,
-            // not a drag — and would shrink a double-click's word back to the
-            // pointer. A drag after a double- or triple-click should extend
-            // by words or blocks, as Swift's does; until it does, it is left
-            // alone rather than undoing the selection.
+        Pointer::Drag { .. } => {
+            // A move that has not left the pressed column is the hand
+            // settling, not a drag — and would shrink a double-click's word
+            // back to the pointer. A drag after a double- or triple-click
+            // should extend by words or blocks, as Swift's does; until it
+            // does, it is left alone rather than undoing the selection.
             match last.get() {
                 Some(p) if (p.row, p.col) == (row, col) || p.count > 1 => {}
                 _ => doc.click(row, col, true),

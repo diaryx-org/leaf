@@ -7,12 +7,10 @@
 //!
 //! A spacer needs the height of the rows it replaces, and a row's height is
 //! not known until Blitz lays it out — which an unrendered row never is. So
-//! heights are *estimated*: one line of the row's largest font, which is exact
-//! for every row the corpus holds except a wrapped heading. A wrong estimate
-//! shows as the scrollbar's thumb drifting slightly, never as a row drawn in
-//! the wrong place, because the rendered rows are laid out for real.
-
-use dioxus_widget_spike::rows::RowView;
+//! heights come from the editor's own layout of every row (`text.rs`), the
+//! same parley Blitz draws with. A disagreement would show as the scroll
+//! drifting slightly, never as a row drawn in the wrong place, because the
+//! rendered rows are laid out for real.
 
 /// One body line: the stylesheet's `15px/1.5`.
 pub const LINE: f64 = 15.0 * 1.5;
@@ -21,22 +19,7 @@ pub const LINE: f64 = 15.0 * 1.5;
 /// rows rather than spacer before the next frame catches up.
 pub const OVERSCAN: usize = 20;
 
-/// How much larger than body text a row's largest glyphs are, from the
-/// heading classes `style.rs` gives its runs.
-pub fn scale(v: &RowView) -> f64 {
-    v.runs
-        .iter()
-        .flat_map(|r| r.class.split(' '))
-        .map(|c| match c {
-            "h1" => 2.0,
-            "h2" => 1.6,
-            "h3" => 1.3,
-            _ => 1.0,
-        })
-        .fold(1.0, f64::max)
-}
-
-/// Every row's estimated top, and the document's height after the last.
+/// Every row's top, and the document's height after the last.
 #[derive(Default, Clone, PartialEq)]
 pub struct Layout {
     /// `tops[i]` is row `i`'s y; `tops[rows]` is the total height.
@@ -44,11 +27,12 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn of<'a>(rows: impl Iterator<Item = &'a RowView>) -> Self {
+    /// From each row's height, in order.
+    pub fn of(heights: impl Iterator<Item = f64>) -> Self {
         let mut tops = vec![0.0];
         let mut y = 0.0;
-        for v in rows {
-            y += LINE * scale(v);
+        for h in heights {
+            y += h;
             tops.push(y);
         }
         Self { tops }
@@ -99,28 +83,14 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dioxus_widget_spike::rows::Run;
-
-    fn row(class: &str) -> RowView {
-        RowView {
-            runs: vec![Run {
-                text: "x".into(),
-                class: class.into(),
-                src: None,
-            }],
-            ..RowView::default()
-        }
-    }
 
     fn layout(n: usize) -> Layout {
-        let rows: Vec<_> = (0..n).map(|_| row("")).collect();
-        Layout::of(rows.iter())
+        Layout::of((0..n).map(|_| LINE))
     }
 
     #[test]
-    fn a_heading_row_is_taller_by_its_scale() {
-        let rows = [row("h1"), row("")];
-        let l = Layout::of(rows.iter());
+    fn a_taller_row_pushes_the_rows_below_it_down() {
+        let l = Layout::of([LINE * 2.0, LINE].into_iter());
         assert_eq!(l.top(1), LINE * 2.0);
         assert_eq!(l.height(), LINE * 3.0);
     }
