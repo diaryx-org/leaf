@@ -46,6 +46,10 @@ as `Ime::Commit`, and that a swallowed repeat is no longer forwarded.
 
 ## Upstream
 
-Worth offering to winit as it stands: it fills in the two `TODO`s with
-the API winit-core already defines. The repeat rule is the part to argue
-about; it is scoped to repeats, which only press-and-hold swallows.
+Prepared, not sent: `upstream/PR.md` has the PR's text and what to do before
+opening it, and `upstream/0001-*.patch` the change redone against winit's
+`master` without the leaf-only tracing. Adam approves sending it. When it
+lands in a winit release that dioxus-native takes, this vendored copy and the
+`[patch]` that uses it go. The plan for the Dioxus work's other winit patch
+(iOS, UIScene) is the proposal "A shared, patched winit for the Dioxus work"
+in leaf's `docs/proposals/`.

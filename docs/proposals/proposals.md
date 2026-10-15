@@ -12,6 +12,7 @@ contents:
 - '[A short row, a keyboard panel, and categories on the Mac](keyboard-panel.md)'
 - '[Directives a host names, inserts and draws](host-directives.md)'
 - '[Editors inside a document](embedded-editors.md)'
+- '[A shared, patched winit for the Dioxus work](/docs/proposals/a-shared-patched-winit-for-the-dioxus-work.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Proposals
