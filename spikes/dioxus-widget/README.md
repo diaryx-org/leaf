@@ -452,6 +452,30 @@ not Blitz `<input>`s, which depend on the DOM focus the editor gave up on.
 Checked on macOS: ⌘E both ways; find stepping across a view switch; Replace
 All of 5 and its single undo.
 
+### The app shell
+
+A native menu bar (`native-alpha/src/menu.rs`, through muda): the app menu,
+File, Edit, Format, View and Window, laid out as the Swift editor's
+`EditorCommands.swift` is. Every editor item *is* a key binding — given as
+the chord it stands for, shown as its shortcut, and replayed through the same
+key handler when chosen. macOS hands a shortcut that names a menu item to the
+menu before the view sees it, so a chord now arrives once, through the menu,
+and a command is defined in one place. AppKit adds Emoji & Symbols, Start
+Dictation and AutoFill to the menu titled Edit by itself.
+
+New, Open and Save As (`native-alpha/src/file.rs`) are rfd's *async* dialogs —
+sheets on the window, with completion handlers — since a modal dialog's
+nested event loop inside a Dioxus task would hit Blitz's borrowed document.
+Replacing a document with unsaved changes asks the Mac's question first
+(Save / Don't Save / Cancel); ⌘S on an untitled document is Save As; the
+window title is the file's name, and "— Edited" while it has unsaved changes.
+
+Checked on macOS: every menu present; View ▸ Source View and Format ▸ Heading
+2 from the menu; ⌘E arriving once, through the menu; the Save As sheet; New
+on an edited document asking, Don't Save, and an untitled empty document.
+Not handled yet: closing the window with unsaved changes quits without
+asking.
+
 **Still not at parity**, all frontend work: dictation, tables, images, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, spellcheck and
 autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a

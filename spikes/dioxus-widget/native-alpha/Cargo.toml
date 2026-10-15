@@ -53,6 +53,12 @@ unicode-width = "0.2"
 # Grapheme clusters, the unit a column advances by, as core walks them.
 unicode-segmentation = "1.13"
 
+# The menu bar (`menu.rs`): Tauri's, the native NSMenu on macOS.
+muda = "0.21"
+# File dialogs and the unsaved-changes prompt (`file.rs`). Already in the tree
+# through Blitz's own `file-dialog` feature.
+rfd = "0.17"
+
 # The Character Viewer (⌃⌘Space), which AppKit only offers through an Edit
 # menu this app does not have. The versions winit-appkit already uses.
 [target.'cfg(target_os = "macos")'.dependencies]

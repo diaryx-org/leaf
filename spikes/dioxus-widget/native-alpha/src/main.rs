@@ -22,11 +22,13 @@
 //! mapping, the frame delta — is the parent crate's, which is the point: the
 //! bridge is independent of which Dioxus renders it.
 
+mod file;
 mod find;
 mod host;
 mod ime;
 mod input;
 mod keys;
+mod menu;
 mod row;
 mod source;
 mod text;
@@ -36,6 +38,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dioxus::html::geometry::WheelDelta;
@@ -52,7 +55,10 @@ use dioxus_widget_spike::rows::{Marks, RowHandle, RowView};
 use dioxus_widget_spike::style::STYLESHEET;
 use leaf_core::{Doc, Format, View};
 
+use crate::file::Unsaved;
 use crate::find::{BarView, Find, Focus, Outcome};
+use crate::input::Host;
+use crate::menu::Command as MenuCommand;
 use crate::ime::Composer;
 use crate::input::{Action, FindCommand, apply_key};
 use crate::row::{LayoutHandle, Pointer, PointerSink, Row};
@@ -217,6 +223,8 @@ fn App() -> Element {
     let find = use_hook(|| Rc::new(RefCell::new(Find::default())));
     // What the find bar draws, refreshed whenever it or the document changes.
     let mut bar = use_signal(BarView::default);
+    // The window title last set, so it is only set when it changes.
+    let title = use_hook(|| Rc::new(RefCell::new(String::new())));
     let last_press = use_hook(|| Rc::new(Cell::new(None::<Press>)));
     // The x a run of ↑/↓ aims for, kept across the lines it passes through
     // so a short line does not pull the caret left for good.
@@ -253,6 +261,7 @@ fn App() -> Element {
         let doc_rc = doc.clone();
         let (doc, frame, fonts, cache) = (doc.clone(), frame.clone(), fonts.clone(), cache.clone());
         let (composer, srows, shown) = (composer.clone(), srows.clone(), shown.clone());
+        let (window, title) = (window.clone(), title.clone());
         move || -> Option<usize> {
             let t0 = Instant::now();
             let mut doc = doc.borrow_mut();
@@ -294,6 +303,16 @@ fn App() -> Element {
                     (h, kinds, marks.caret.map(|(r, _)| r), frame.last.rebuilt)
                 }
             };
+            // An empty document maps to no rows at all, which would leave the
+            // caret nowhere to be drawn and nothing to click: give it the one
+            // empty line every text view shows.
+            let (handles, kinds, caret_row) = if handles.is_empty() {
+                let blank = RowView { caret_col: Some(0), ..RowView::default() };
+                let k = if doc.view == View::Source { Kind::Source } else { Kind::Prose };
+                (vec![RowHandle::new(blank)], vec![k], Some(0))
+            } else {
+                (handles, kinds, caret_row)
+            };
             let t1 = Instant::now();
             let w = column_width(*win_w.peek(), doc.view);
             if w != *width.peek() {
@@ -328,6 +347,16 @@ fn App() -> Element {
             lays.set(row_lays);
             row_kinds.set(kinds);
             status.set(status_line(&doc));
+            // The file's name, and "Edited" while it has unsaved changes, as
+            // a Mac document window says it.
+            let now = match doc.dirty {
+                true => format!("{} — Edited", doc.file_name()),
+                false => doc.file_name(),
+            };
+            if *title.borrow() != now {
+                window.set_title(&now);
+                *title.borrow_mut() = now;
+            }
             if words.peek().is_none_or(|(r, _)| r != doc.revision()) {
                 recount(doc_rc.clone(), doc.revision(), words);
             }
@@ -492,14 +521,72 @@ fn App() -> Element {
         }
     };
 
+    // Put a different document in the editor — New, Open — and start every
+    // view of it afresh.
+    let install: Rc<dyn Fn(Doc)> = {
+        let (doc, composer, find, shown, goal) = (doc.clone(), composer.clone(), find.clone(), shown.clone(), goal.clone());
+        let repaint = repaint.clone();
+        Rc::new(move |new: Doc| {
+            *doc.borrow_mut() = new;
+            *composer.borrow_mut() = Composer::default();
+            find.borrow_mut().close();
+            shown.set(None);
+            goal.set(None);
+            let (mut top, mut words, mut bar, mut follow) = (top, words, bar, follow);
+            top.set(0.0);
+            words.set(None);
+            follow((repaint.clone())());
+            bar.set(BarView::of(&mut find.borrow_mut(), &doc.borrow()));
+        })
+    };
+    // New, Open, Save As: each a sheet on the window, so a task (see `file.rs`).
+    let files: Rc<dyn Fn(FileAction)> = {
+        let (doc, window, install) = (doc.clone(), window.clone(), install.clone());
+        let repaint = repaint.clone();
+        Rc::new(move |action: FileAction| {
+            let (doc, window, install) = (doc.clone(), window.clone(), install.clone());
+            let mut repaint = repaint.clone();
+            spawn(async move {
+                match action {
+                    FileAction::SaveAs => {
+                        save_as(&doc, &window).await;
+                        repaint();
+                    }
+                    FileAction::New | FileAction::Open => {
+                        if !settle_unsaved(&doc, &window).await {
+                            repaint();
+                            return;
+                        }
+                        let new = match action {
+                            FileAction::New => Doc::blank().expect("a blank document"),
+                            _ => {
+                                let Some(path) = file::pick_open(&window).await else { return };
+                                match Doc::open(path.clone()) {
+                                    Ok(d) => d,
+                                    Err(e) => {
+                                        doc.borrow_mut().status = Some(format!("{}: {e}", path.display()));
+                                        repaint();
+                                        return;
+                                    }
+                                }
+                            }
+                        };
+                        install(new);
+                    }
+                }
+            });
+        })
+    };
+
     // The keyboard, from winit — see `keys.rs` for why not `onkeydown`.
-    let mut on_key = {
+    let on_key = {
         let doc = doc.clone();
         let mut repaint = repaint.clone();
         let goal = goal.clone();
         let composer = composer.clone();
         let caret_at = caret_at.clone();
         let (find, mut run_find) = (find.clone(), run_find.clone());
+        let files = files.clone();
         move |key: Key, code: Code, mods: Modifiers| {
             composer.borrow_mut().settle(&mut doc.borrow_mut());
             // Typing goes to the find bar while it has focus; a key it does
@@ -520,6 +607,12 @@ fn App() -> Element {
             let changed = match action {
                 Action::Ignored => return,
                 Action::Handled => true,
+                // ⌘S on a document with no file yet is a Save As, and only
+                // the editor has a dialog to ask with.
+                Action::Host(Host::Save) if doc.borrow().is_untitled() => {
+                    files(FileAction::SaveAs);
+                    return;
+                }
                 Action::Host(h) => host::run(&mut doc.borrow_mut(), h),
                 Action::Vertical { down, extend } => {
                     vertical(down, extend);
@@ -638,6 +731,37 @@ fn App() -> Element {
             ime_area();
         }
     };
+    // Shared: the window's keys and the menu bar's items both press it.
+    let on_key: Rc<RefCell<dyn FnMut(Key, Code, Modifiers)>> = Rc::new(RefCell::new(on_key));
+
+    // The menu bar, installed once; a task takes what its items ask for. muda
+    // queues each choice, and a shortcut that names an item is the item's —
+    // macOS gives it to the menu before the view — so this is also where most
+    // ⌘ chords now arrive.
+    use_hook({
+        let (on_key, files, ime_area) = (on_key.clone(), files.clone(), ime_area.clone());
+        move || {
+            let menu = menu::install();
+            spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    while let Some(command) = menu.next() {
+                        trace(|| format!("menu {command:?}"));
+                        match command {
+                            MenuCommand::Chord(key, code, mods) => {
+                                (on_key.borrow_mut())(key, code, mods);
+                                ime_area();
+                            }
+                            MenuCommand::New => files(FileAction::New),
+                            MenuCommand::Open => files(FileAction::Open),
+                            MenuCommand::SaveAs => files(FileAction::SaveAs),
+                        }
+                    }
+                }
+            });
+        }
+    });
+
     let mut mods = winit::keyboard::ModifiersState::empty();
     dioxus_native::use_window_event({
         let mut repaint = repaint.clone();
@@ -664,7 +788,7 @@ fn App() -> Element {
             WindowEvent::Occluded(o) => trace(|| format!("occluded {o}")),
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Some((key, code, m)) = keys::pressed(event, mods) {
-                    on_key(key, code, m);
+                    (on_key.borrow_mut())(key, code, m);
                     ime_area();
                 }
             }
@@ -828,6 +952,45 @@ fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer, row: usize, co
                 Some(p) if (p.row, p.col) == (row, col) || p.count > 1 => {}
                 _ => doc.click(row, col, true),
             }
+        }
+    }
+}
+
+/// What a file command does.
+#[derive(Clone, Copy, Debug)]
+enum FileAction {
+    New,
+    Open,
+    SaveAs,
+}
+
+/// Name a file for the document and save it there; answers whether it saved.
+async fn save_as(doc: &Rc<RefCell<Doc>>, window: &Arc<dyn winit::window::Window>) -> bool {
+    let name = match doc.borrow().is_untitled() {
+        true => "Untitled.md".to_owned(),
+        false => doc.borrow().file_name(),
+    };
+    let Some(path) = file::pick_save(window, &name).await else { return false };
+    let mut d = doc.borrow_mut();
+    d.save_as(path);
+    !d.dirty
+}
+
+/// Before the document is replaced: save it, drop its changes, or stay —
+/// answers whether to go ahead.
+async fn settle_unsaved(doc: &Rc<RefCell<Doc>>, window: &Arc<dyn winit::window::Window>) -> bool {
+    if !doc.borrow().dirty {
+        return true;
+    }
+    let name = doc.borrow().file_name();
+    match file::ask_unsaved(window, &name).await {
+        Unsaved::Discard => true,
+        Unsaved::Cancel => false,
+        Unsaved::Save if doc.borrow().is_untitled() => save_as(doc, window).await,
+        Unsaved::Save => {
+            let mut d = doc.borrow_mut();
+            d.save();
+            !d.dirty
         }
     }
 }
