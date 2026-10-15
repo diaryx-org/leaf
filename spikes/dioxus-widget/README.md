@@ -476,12 +476,31 @@ on an edited document asking, Don't Save, and an untitled empty document.
 Not handled yet: closing the window with unsaved changes quits without
 asking.
 
-**Still not at parity**, all frontend work: dictation, tables, images, math and Mermaid drawn as pictures rather than as
+### Tables as a grid
+
+`native-alpha/src/table.rs` draws a table from core's `TableInfo` — each
+cell's glyphs with their source offsets and styles, its range and alignment,
+which rows are the head — instead of the map's box-drawn monospace picture.
+Columns are as wide as their widest cell and squeezed only when the grid will
+not fit, cells wrapping into what is left (leaf-gpui's rule). Every cell is a
+`RowView` laid out by `text.rs` at its column's width and aligned in it, so a
+cell wraps, draws its caret and selection, and hit-tests like any other text:
+a click lands on the glyph under it and that glyph's source offset, never a
+column of the picture. A table's picture rows stay in the row list at zero
+height, so row indices still match core's map; the first stands for the grid.
+↑/↓ in a table are core's `cell_move_vertical`, which lands with the cell
+selected, as in the Swift editor. A quote's gutter is drawn on every grid
+row, as the picture does.
+
+Checked on macOS: alignment (`:---`, `---:`), a wrapping cell, a bold shaded
+head, a table in a quote; a click into a word in a cell, typing there, ↓ to
+the cell below, and the source saved as expected.
+
+**Still not at parity**, all frontend work: dictation, images, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, spellcheck and
 autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a
 toolbar, Save As / New / Open, settings and dark mode, print and PDF,
-accessibility. Tables are core's box-drawn picture, kept monospace so it
-still lines up, rather than a drawn grid.
+accessibility.
 
 ## The verdict
 

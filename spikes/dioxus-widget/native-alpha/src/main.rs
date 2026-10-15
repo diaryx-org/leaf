@@ -31,6 +31,7 @@ mod keys;
 mod menu;
 mod row;
 mod source;
+mod table;
 mod text;
 mod viewport;
 
@@ -61,8 +62,10 @@ use crate::input::Host;
 use crate::menu::Command as MenuCommand;
 use crate::ime::Composer;
 use crate::input::{Action, FindCommand, apply_key};
-use crate::row::{LayoutHandle, Pointer, PointerSink, Row};
+use crate::row::{LayoutHandle, Pointer, PointerSink, Row, TableBlock, Target};
+use crate::table::Block;
 use crate::source::SourceRows;
+use crate::table::{PAD_X, PAD_Y};
 use crate::text::{BODY, Fonts, Kind, MONO, SIZE};
 use crate::viewport::{LINE, Layout};
 
@@ -99,6 +102,16 @@ body {{ position: relative; }}
 .leaf .row.source .g {{ font-size: 1em; vertical-align: baseline; }}
 .leaf .line {{ min-height: 1.5em; }}
 .leaf .ime {{ text-decoration: underline; text-decoration-color: #1a73e8; }}
+.leaf .table {{ box-sizing: border-box; }}
+.leaf .trow {{ display: flex; box-sizing: border-box; }}
+.leaf .trow.head .tcell {{ background: #f6f8fa; }}
+.leaf .trow:first-child .tcell {{ border-top: 1px solid #d0d7de; }}
+.leaf .tprefix {{ flex: none; white-space: pre; }}
+.leaf .tcell {{ flex: none; box-sizing: border-box; padding: {PAD_Y}px {PAD_X}px;
+                border-right: 1px solid #d0d7de; border-bottom: 1px solid #d0d7de; }}
+.leaf .tprefix + .tcell {{ border-left: 1px solid #d0d7de; }}
+.leaf .tcell.center {{ text-align: center; }}
+.leaf .tcell.end {{ text-align: right; }}
 {REST}"
     )
 }
@@ -234,6 +247,9 @@ fn App() -> Element {
     let mut rows = use_signal(Vec::<RowHandle>::new);
     let mut lays = use_signal(Vec::<LayoutHandle>::new);
     let mut row_kinds = use_signal(Vec::<Kind>::new);
+    // The tables drawn as grids, and last frame's for reuse.
+    let mut tables = use_signal(Vec::<Block>::new);
+    let table_cache = use_hook(|| Rc::new(RefCell::new(Vec::<Block>::new())));
     let mut layout = use_signal(Layout::default);
     let mut status = use_signal(String::new);
     // The viewport: how far down the document it starts, how tall it is, and
@@ -262,6 +278,7 @@ fn App() -> Element {
         let (doc, frame, fonts, cache) = (doc.clone(), frame.clone(), fonts.clone(), cache.clone());
         let (composer, srows, shown) = (composer.clone(), srows.clone(), shown.clone());
         let (window, title) = (window.clone(), title.clone());
+        let table_cache = table_cache.clone();
         move || -> Option<usize> {
             let t0 = Instant::now();
             let mut doc = doc.borrow_mut();
@@ -342,7 +359,52 @@ fn App() -> Element {
             cache.width = w;
             let t2 = Instant::now();
 
-            layout.set(Layout::of(row_lays.iter().map(|l| l.0.height as f64)));
+            // Each table as a grid in place of its picture: the first of its
+            // rows stands for the whole table, the rest draw nothing. A table
+            // whose view and width are as they were keeps its layout.
+            let blocks: Vec<Block> = match doc.view {
+                View::Source => Vec::new(),
+                View::Wysiwyg => {
+                    let mut cache = table_cache.borrow_mut();
+                    let old = std::mem::take(&mut *cache);
+                    let sel = doc.selection();
+                    let blocks: Vec<Block> = doc
+                        .vmap
+                        .tables
+                        .iter()
+                        .map(|t| {
+                            let view = table::view_of(t, caret, sel, composer.marked());
+                            match old.iter().find(|b| *b.view == view && b.layout_width == w) {
+                                Some(b) => Block { first: t.rows_span.start, rows: t.rows_span.clone(), ..b.clone() },
+                                None => {
+                                    let layout = table::layout(&mut fonts, &view, w);
+                                    Block {
+                                        first: t.rows_span.start,
+                                        rows: t.rows_span.clone(),
+                                        view: Rc::new(view),
+                                        layout: Rc::new(layout),
+                                        layout_width: w,
+                                    }
+                                }
+                            }
+                        })
+                        .collect();
+                    *cache = blocks.clone();
+                    blocks
+                }
+            };
+            let mut heights: Vec<f64> = row_lays.iter().map(|l| l.0.height as f64).collect();
+            for b in &blocks {
+                for r in b.rows.clone() {
+                    if let Some(h) = heights.get_mut(r) {
+                        *h = if r == b.first { b.layout.height as f64 } else { 0.0 };
+                    }
+                }
+            }
+            layout.set(Layout::of(heights.into_iter()));
+            if *tables.peek() != blocks {
+                tables.set(blocks);
+            }
             rows.set(handles);
             lays.set(row_lays);
             row_kinds.set(kinds);
@@ -420,14 +482,33 @@ fn App() -> Element {
                         bar.set(BarView::of(&mut f, &doc.borrow()));
                     }
                 }
-                let (row, line, x) = match p {
-                    Pointer::Press { row, line, x, .. } | Pointer::Drag { row, line, x } => (row, line, x),
+                let (at, line, x) = match p {
+                    Pointer::Press { at, line, x, .. } | Pointer::Drag { at, line, x } => (at, line, x),
                 };
-                let Some(col) = lays.peek().get(row).map(|l| l.0.col_at(line, x)) else {
-                    return;
+                let (row, key, spot) = match at {
+                    Target::Row(row) => {
+                        let Some(col) = lays.peek().get(row).map(|l| l.0.col_at(line, x)) else {
+                            return;
+                        };
+                        (row, col, Spot::Pos(row, col))
+                    }
+                    // A cell's lines are its own layout's; the glyph under the
+                    // pointer names its source offset directly.
+                    Target::Cell { first, r, c } => {
+                        let tables = tables.peek();
+                        let Some(b) = tables.iter().find(|b| b.first == first) else { return };
+                        let (Some(cell), Some(Some(cl))) =
+                            (b.view.rows[r].cells.get(c), b.layout.rows[r].cells.get(c))
+                        else {
+                            return;
+                        };
+                        let text: String = cell.view.runs.iter().map(|r| r.text.as_str()).collect();
+                        let off = cell.offset(text::byte_of_col(&text, cl.col_at(line, x)));
+                        (first, off, Spot::Offset(off))
+                    }
                 };
-                pointer(&mut doc.borrow_mut(), &last_press, p, row, col);
-                trace(|| format!("{p:?} -> col {col}, caret {} anchor {:?}", doc.borrow().caret, doc.borrow().anchor));
+                pointer(&mut doc.borrow_mut(), &last_press, p, row, key, spot);
+                trace(|| format!("{p:?} -> {spot:?}, caret {} anchor {:?}", doc.borrow().caret, doc.borrow().anchor));
                 (repaint.clone())();
             }))
         }
@@ -452,6 +533,12 @@ fn App() -> Element {
     let vertical = {
         let (doc, goal, caret_at) = (doc.clone(), goal.clone(), caret_at.clone());
         move |down: bool, extend: bool| {
+            // In a table, up and down are core's: to the cell above or below,
+            // in the same column — falling through at the grid's edge.
+            if !extend && doc.borrow_mut().caret_in_table() && doc.borrow_mut().cell_move_vertical(down) {
+                goal.set(None);
+                return;
+            }
             let Some((row, line, x)) = caret_at() else { return };
             let aim = goal.get().unwrap_or(x);
             let lays = lays.peek();
@@ -817,6 +904,7 @@ fn App() -> Element {
     let rows = rows.read();
     let lays = lays.read();
     let row_kinds = row_kinds.read();
+    let tables = tables.read();
     let column = *width.read() + 2.0 * row::PAD as f32;
     // The find bar's buttons and fields.
     let on_bar = {
@@ -869,7 +957,12 @@ fn App() -> Element {
             onclick: move |e: MouseEvent| e.prevent_default(),
             div { style: "height: 0; margin-top: {shift}px" }
             for i in first..last {
-                Row { key: "{i}", index: i, row: rows[i].clone(), layout: lays[i].clone(), kind: row_kinds[i] }
+                match tables.iter().find(|b| b.rows.contains(&i)) {
+                    Some(b) if b.first == i => rsx! { TableBlock { key: "{i}", block: b.clone() } },
+                    // A table's other picture rows: the grid stands for them.
+                    Some(_) => rsx! {},
+                    None => rsx! { Row { key: "{i}", index: i, row: rows[i].clone(), layout: lays[i].clone(), kind: row_kinds[i] } },
+                }
             }
             // Room under the last row, as a page has, so there is somewhere
             // to click past the end.
@@ -907,11 +1000,29 @@ fn App() -> Element {
     }
 }
 
-/// Apply a pointer gesture at a resolved (row, column): a press places the
-/// caret, or on a task box ticks it; a second and third press in quick
-/// succession select the word and the block; a drag extends the selection
-/// from wherever the press left it.
-fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer, row: usize, col: usize) {
+/// Where a pointer gesture landed, resolved: a (row, column) of the view, or
+/// — in a table cell, drawn from `TableInfo` rather than the map's rows — the
+/// source offset of the glyph under it.
+#[derive(Clone, Copy, Debug)]
+enum Spot {
+    Pos(usize, usize),
+    Offset(usize),
+}
+
+/// Apply a pointer gesture at a resolved spot: a press places the caret, or
+/// on a task box ticks it; a second and third press in quick succession
+/// select the word and the block; a drag extends the selection from wherever
+/// the press left it. `row` and `key` identify the spot for counting presses
+/// and noticing that a drag has not moved.
+fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer, row: usize, key: usize, spot: Spot) {
+    let offset = |doc: &Doc| match spot {
+        Spot::Pos(r, c) => offset_at(doc, r, c),
+        Spot::Offset(o) => o,
+    };
+    let place = |doc: &mut Doc, extend: bool| match spot {
+        Spot::Pos(r, c) => doc.click(r, c, extend),
+        Spot::Offset(o) => doc.place_caret(o, extend),
+    };
     match p {
         Pointer::Press { extend, .. } => {
             let now = Instant::now();
@@ -919,11 +1030,12 @@ fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer, row: usize, co
                 Some(l) if !extend && l.row == row && now - l.at < MULTI_CLICK => l.count % 3 + 1,
                 _ => 1,
             };
-            last.set(Some(Press { at: now, row, col, count }));
+            last.set(Some(Press { at: now, row, col: key, count }));
             if count == 1
                 && !extend
                 && doc.view == View::Wysiwyg
-                && let Some(offset) = doc.vmap.task_box_at(row, col)
+                && let Spot::Pos(r, c) = spot
+                && let Some(offset) = doc.vmap.task_box_at(r, c)
             {
                 // A tick, not a caret placement: the caret stays where it was,
                 // as it does in the Swift editor.
@@ -932,25 +1044,25 @@ fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer, row: usize, co
             }
             match count {
                 2 => {
-                    let at = offset_at(doc, row, col);
+                    let at = offset(doc);
                     doc.select_word_at(at);
                 }
                 3 => {
-                    let at = offset_at(doc, row, col);
+                    let at = offset(doc);
                     doc.select_block_at(at);
                 }
-                _ => doc.click(row, col, extend),
+                _ => place(doc, extend),
             }
         }
         Pointer::Drag { .. } => {
-            // A move that has not left the pressed column is the hand
-            // settling, not a drag — and would shrink a double-click's word
-            // back to the pointer. A drag after a double- or triple-click
-            // should extend by words or blocks, as Swift's does; until it
-            // does, it is left alone rather than undoing the selection.
+            // A move that has not left the pressed spot is the hand settling,
+            // not a drag — and would shrink a double-click's word back to the
+            // pointer. A drag after a double- or triple-click should extend by
+            // words or blocks, as Swift's does; until it does, it is left
+            // alone rather than undoing the selection.
             match last.get() {
-                Some(p) if (p.row, p.col) == (row, col) || p.count > 1 => {}
-                _ => doc.click(row, col, true),
+                Some(p) if (p.row, p.col) == (row, key) || p.count > 1 => {}
+                _ => place(doc, true),
             }
         }
     }

@@ -22,9 +22,10 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 use dioxus_widget_spike::rows::{Run, RowView};
+pub use parley::Alignment;
 use parley::{
-    Affinity, Cursor, FontContext, FontFamily, FontStyle, FontWeight, Layout, LayoutContext,
-    LineHeight, StyleProperty,
+    AlignmentOptions, Affinity, Cursor, FontContext, FontFamily, FontStyle, FontWeight, Layout,
+    LayoutContext, LineHeight, StyleProperty,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -66,6 +67,12 @@ impl Fonts {
 
     /// Lay one row out `width` pixels wide.
     pub fn layout(&mut self, v: &RowView, width: f32, kind: Kind) -> RowLayout {
+        self.layout_aligned(v, width, kind, Alignment::Start)
+    }
+
+    /// The same, with its lines aligned within `width` — a table cell's
+    /// `:-:` or `--:`.
+    pub fn layout_aligned(&mut self, v: &RowView, width: f32, kind: Kind, align: Alignment) -> RowLayout {
         let split = v.runs.iter().take_while(|r| is_prefix(r)).count();
         let (prefix, body) = v.runs.split_at(split);
         let repeat = prefix.iter().any(|r| has_class(r, "gutter"));
@@ -76,7 +83,10 @@ impl Fonts {
         // that far in.
         let prefix_w = if prefix.is_empty() { 0.0 } else { pre.layout.width() };
         let max = (kind != Kind::Cells).then(|| (width - prefix_w).max(SIZE * 4.0));
-        let body = self.build(body, kind, max);
+        let mut body = self.build(body, kind, max);
+        if align != Alignment::Start && max.is_some() {
+            body.layout.align(align, AlignmentOptions::default());
+        }
 
         let mut lines: Vec<Line> = body
             .layout
@@ -101,7 +111,9 @@ impl Fonts {
             l.height = l.height.max(SIZE * LEADING);
         }
         let height = lines.iter().map(|l| l.height).sum();
+        let width = prefix_w + body.layout.width();
         RowLayout {
+            width,
             prefix_cols: cols(&pre.text),
             prefix_runs: split,
             prefix_w,
@@ -203,6 +215,8 @@ pub struct RowLayout {
     body: Built,
     pub lines: Vec<Line>,
     pub height: f32,
+    /// How wide its widest line draws — a table column's natural width.
+    pub width: f32,
 }
 
 impl RowLayout {

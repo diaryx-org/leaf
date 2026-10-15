@@ -9,6 +9,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use dioxus_widget_spike::rows::{RowHandle, RowView, Run};
 
+use crate::table::{AlignKind, BORDER, Block};
 use crate::text::{Kind, RowLayout, byte_of_col};
 
 /// The document's left edge in the window, in CSS pixels: `body` has no
@@ -16,15 +17,24 @@ use crate::text::{Kind, RowLayout, byte_of_col};
 /// click's client x less this is its x within a row.
 pub const PAD: f64 = 16.0;
 
-/// What the pointer did on a row: at visual line `line`, `x` CSS pixels from
-/// the row's left edge. The editor turns that into a column through the row's
-/// [`RowLayout`], which is the only thing that knows where the glyphs are.
+/// What a line belongs to: a row, or a cell of the table whose first row is
+/// `first`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Target {
+    Row(usize),
+    Cell { first: usize, r: usize, c: usize },
+}
+
+/// What the pointer did on a line: at visual line `line` of `at`, `x` CSS
+/// pixels from the start of its text. The editor turns that into a position
+/// through the row's or the cell's [`RowLayout`], which is the only thing that
+/// knows where the glyphs are.
 #[derive(Clone, Copy, Debug)]
 pub enum Pointer {
     /// The button went down; ⇧ extends the selection.
-    Press { row: usize, line: usize, x: f32, extend: bool },
+    Press { at: Target, line: usize, x: f32, extend: bool },
     /// It moved with the button held: a drag-select.
-    Drag { row: usize, line: usize, x: f32 },
+    Drag { at: Target, line: usize, x: f32 },
 }
 
 /// Where a row sends what the pointer did on it. A context rather than a prop
@@ -79,14 +89,16 @@ pub fn Row(props: RowProps) -> Element {
     rsx! {
         div { class,
             for (n, segs) in lines.into_iter().enumerate() {
-                Line { sink: sink.clone(), row: index, line: n, indent: if n > 0 && !lay.repeat { indent } else { 0.0 }, segs }
+                Line { sink: sink.clone(), at: Target::Row(index), origin: PAD, line: n, indent: if n > 0 && !lay.repeat { indent } else { 0.0 }, segs }
             }
         }
     }
 }
 
+/// One visual line. `origin` is where its text starts in the window, for
+/// turning a click's x into one within the text.
 #[component]
-fn Line(sink: PointerSink, row: usize, line: usize, indent: f32, segs: Vec<Seg>) -> Element {
+pub fn Line(sink: PointerSink, at: Target, origin: f64, line: usize, indent: f32, segs: Vec<Seg>) -> Element {
     let drag = sink.clone();
     rsx! {
         // A wrapped list item's lines hang under its text by padding, not by
@@ -95,14 +107,14 @@ fn Line(sink: PointerSink, row: usize, line: usize, indent: f32, segs: Vec<Seg>)
         // pixels of width at the start of the line.
         div { class: "line", style: "padding-left: {indent}px",
             onmousedown: move |e: MouseEvent| {
-                let x = (e.client_coordinates().x - PAD) as f32;
+                let x = (e.client_coordinates().x - origin) as f32;
                 let extend = e.modifiers().contains(Modifiers::SHIFT);
-                (sink.0)(Pointer::Press { row, line, x, extend });
+                (sink.0)(Pointer::Press { at, line, x, extend });
             },
             onmousemove: move |e: MouseEvent| {
                 if e.held_buttons().contains(MouseButton::Primary) {
-                    let x = (e.client_coordinates().x - PAD) as f32;
-                    (drag.0)(Pointer::Drag { row, line, x });
+                    let x = (e.client_coordinates().x - origin) as f32;
+                    (drag.0)(Pointer::Drag { at, line, x });
                 }
             },
             for seg in segs {
@@ -135,7 +147,7 @@ impl Seg {
 /// the first paint and not when a later frame inserts it, and which is exact
 /// only in a monospace row. Inline, it sits after the glyph it follows in any
 /// font, at any size.
-fn lines(v: &RowView, lay: &RowLayout) -> Vec<Vec<Seg>> {
+pub fn lines(v: &RowView, lay: &RowLayout) -> Vec<Vec<Seg>> {
     let (prefix, body) = v.runs.split_at(lay.prefix_runs.min(v.runs.len()));
     let caret = v.caret_col;
 
@@ -242,3 +254,57 @@ mod tests {
     }
 }
 
+
+/// A table, drawn as a grid from core's `TableInfo` (see `table.rs`) in place
+/// of the box-drawn rows that spell it. Memoized like a row: a table whose
+/// view and layout did not change is not rendered again.
+#[component]
+pub fn TableBlock(block: Block) -> Element {
+    let sink = use_context::<PointerSink>();
+    let (v, l) = (&*block.view, &*block.layout);
+    let first = block.first;
+    let prefix = lines(&v.prefix, &l.prefix).into_iter().next().unwrap_or_default();
+    let heights: Vec<f32> =
+        l.rows.iter().enumerate().map(|(r, g)| g.height + if r == 0 { BORDER } else { 0.0 }).collect();
+    rsx! {
+        div { class: "table", style: "height: {l.height}px",
+            for (r, row) in v.rows.iter().enumerate() {
+                // The first row carries the table's top border, on its cells
+                // so it starts where the grid does, past a quote's gutter.
+                div { class: if row.head { "trow head" } else { "trow" },
+                    style: "height: {heights[r]}px",
+                    span { class: "tprefix", style: "width: {l.indent}px",
+                        for seg in prefix.clone() {
+                            match seg {
+                                Seg::Text(class, text) => rsx! { span { class, "{text}" } },
+                                Seg::Caret => rsx! { span { class: "caret-in" } },
+                            }
+                        }
+                    }
+                    for c in 0..l.cols.len() {
+                        div {
+                            class: match row.cells.get(c).map(|x| x.align) {
+                                Some(AlignKind::Center) => "tcell center",
+                                Some(AlignKind::End) => "tcell end",
+                                _ => "tcell",
+                            },
+                            style: "width: {l.cols[c]}px",
+                            if let (Some(cell), Some(Some(cl))) = (row.cells.get(c), l.rows[r].cells.get(c)) {
+                                for (n, segs) in lines(&cell.view, cl).into_iter().enumerate() {
+                                    Line {
+                                        sink: sink.clone(),
+                                        at: Target::Cell { first, r, c },
+                                        origin: PAD + l.text_left(c) as f64,
+                                        line: n,
+                                        indent: 0.0,
+                                        segs,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
