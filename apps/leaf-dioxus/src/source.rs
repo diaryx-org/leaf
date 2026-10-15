@@ -5,11 +5,11 @@
 //! `SourceMap`: styled byte ranges over the source, read off the same parse the
 //! caret rides, so a heading's `# ` is a delimiter and a fence's body keeps its
 //! syntax colours. What a frontend owns is turning those into rows, as
-//! leaf-gpui's `gather_logical` does; this is that, as the parent crate's
+//! leaf-gpui's `gather_logical` does; this is that, as the bridge's
 //! `RowView`s, so the rest of the editor — layout, rendering, hit-testing,
 //! the caret — does not know which view it is drawing.
 //!
-//! There is no `VisualMap` here for the parent's `Frame` to diff, so rows are
+//! There is no `VisualMap` here for the bridge's `Frame` to diff, so rows are
 //! reused by *content*: a line that draws the same as some line last frame
 //! keeps that line's handle, so a Return relays out the line it split, not
 //! every line below it.
@@ -17,8 +17,8 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use dioxus_widget_spike::rows::{RowHandle, RowView, Run};
-use dioxus_widget_spike::style::class_of;
+use crate::bridge::rows::{RowHandle, RowView, Run};
+use crate::bridge::style::class_of;
 use leaf_core::{Doc, Style};
 
 use crate::text::cols;

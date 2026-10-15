@@ -1,15 +1,17 @@
-# The experimental native backend, in a workspace of its own because it cannot
-# share the parent's: `dioxus-native` is published only for 0.8.0-alpha.2, and
-# a 0.8 `Element` is not a 0.7 `Element`. So this crate pins the alpha, and
-# reuses the parent for everything that is not a Dioxus type — `style`, `rows`
-# and `frame`, through `default-features = false`.
+# Leaf on Dioxus's native renderer (Blitz): the same document and rows as
+# every other frontend, drawn by an HTML/CSS engine on wgpu, with no webview.
 #
-# Blitz draws through wgpu rather than a webview: the same component tree, the
-# same document, no HTML engine. It is the third screenshot in ../README.md.
+# A workspace of its own, like apps/leaf: `dioxus-native` is published only
+# as 0.8.0-alpha.2, which pins a winit beta and a large wgpu tree that
+# nothing in leaf's root workspace should resolve, and its winit backend is
+# patched below — a [patch] applies only at the root of the workspace that
+# has it. Build it by manifest:
+#
+#     cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- document.md
 [workspace]
 
 [package]
-name = "dioxus-native-spike"
+name = "leaf-dioxus"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -30,11 +32,9 @@ dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features 
     "accessibility", "net", "html", "svg", "system-fonts", "clipboard", "file-dialog",
     "woff", "text-transform-icu", "apple-font-embolden", "vello",
 ] }
-# The bridge, with the parent's own Dioxus (0.7.10) switched off.
-dioxus-widget-spike = { path = "..", default-features = false }
 # `fs` on, unlike the parent's widget: this is an app with a file to open and
 # save, which is what `Doc::open` and `Doc::save` are.
-leaf-core = { path = "../../../crates/leaf-core", default-features = false, features = [
+leaf-core = { path = "../../crates/leaf-core", default-features = false, features = [
     "fs",
     "syntax",
 ] }
@@ -83,11 +83,12 @@ dispatch2 = "0.3"
 # composition, which is how the emoji picker inserts.
 #
 # An exception to the org rule against [patch] in a tracked manifest, granted
-# by Adam on 2026-10-15 for this spike workspace only. The rule keeps each org
-# crate spelled one way in every manifest; this patches a third-party crate,
-# vendored inside the repository, in a workspace nothing depends on — and
-# winit-appkit reaches the spike only transitively (dioxus-native →
-# blitz-shell → winit), which nothing but [patch] can override. It goes when
-# the change lands upstream (PATCH.md, "Upstream") and Blitz takes that winit.
+# by Adam on 2026-10-15 for the spike this app began as, and kept when it was
+# promoted. The rule keeps each org crate spelled one way in every manifest;
+# this patches a third-party crate, vendored inside the repository, in a
+# workspace nothing depends on — and winit-appkit reaches the app only
+# transitively (dioxus-native → blitz-shell → winit), which nothing but
+# [patch] can override. It goes when the change lands upstream (PATCH.md,
+# "Upstream") and Blitz takes that winit.
 [patch.crates-io]
 winit-appkit = { path = "patches/winit-appkit" }

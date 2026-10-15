@@ -69,3 +69,10 @@ job
 > > id = package-isolation
 > > name = Package isolation
 > > run = cargo xtask package-isolation
+> *
+> > # The Dioxus app, a workspace of its own (an alpha Dioxus, and a patched
+> > # winit), so nothing above reaches it. Last because it compiles Blitz and
+> > # wgpu: the slowest job, and the least likely to be the one that fails.
+> > id = dioxus
+> > name = Dioxus app
+> > run = cargo fmt --manifest-path apps/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path apps/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/leaf-dioxus/Cargo.toml

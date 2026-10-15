@@ -421,9 +421,7 @@ mod tests {
 
     #[test]
     fn typing_in_the_query_searches() {
-        let mut f = Find::default();
-        f.open = true;
-        f.focus = Focus::Query;
+        let mut f = Find { open: true, focus: Focus::Query, ..Find::default() };
         assert_eq!(f.key(&Key::Character("x".into()), Modifiers::empty()), Outcome::Searched);
         assert_eq!(f.query.text, "x");
         assert_eq!(f.key(&Key::Backspace, Modifiers::empty()), Outcome::Searched);

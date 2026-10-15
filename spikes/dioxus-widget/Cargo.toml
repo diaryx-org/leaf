@@ -15,9 +15,10 @@ default = ["widget"]
 # The Dioxus components. Optional, and not because a consumer would turn them
 # off to save weight: `style`, `rows` and `frame` — the whole bridge from
 # leaf's rows to a virtual DOM's nodes — touch no Dioxus type at all, and
-# gating the components proves it. It is what lets `native-alpha/` reuse this
+# gating the components proves it. It is what let `native-alpha/` reuse this
 # crate while pinning a different, incompatible Dioxus (0.8.0-alpha.2, the only
-# line `dioxus-native` is published for).
+# line `dioxus-native` is published for) — since promoted to apps/leaf-dioxus,
+# which carries a copy of the three.
 widget = ["dep:dioxus"]
 # The web build, measured in README.md's "The web" section. Off by default so
 # the headless bench (the part that runs anywhere) doesn't drag in dioxus-web.

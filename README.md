@@ -52,6 +52,7 @@ clipboard, and file I/O.
 | [`leaf-tui`](apps/leaf-tui) | the terminal editor (binary `leaf`) — a thin host around `leaf-ratatui` wiring a terminal, clipboard, and dialogs. The workspace default `cargo run`. |
 | [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. A standalone workspace, like `leaf-ios`. |
 | [`leaf-ios`](apps/leaf-ios) | the gpui iOS host — **archived**; see its [README](apps/leaf-ios/README.md). leaf on iOS is `leaf-swift`. |
+| [`leaf-dioxus`](apps/leaf-dioxus) | Leaf on Dioxus's native renderer (`dioxus-native`, Blitz on wgpu, no webview), working toward `leaf-editor`'s features: proportional text, IME, find and replace, the source view, tables as a grid, images, a menu bar, settings and dark mode. Run on macOS. A standalone workspace, since `dioxus-native` is an alpha and its macOS winit backend is vendored and patched. |
 | [`leaf-editor`](apps/leaf-editor) | **Leaf**, the macOS + iOS document app (`Leaf.app`, `org.diaryx.leaf`), consuming `packages/leaf-swift`. Opens, edits and saves `.md`, `.dj` and `.html` through the document system — Finder's Open With, autosave, Versions, the Files app — with an icon, a Settings window, and Export as PDF. |
 | [`leaf-android`](apps/leaf-android) | **Leaf** for Android (`org.diaryx.leaf`), consuming `packages/leaf-android`. Opens, edits and autosaves `.md`, `.dj` and `.html` through the Storage Access Framework and Open With, with the rendered/source toggle and a formatting bar over the keyboard. |
 | [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. Published from each release tag at **<https://diaryx-org.github.io/leaf/>** by [`pages.yml`](.github/workflows/pages.yml). |
@@ -60,9 +61,10 @@ clipboard, and file I/O.
 cargo run -- path/to/document.md            # the TUI (workspace default)
 cargo run -- --width 100 path/to/document.md # centered 100-column document
 
-# The GUI is its own workspace (see `exclude` in Cargo.toml), so it is reached
-# by manifest rather than by `-p`:
+# The GUI and the Dioxus app are their own workspaces, so they are reached by
+# manifest rather than by `-p`:
 cargo run --manifest-path apps/leaf/Cargo.toml -- path/to/document.md
+cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- path/to/document.md
 ```
 
 The other frontends aren't a `cargo run` away — the Apple app is a Rust

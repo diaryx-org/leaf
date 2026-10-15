@@ -168,7 +168,7 @@ impl Settings {
     pub fn to_toml(&self) -> String {
         let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
         format!(
-            "# The native editor spike's display choices; see settings.rs.\n\
+            "# leaf-dioxus's display choices; see settings.rs.\n\
              body_font = {}\ncode_font = {}\ntext_size = {}\nline_spacing = {}\ncolumn_width = {}\nappearance = {}\n",
             q(&self.body),
             q(&self.mono),
@@ -247,7 +247,7 @@ pub fn path() -> Option<PathBuf> {
     } else {
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config"))
     };
-    Some(dir.join("leaf-native-spike/settings.toml"))
+    Some(dir.join("leaf-dioxus/settings.toml"))
 }
 
 /// The text zoom's steps: a browser's, which a reader already knows.

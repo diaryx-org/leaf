@@ -1,7 +1,6 @@
 //! A key to a [`Doc`] edit, with the Swift editor's bindings.
 //!
-//! The parent's `src/input.rs` is the minimum a keystroke needs; this is the
-//! keyboard `apps/leaf-editor` ships (its `LeafTextView` and the menus in
+//! The keyboard `apps/leaf-editor` ships (its `LeafTextView` and the menus in
 //! `EditorCommands.swift`), mapped onto the same `Doc` calls Swift makes
 //! through leaf-ffi. Every edit is core's, so a binding here is a line, not a
 //! feature: what a frontend owns is only which chord means what.
@@ -123,6 +122,7 @@ const CMD: Modifiers = Modifiers::CONTROL;
 /// `shift` extends the selection on every motion, which is why each motion
 /// passes it rather than branching on it: core's caret API takes `extend` for
 /// exactly this.
+#[expect(clippy::unit_arg, reason = "`done(doc.edit())` reads as one step: do it, and it was handled")]
 pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Action {
     let shift = mods.contains(Modifiers::SHIFT);
     let alt = mods.contains(Modifiers::ALT);
@@ -191,6 +191,7 @@ pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Actio
 }
 
 /// ⌘ chords: the Edit and Format menus.
+#[expect(clippy::unit_arg, reason = "`done(doc.edit())` reads as one step: do it, and it was handled")]
 fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Action {
     let done = |_: ()| Action::Handled;
     // The physical keys first, which ⇧ would otherwise rename.
@@ -282,6 +283,7 @@ fn letter_of(code: Code) -> Option<char> {
 /// Cocoa text views honour. ⌃A and ⌃E are the *paragraph's* ends, which in an
 /// unwrapped row are core's own `move_home`/`move_end`; ⌃N and ⌃P are visual
 /// lines, like the arrows.
+#[expect(clippy::unit_arg, reason = "`done(doc.edit())` reads as one step: do it, and it was handled")]
 fn control(doc: &mut Doc, key: &Key, code: Code, shift: bool) -> Action {
     let done = |_: ()| Action::Handled;
     let level = match code {

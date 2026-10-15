@@ -1,7 +1,8 @@
-//! Proportional text: README.md's "What it would take", item 4.
+//! Proportional text: `spikes/dioxus-widget/README.md`'s "What it would
+//! take", item 4.
 //!
-//! The rest of the spike is monospace because its caret was one node at
-//! `left: Nch`. The caret is now inline (see `row.rs`), which places it after
+//! The spike drew monospace because its caret was one node at `left: Nch`.
+//! The caret here is inline (see `row.rs`), which places it after
 //! the right glyph in any font, so what proportional text still needs is what
 //! the Swift editor does with CTTypesetter: wrap each block at a *pixel*
 //! width, and map a click's x back to a column.
@@ -21,7 +22,7 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use dioxus_widget_spike::rows::{Run, RowView};
+use crate::bridge::rows::{Run, RowView};
 pub use parley::Alignment;
 use parley::{
     AlignmentOptions, Affinity, Cursor, FontContext, FontFamily, FontStyle, FontWeight, Layout,

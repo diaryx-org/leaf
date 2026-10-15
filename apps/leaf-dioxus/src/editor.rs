@@ -21,8 +21,8 @@ use std::time::Instant;
 
 use dioxus::prelude::*;
 use dioxus_native::winit::window::Window;
-use dioxus_widget_spike::frame::Frame;
-use dioxus_widget_spike::rows::{Marks, RowHandle, RowView};
+use crate::bridge::frame::Frame;
+use crate::bridge::rows::{Marks, RowHandle, RowView};
 use leaf_core::{Doc, View};
 
 use crate::blocks::{self, Block};

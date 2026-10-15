@@ -10,21 +10,20 @@ created: 2026-10-15
 ## Status
 
 `draft`, 2026-10-15. Written with the session porting Diaryx to Dioxus on iOS,
-after both found winit needed patching. Nothing here is pushed or sent:
-pushing leaf, opening the upstream PR, and the diaryx exception are Adam's to
-approve.
+after both found winit needed patching. What Adam has decided is under
+"Decisions"; nothing has been sent upstream.
 
 ## Where it stands
 
 Two Dioxus efforts each vendor a winit backend at **0.31.0-beta.3**, the version
 dioxus-native 0.8.0-alpha.2 pins, and swap it in with `[patch.crates-io]`:
 
-| | leaf's native spike | diaryx's iOS spike |
+| | leaf's Dioxus app | diaryx's iOS spike |
 |---|---|---|
 | Backend | `winit-appkit` (macOS) | `winit-uikit` (iOS) |
 | What | the text input client answers from surrounding text: press-and-hold accents, the emoji picker and dictation | rust-windowing/winit#4723 verbatim, "ios: support the UIScene lifecycle" — without it iOS 27 refuses an app built with the iOS 27 SDK |
-| Where | `spikes/dioxus-widget/native-alpha/patches/winit-appkit` in leaf (public) | `spikes/dioxus-ios/patches/winit-uikit` on diaryx's `spike/dioxus-ios` (private, unpushed) |
-| `[patch]` | an exception Adam granted for this spike, 2026-10-15 | not yet approved |
+| Where | `apps/leaf-dioxus/patches/winit-appkit` in leaf (public) | `spikes/dioxus-ios/patches/winit-uikit` on diaryx's `spike/dioxus-ios` (private) |
+| `[patch]` | an exception Adam granted for the spike, 2026-10-15, kept when it became `apps/leaf-dioxus` | an exception Adam granted for that spike, 2026-10-15 |
 | Upstream | prepared as a PR, not sent: `patches/winit-appkit/upstream/PR.md` | #4723 is open and mergeable, not on winit's master |
 
 The two touch different crates, so they do not conflict. `[patch]` is the only
@@ -35,18 +34,17 @@ blitz-shell → winit, and no fork short of that whole chain avoids it.
 
 1. **One home for the patched backends: leaf.** leaf is public and diaryx
    private, and code may only move from public to private, so a copy both use
-   lives in leaf. Move both vendored crates to `spikes/winit/` (beside the
-   spikes, outside leaf's root workspace) — `winit-appkit` as it is, and
-   `winit-uikit` with #4723 applied, which is winit's MIT/Apache code and
-   already public. Each keeps a `PATCH.md` saying what changed, from where,
-   and when it goes.
-2. **Both spikes take them from there.** leaf's spike by path. diaryx's by
-   git, as the org spells a leaf dependency:
+   lives in leaf. Both vendored crates go to a `patches/` directory at leaf's
+   root, outside its root workspace — `winit-appkit` from
+   `apps/leaf-dioxus/patches/`, and `winit-uikit` with #4723 applied, which is
+   winit's MIT/Apache code and already public. Each keeps a `PATCH.md` saying
+   what changed, from where, and when it goes.
+2. **Both take them from there.** `apps/leaf-dioxus` by path. diaryx's spike
+   by git, as the org spells a leaf dependency:
    `[patch.crates-io] winit-uikit = { git = "https://github.com/diaryx-org/leaf", branch = "main" }`
    (and `winit-appkit` the same way, so the diaryx spike gets the macOS fixes
-   too). This needs leaf's `main` pushed — it is 27 commits ahead of `origin`
-   today — and the diaryx `[patch]` approved as the same kind of spike-only
-   exception.
+   too). Its `[patch]` is already an exception, so this changes only where
+   the crate comes from.
 3. **Upstream, one PR per backend.**
    - appkit: the prepared PR (`patches/winit-appkit/upstream/`), redone against
      winit's master, built, linted and tested there. Before it goes:
@@ -77,7 +75,16 @@ blitz-shell → winit, and no fork short of that whole chain avoids it.
 
 ## Decisions for Adam
 
-- Push leaf's `main`, so diaryx can take the shared copy by git.
-- The diaryx spike's `[patch]`, as a spike-only exception like leaf's.
-- Moving the vendored backends to `spikes/winit/` in leaf.
-- Sending the appkit PR, and supporting #4723 upstream.
+Made, 2026-10-15:
+
+- The diaryx spike keeps its winit-uikit `[patch]` as a spike-only exception,
+  like leaf's.
+- The native spike is promoted to a supported app, `apps/leaf-dioxus`, and
+  keeps its `[patch]`.
+- leaf's `main` is pushed, so diaryx can take a shared copy by git.
+- The appkit PR waits: it is not sent yet.
+
+Open:
+
+- Moving the vendored backends to `patches/` at leaf's root.
+- When to send the appkit PR, and supporting #4723 upstream.

@@ -3,7 +3,7 @@
 
 use dioxus::html::geometry::WheelDelta;
 use dioxus::prelude::*;
-use dioxus_widget_spike::style::STYLESHEET;
+use crate::bridge::style::STYLESHEET;
 
 use crate::blocks;
 use crate::editor::Editor;
@@ -15,7 +15,7 @@ use crate::settings::Appearance;
 use crate::text::Type;
 use crate::trace::trace;
 
-/// What this binary adds to the parent's stylesheet: proportional body text
+/// What this binary adds to the bridge's stylesheet: proportional body text
 /// with code and tables in cells, in the type `text.rs` measures with;
 /// `.leaf` as a viewport the editor scrolls itself; a known left edge for
 /// [`row::PAD`]; the inline caret `row.rs` draws; tables; the find bar, the
@@ -64,7 +64,7 @@ body {{ position: relative; }}
 }
 
 /// The window chrome's colours — the status line, the find bar, the settings
-/// panel — beside the document's in the parent's stylesheet, and like them
+/// panel — beside the document's in the bridge's stylesheet, and like them
 /// set once per appearance.
 /// The stylesheet for an appearance. `System` leaves the dark palette to
 /// `prefers-color-scheme`, which Blitz answers from winit's theme. A forced
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn every_colour_is_set_for_both_appearances() {
-        let all = format!("{}{}", dioxus_widget_spike::style::STYLESHEET, css(&Type::default()));
+        let all = format!("{}{}", crate::bridge::style::STYLESHEET, css(&Type::default()));
         let (used, light, dark) = properties(&all);
         assert!(used.len() > 20, "{used:?}");
         assert_eq!(light, dark, "light and dark set different properties");
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn a_forced_appearance_switches_the_dark_block_itself() {
-        let css = dioxus_widget_spike::style::STYLESHEET;
+        let css = crate::bridge::style::STYLESHEET;
         assert_eq!(themed(css, Appearance::System), css);
         let dark = themed(css, Appearance::Dark);
         assert!(dark.contains("@media all") && !dark.contains("prefers-color-scheme"));

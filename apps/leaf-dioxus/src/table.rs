@@ -18,8 +18,8 @@
 
 use std::rc::Rc;
 
-use dioxus_widget_spike::rows::{RowView, Run};
-use dioxus_widget_spike::style::class_of;
+use crate::bridge::rows::{RowView, Run};
+use crate::bridge::style::class_of;
 use leaf_core::{Alignment as Align, Glyph, Style, TableInfo};
 
 use crate::text::{Alignment, Fonts, Kind, RowLayout, cols};

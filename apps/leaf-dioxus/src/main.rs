@@ -1,16 +1,16 @@
-//! The same leaf rows through Dioxus's **experimental native backend**
+//! Leaf on Dioxus's **native backend**
 //! (`dioxus-native` 0.8.0-alpha.2, Blitz): an HTML/CSS renderer on wgpu, with
 //! no webview and no browser engine.
 //!
 //! ```sh
-//! cargo run --release -- ../corpus/document.md
+//! cargo run --release -- corpus/document.md   # in apps/leaf-dioxus
 //! ```
 //!
 //! An editor, not just a first paint, working toward the Swift editor
 //! (`apps/leaf-editor`). Where to look:
 //!
 //! - [`editor`]: the state, and the repaint that turns the document into
-//!   rows — over the parent's `Frame`, so a keystroke renders one row and
+//!   rows — over the bridge's `Frame`, so a keystroke renders one row and
 //!   memoizes the rest — and only the rows in view ([`viewport`]).
 //! - [`dispatch`]: where keys, the input method and menu commands arrive;
 //!   [`input`] maps keys to commands, [`menu`] puts them in the menu bar.
@@ -28,13 +28,12 @@
 //! `LEAF_TRACE=1` logs keys, pointer events and repaint timings to stderr;
 //! `LEAF_OUTLINE=1` outlines every visual line and run.
 //!
-//! The markup is duplicated from the parent's `editor.rs` rather than shared,
-//! because `rsx!` builds types from *its* Dioxus and the two versions cannot
-//! meet. Everything underneath it — the glyph→run coalescing, the class
-//! mapping, the frame delta — is the parent crate's, which is the point: the
-//! bridge is independent of which Dioxus renders it.
+//! Underneath the markup is [`bridge`]: the glyph→run coalescing, the class
+//! mapping and the frame delta, from the virtual-DOM spike
+//! (`spikes/dioxus-widget`), which name no Dioxus type.
 
 mod blocks;
+mod bridge;
 mod dispatch;
 mod editor;
 mod file;
@@ -94,7 +93,7 @@ fn open(path: Option<PathBuf>) -> Doc {
             Err(e) => eprintln!("{}: {e}", p.display()),
         }
     }
-    let source = include_str!("../../corpus/document.md").to_string();
+    let source = include_str!("../corpus/document.md").to_string();
     Doc::from_source(source, Format::Markdown).unwrap_or_else(|_| Doc::blank().expect("a blank document"))
 }
 

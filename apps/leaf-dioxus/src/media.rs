@@ -30,8 +30,8 @@ use std::rc::Rc;
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
-use dioxus_widget_spike::rows::{RowView, Run};
-use dioxus_widget_spike::style::class_of;
+use crate::bridge::rows::{RowView, Run};
+use crate::bridge::style::class_of;
 use leaf_core::{ColorScheme, Glyph, MediaInfo, MediaKind, Role, VRow};
 
 use crate::row::{LayoutHandle, PAD, Pointer, PointerSink, Seg, Target, lines, press_mode};

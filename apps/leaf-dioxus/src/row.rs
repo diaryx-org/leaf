@@ -7,7 +7,7 @@ use std::rc::Rc;
 use dioxus::html::Modifiers;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
-use dioxus_widget_spike::rows::{RowHandle, RowView, Run};
+use crate::bridge::rows::{RowHandle, RowView, Run};
 
 use crate::table::{AlignKind, BORDER, Block};
 use crate::text::{Kind, RowLayout, byte_of_col};
@@ -67,8 +67,8 @@ pub fn press_mode(e: &MouseEvent) -> (bool, PressMode) {
 }
 
 /// Where a row sends what the pointer did on it. A context rather than a prop
-/// so [`Row`]'s props stay cheap to compare — the memoization the parent
-/// measured.
+/// so [`Row`]'s props stay cheap to compare — the memoization the
+/// virtual-DOM spike (`spikes/dioxus-widget`) measured.
 #[derive(Clone)]
 pub struct PointerSink(pub Rc<dyn Fn(Pointer)>);
 
@@ -171,7 +171,7 @@ impl Seg {
 
 /// The row cut into its visual lines, the caret spliced in where it falls.
 ///
-/// The caret is an inline, zero-width span between glyphs — not the parent's
+/// The caret is an inline, zero-width span between glyphs — not the spike's
 /// absolutely-positioned `div.caret` at `left: Nch`, which Blitz lays out on
 /// the first paint and not when a later frame inserts it, and which is exact
 /// only in a monospace row. Inline, it sits after the glyph it follows in any
