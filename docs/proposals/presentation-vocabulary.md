@@ -10,6 +10,16 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 
 ## Status
 
+`superseded in part` on 2026-10-15: the vocabulary is now written as CSS in
+the node's own `style` attribute (`text-align`, `line-height`, `font-size`,
+`font-family`, `color`), so another app draws it with no stylesheet, and the
+`class` tokens and `data-` keys below are read for documents written before
+that and moved out of as each property is next set. The names, the exact
+values and where each property lives are unchanged; a named colour is written
+as its `presentation.css` ink and read back as the name. AsciiDoc keeps the
+spelling below. The CSS is read and edited by
+[fig-css](https://github.com/diaryx-org/fig-css), shared with thorn.
+
 `implemented` on 2026-09-18, in the sequence's order, against the published
 twig-doc 3.6.0 (`3b8b5aa`): core in `ecd3219`, with a review's four fixes in
 `1df3fee` and the caret kept on its text through a Markdown `<div>` wrap in

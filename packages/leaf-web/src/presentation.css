@@ -1,5 +1,14 @@
 /* leaf's presentation vocabulary, as CSS.
  *
+ * FOR DOCUMENTS SAVED BY LEAF 0.5 AND EARLIER. leaf now writes the vocabulary
+ * as CSS in each block's or run's own `style` attribute — `style="text-align:
+ * center"`, `style="font-size: large; color: #d24b3f"` — which a browser draws
+ * with no stylesheet at all, and which carries an exact value as readily as a
+ * name. It still reads the spelling below, and moves a property out of it the
+ * first time the author changes that property. This file is for a page that
+ * renders documents that still carry it; a page built only from newer ones
+ * needs nothing.
+ *
  * A leaf document carries alignment, line spacing, size, face and colour as
  * *names* — `class="center"`, `data-size="large"` — so that a document
  * outlives the theme it was written under; an author who needs a measurement

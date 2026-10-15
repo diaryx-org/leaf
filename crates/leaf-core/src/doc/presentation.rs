@@ -7,15 +7,22 @@ impl Doc {
     // ── the presentation vocabulary ─────────────────────────────────────────
     //
     // Six gestures and five queries over twig's two attribute ops. Each gesture
-    // edits **one key and keeps the rest**: it reads the node's attributes,
-    // removes its own key (and, for alignment, its own tokens out of `class`),
-    // adds the new value or nothing, and passes the list back whole — twig's
-    // contract is replace-not-merge, so the read is the caller's job. A
-    // paragraph that came in as `class="lead center" id="intro"
-    // data-line-height="1.5"` and is right-aligned goes out as `class="lead
-    // right" id="intro" data-line-height="1.5"`. Nothing leaf did not write is
-    // touched, which is what lets a document from elsewhere pass through the
-    // editor unharmed.
+    // edits **one property and keeps the rest**: it reads the node's
+    // attributes, sets or removes its own declaration in the `style` attribute
+    // through `fig-css` (which keeps every other byte of it), takes out the
+    // spelling leaf 0.2 wrote the same property in, and passes the list back
+    // whole — twig's contract is replace-not-merge, so the read is the caller's
+    // job. A paragraph that came in as `class="lead" style="color: #333"
+    // id="intro"` and is right-aligned goes out as `class="lead"
+    // style="color: #333; text-align: right" id="intro"`. Nothing leaf did not
+    // write is touched, which is what lets a document from elsewhere pass
+    // through the editor unharmed.
+    //
+    // CSS in `style` is the spelling because every renderer draws it: a
+    // browser, Obsidian, Typora, pandoc. The `class` tokens and `data-` keys
+    // leaf 0.2 wrote are still read (see `style.rs`), and a gesture moves its
+    // own property out of them as it writes. AsciiDoc keeps them, since its
+    // `style` is a positional attribute that means something else.
     //
     // Clearing is the same gesture with `None`: the key goes, and an empty list
     // at the end unwraps the span or the Markdown div, which twig does.
@@ -39,11 +46,10 @@ impl Doc {
         {
             return;
         }
-        let attrs = with_class_token(
-            &attrs,
-            |t| Align::from_token(t).is_some(),
-            align.map(Align::name),
-        );
+        let Some(attrs) = self.with_property(&attrs, Property::Align, align.map(Align::name))
+        else {
+            return;
+        };
         self.write_block_attrs("alignment", attrs);
     }
 
@@ -61,7 +67,10 @@ impl Doc {
             return;
         }
         let spelling = spacing.map(LineHeight::name);
-        let attrs = with_attr(&attrs, "data-line-height", spelling.as_deref());
+        let Some(attrs) = self.with_property(&attrs, Property::LineHeight, spelling.as_deref())
+        else {
+            return;
+        };
         self.write_block_attrs("line spacing", attrs);
     }
 
@@ -86,7 +95,7 @@ impl Doc {
     /// from the same field writes the same bytes both times.
     pub fn set_font_size(&mut self, size: Option<FontSize>) {
         let spelling = size.map(FontSize::name);
-        self.set_run_attr("size", "data-size", spelling.as_deref());
+        self.set_run_property(Property::FontSize, spelling.as_deref());
     }
 
     /// Set — or with `None` clear — the face of the selected run, or of the
@@ -95,8 +104,7 @@ impl Doc {
     /// the author named, which the frontends resolve through the platform's
     /// font registry and fall back to the body face without.
     pub fn set_font_family(&mut self, font: Option<FontFace>) {
-        let spelling = font.as_ref().map(FontFace::name);
-        self.set_run_attr("font", "data-font", spelling.as_deref());
+        self.set_run_property(Property::FontFace(font.as_ref()), None);
     }
 
     /// Set — or with `None` clear — the *text* colour of the selected run, or of
@@ -113,8 +121,7 @@ impl Doc {
     /// share a vocabulary on purpose, so that a frontend with a red for a
     /// highlight has a red for text and both are *that* red.
     pub fn set_text_color(&mut self, color: Option<TextColor>) {
-        let spelling = color.map(TextColor::name);
-        self.set_run_attr("text colour", "data-color", spelling.as_deref());
+        self.set_run_property(Property::TextColor(color), None);
     }
 
     /// Insert a page break at the caret — `::page-break`, a leaf directive with
@@ -317,21 +324,84 @@ impl Doc {
 
     /// The selection-or-caret half of the three run-level gestures: a span over
     /// a real selection, the caret's block over none.
-    fn set_run_attr(&mut self, what: &str, key: &str, value: Option<&str>) {
+    fn set_run_property(&mut self, property: Property<'_>, value: Option<&str>) {
+        let what = property.what();
         match self.selection() {
             Some((start, end)) => {
-                let attrs = with_attr(&self.run_attrs_over(start, end), key, value);
-                self.write_run_attrs(what, start, end, attrs);
+                let own = self.run_attrs_over(start, end);
+                if let Some(attrs) = self.with_property(&own, property, value) {
+                    self.write_run_attrs(what, start, end, attrs);
+                }
             }
             None => {
                 let own = self.block_attrs_at_caret();
-                if value.is_none()
-                    && self.refuse_clear_from_div(what, &own, |a| a.iter().any(|(k, _)| k == key))
+                if property.is_clear(value)
+                    && self.refuse_clear_from_div(what, &own, |a| property.named_in(a))
                 {
                     return;
                 }
-                let attrs = with_attr(&own, key, value);
-                self.write_block_attrs(what, attrs);
+                if let Some(attrs) = self.with_property(&own, property, value) {
+                    self.write_block_attrs(what, attrs);
+                }
+            }
+        }
+    }
+
+    /// `attrs` with `property` set to `value` — or, for `None`, cleared — in
+    /// the spelling this document's format takes, every other attribute and
+    /// every other declaration of `style` kept as it was.
+    ///
+    /// `value` is the vocabulary's own token (`center`, `1.5`, `large`), which
+    /// for these three is CSS's too; [`Property::FontFace`] and
+    /// [`Property::TextColor`] carry their value and spell it themselves,
+    /// because CSS spells a family and a named colour differently from
+    /// `data-font` and `data-color`.
+    ///
+    /// `None`, with a status, where the node's `style` is not CSS `fig-css`
+    /// can edit: rewriting it whole would lose what another app wrote there.
+    fn with_property(
+        &mut self,
+        attrs: &Attrs,
+        property: Property<'_>,
+        value: Option<&str>,
+    ) -> Option<Attrs> {
+        let legacy = property.legacy_value(value);
+        let legacy = legacy.as_deref();
+        if self.format == Format::Asciidoc {
+            return Some(property.with_legacy(attrs, legacy));
+        }
+        let Some(css) = property.css_value(value) else {
+            if !self.read_only {
+                self.status = Some(format!(
+                    "{}: a family name with a quote or a backslash in it cannot be written",
+                    property.what()
+                ));
+            }
+            return None;
+        };
+        let attrs = property.with_legacy(attrs, None);
+        let style = attrs
+            .iter()
+            .find(|(k, _)| k == "style")
+            .and_then(|(_, v)| v.as_deref())
+            .unwrap_or_default();
+        match fig_css::with_declaration(style, property.css(), css.as_deref()) {
+            Ok(style) => {
+                let style = style.trim();
+                Some(with_attr(
+                    &attrs,
+                    "style",
+                    (!style.is_empty()).then_some(style),
+                ))
+            }
+            Err(_) => {
+                if !self.read_only {
+                    self.status = Some(format!(
+                        "{}: the style attribute is not CSS leaf can edit",
+                        property.what()
+                    ));
+                }
+                None
             }
         }
     }
@@ -632,5 +702,105 @@ impl Doc {
         hits.into_iter()
             .map(|(_, span, attrs)| (span, attrs))
             .collect()
+    }
+}
+
+/// One of the five presentation properties, as a gesture writes it: the CSS
+/// property it goes into `style` as, and the `class` token or `data-` key leaf
+/// 0.2 spelled it with, which the gesture takes out as it writes and AsciiDoc
+/// still takes.
+///
+/// The face and the colour carry their value, because each has a CSS spelling
+/// of its own — a family in quotes, a name as its ink — beside the token its
+/// `data-` key held.
+#[derive(Clone, Copy)]
+enum Property<'a> {
+    Align,
+    LineHeight,
+    FontSize,
+    FontFace(Option<&'a FontFace>),
+    TextColor(Option<TextColor>),
+}
+
+impl Property<'_> {
+    /// The words a status line names the property by.
+    fn what(self) -> &'static str {
+        match self {
+            Self::Align => "alignment",
+            Self::LineHeight => "line spacing",
+            Self::FontSize => "size",
+            Self::FontFace(_) => "font",
+            Self::TextColor(_) => "text colour",
+        }
+    }
+
+    /// The CSS property it is written as.
+    fn css(self) -> &'static str {
+        match self {
+            Self::Align => "text-align",
+            Self::LineHeight => "line-height",
+            Self::FontSize => "font-size",
+            Self::FontFace(_) => "font-family",
+            Self::TextColor(_) => "color",
+        }
+    }
+
+    /// Whether this sets nothing — the gesture is a clear.
+    fn is_clear(self, value: Option<&str>) -> bool {
+        match self {
+            Self::FontFace(face) => face.is_none(),
+            Self::TextColor(color) => color.is_none(),
+            _ => value.is_none(),
+        }
+    }
+
+    /// The value as CSS spells it — `Some(None)` for a clear, and `None` for a
+    /// value CSS cannot be given here (see [`FontFace::css_value`]).
+    fn css_value(self, value: Option<&str>) -> Option<Option<String>> {
+        Some(match self {
+            Self::FontFace(Some(face)) => Some(face.css_value()?.into_owned()),
+            Self::TextColor(color) => color.map(|c| c.css_value().into_owned()),
+            Self::FontFace(None) => None,
+            _ => value.map(str::to_string),
+        })
+    }
+
+    /// The value as leaf 0.2's attribute spelled it.
+    fn legacy_value(self, value: Option<&str>) -> Option<String> {
+        match self {
+            Self::FontFace(face) => face.map(|f| f.name().into_owned()),
+            Self::TextColor(color) => color.map(|c| c.name().into_owned()),
+            _ => value.map(str::to_string),
+        }
+    }
+
+    /// `attrs` with the property's leaf 0.2 spelling set to `value`, or taken
+    /// out for `None`: alignment's tokens out of `class`, the rest a `data-` key.
+    fn with_legacy(self, attrs: &Attrs, value: Option<&str>) -> Attrs {
+        let key = match self {
+            Self::Align => {
+                return with_class_token(attrs, |t| Align::from_token(t).is_some(), value);
+            }
+            Self::LineHeight => "data-line-height",
+            Self::FontSize => "data-size",
+            Self::FontFace(_) => "data-font",
+            Self::TextColor(_) => "data-color",
+        };
+        with_attr(attrs, key, value)
+    }
+
+    /// Whether `attrs` give this property a value in either spelling — what a
+    /// clear has to find on the node it rewrites to have anything to take out.
+    fn named_in(self, attrs: &Attrs) -> bool {
+        let declared = attrs
+            .iter()
+            .find(|(k, _)| k == "style")
+            .and_then(|(_, v)| v.as_deref())
+            .is_some_and(|style| fig_css::declaration(style, self.css()).is_some());
+        declared
+            || match self {
+                Self::Align => Align::from_legacy(attrs).is_some(),
+                _ => self.with_legacy(attrs, None).len() != attrs.len(),
+            }
     }
 }

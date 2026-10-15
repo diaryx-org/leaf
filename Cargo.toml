@@ -42,6 +42,10 @@ readme = "README.md"
 [workspace.dependencies]
 # The document AST + offset-addressed span-splice editor.
 twig-doc = "4.1.0"
+# The CSS inside a `style` attribute: the presentation vocabulary is written
+# there, so another app renders it, and every edit to it keeps the declarations
+# leaf did not write. Shared with thorn, which edits an SVG's `style` the same way.
+fig-css = { git = "https://github.com/diaryx-org/fig-css", branch = "main" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.
