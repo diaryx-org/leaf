@@ -42,3 +42,11 @@ tokio = { version = "1", default-features = false, features = ["time"] }
 parley = "=0.12.0"
 # Display columns — core's unit for a caret column — as core counts them.
 unicode-width = "0.2"
+
+# winit's macOS backend, vendored at the version dioxus-native pins and
+# patched (see patches/winit-appkit/PATCH.md): its text input client answered
+# no questions about the text around the caret, so macOS's press-and-hold
+# accent menu never opened, and it dropped any insertText that did not end a
+# composition, which is how the emoji picker inserts.
+[patch.crates-io]
+winit-appkit = { path = "patches/winit-appkit" }
