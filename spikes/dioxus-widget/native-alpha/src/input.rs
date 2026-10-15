@@ -37,6 +37,16 @@ pub enum Action {
     /// To the start or end of the visual line — Home/End and ⌘←/→ — which
     /// again only the layout knows.
     LineEdge { end: bool, extend: bool },
+    /// The find bar: open it (⌘F, or ⌥⌘F with replace), or step through its
+    /// matches (⌘G, ⇧⌘G).
+    Find(FindCommand),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FindCommand {
+    Open { replace: bool },
+    Next,
+    Previous,
 }
 
 /// The gestures a document cannot complete by itself.
@@ -154,16 +164,31 @@ fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Acti
         Key::Backspace => return done(doc.delete_to_line_start()),
         _ => {}
     }
+    match code {
+        Code::KeyF => return Action::Find(FindCommand::Open { replace: alt }),
+        Code::KeyG if !alt => {
+            return Action::Find(if shift { FindCommand::Previous } else { FindCommand::Next });
+        }
+        _ => {}
+    }
     let Key::Character(c) = key else {
         return Action::Ignored;
     };
-    match (c.to_lowercase().as_str(), shift, alt) {
+    // ⌥ changes the character a key types on a Mac — ⌥⌘C arrives as `ç` —
+    // so a chord with ⌥ is matched by the key's position instead.
+    let letter = match alt {
+        true => letter_of(code).map(String::from).unwrap_or_default(),
+        false => c.to_lowercase(),
+    };
+    match (letter.as_str(), shift, alt) {
         ("c", false, false) => Action::Host(Host::Copy),
         ("x", false, false) => Action::Host(Host::Cut),
         ("v", false, false) => Action::Host(Host::Paste),
         ("v", true, _) => Action::Host(Host::PastePlain),
         ("s", false, false) => Action::Host(Host::Save),
         ("a", false, false) => done(doc.select_all()),
+        // The source view and back. Core keeps the caret on the same text.
+        ("e", false, false) => done(doc.toggle_view()),
         // Undo and redo answer whether there was a step to take; either way
         // the frame is current, so either way is a repaint.
         ("z", false, false) => {
@@ -186,6 +211,17 @@ fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Acti
         ("l", true, false) => done(doc.toggle_task_item()),
         ("u", true, false) => done(doc.toggle_task_checked()),
         _ => Action::Ignored,
+    }
+}
+
+/// The letter a physical key is named for: `KeyC` → `c`.
+fn letter_of(code: Code) -> Option<char> {
+    let name = format!("{code:?}");
+    let rest = name.strip_prefix("Key")?;
+    let mut chars = rest.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c.to_ascii_lowercase()),
+        _ => None,
     }
 }
 
@@ -310,6 +346,19 @@ mod tests {
         assert_eq!(d.source, "hello\n");
         press(&mut d, Key::ArrowDown, Code::ArrowDown, Modifiers::SUPER);
         assert_eq!(d.caret, d.source.len());
+    }
+
+    #[test]
+    fn an_option_chord_matches_by_key_not_by_character() {
+        let mut d = doc("x\n");
+        d.place_caret(0, false);
+        // ⌥⌘C types `ç`; it is still the code-block chord.
+        press(&mut d, ch("ç"), Code::KeyC, CMD | Modifiers::ALT);
+        assert!(d.source.starts_with("```"), "{:?}", d.source);
+        assert_eq!(
+            apply_key(&mut d, &ch("ƒ"), Code::KeyF, CMD | Modifiers::ALT),
+            Action::Find(FindCommand::Open { replace: true })
+        );
     }
 
     #[test]

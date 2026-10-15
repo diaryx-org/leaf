@@ -26,7 +26,7 @@ use leaf_core::{Glyph, VRow, VisualMap};
 use crate::style::class_of;
 
 /// A stretch of one row sharing a style and a selection state.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Run {
     pub text: String,
     /// The class list from [`class_of`], plus `sel` when selected.
@@ -38,7 +38,7 @@ pub struct Run {
 }
 
 /// One row, ready to render: its runs, and where the caret sits among them.
-#[derive(Clone, PartialEq, Eq, Default, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Default, Debug)]
 pub struct RowView {
     pub runs: Vec<Run>,
     /// The caret's display column in this row, when the caret is on it. The

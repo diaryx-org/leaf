@@ -9,7 +9,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use dioxus_widget_spike::rows::{RowHandle, RowView, Run};
 
-use crate::text::{RowLayout, byte_of_col};
+use crate::text::{Kind, RowLayout, byte_of_col};
 
 /// The document's left edge in the window, in CSS pixels: `body` has no
 /// margin and `.leaf` this much side padding (see `LAYOUT` in `main.rs`), so a
@@ -55,8 +55,8 @@ pub struct RowProps {
     pub index: usize,
     pub row: RowHandle,
     pub layout: LayoutHandle,
-    /// A row core spells in character cells: code, a table's picture.
-    pub mono: bool,
+    /// How the row is set: body text, character cells, or a source line.
+    pub kind: Kind,
 }
 
 /// One row, memoized by its handle and its layout: a row neither changed is
@@ -67,10 +67,11 @@ pub fn Row(props: RowProps) -> Element {
     let v: &RowView = &props.row.0;
     let lay: &RowLayout = &props.layout.0;
     let index = props.index;
-    let class = match (v.code, v.decoration, props.mono) {
-        (true, _, _) => "row code",
-        (_, true, _) => "row decoration",
-        (_, _, true) => "row table",
+    let class = match (props.kind, v.code, v.decoration) {
+        (Kind::Source, ..) => "row source",
+        (_, true, _) => "row code",
+        (_, _, true) => "row decoration",
+        (Kind::Cells, ..) => "row table",
         _ => "row",
     };
     let lines = lines(v, lay);

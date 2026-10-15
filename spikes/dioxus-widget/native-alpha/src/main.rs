@@ -22,11 +22,13 @@
 //! mapping, the frame delta — is the parent crate's, which is the point: the
 //! bridge is independent of which Dioxus renders it.
 
+mod find;
 mod host;
 mod ime;
 mod input;
 mod keys;
 mod row;
+mod source;
 mod text;
 mod viewport;
 
@@ -48,12 +50,14 @@ use dioxus_native::winit::window::{
 use dioxus_widget_spike::frame::Frame;
 use dioxus_widget_spike::rows::{Marks, RowHandle, RowView};
 use dioxus_widget_spike::style::STYLESHEET;
-use leaf_core::{Doc, Format};
+use leaf_core::{Doc, Format, View};
 
+use crate::find::{BarView, Find, Focus, Outcome};
 use crate::ime::Composer;
-use crate::input::{Action, apply_key};
+use crate::input::{Action, FindCommand, apply_key};
 use crate::row::{LayoutHandle, Pointer, PointerSink, Row};
-use crate::text::{BODY, Fonts, MONO, SIZE};
+use crate::source::SourceRows;
+use crate::text::{BODY, Fonts, Kind, MONO, SIZE};
 use crate::viewport::{LINE, Layout};
 
 /// The status line's height, in CSS pixels — `.status` in [`layout_css`].
@@ -85,7 +89,8 @@ fn layout_css() -> String {
         "html, body {{ margin: 0; overflow: hidden; height: 100vh; }}
 body {{ position: relative; }}
 .leaf {{ padding: 0 16px; box-sizing: border-box; font-family: {BODY}; font-size: {SIZE}px; }}
-.leaf .row.code, .leaf .row.table, .leaf .code {{ font-family: {MONO}; }}
+.leaf .row.code, .leaf .row.table, .leaf .row.source, .leaf .code {{ font-family: {MONO}; }}
+.leaf .row.source .g {{ font-size: 1em; vertical-align: baseline; }}
 .leaf .line {{ min-height: 1.5em; }}
 .leaf .ime {{ text-decoration: underline; text-decoration-color: #1a73e8; }}
 {REST}"
@@ -100,7 +105,20 @@ const REST: &str = "
           height: 24px; line-height: 24px; padding: 0 16px; box-sizing: border-box;
           font: 12px ui-monospace, monospace; color: #5f6368; background: #f6f8fa;
           border-top: 1px solid #e1e4e8; display: flex; gap: 16px; white-space: pre; }
-.status .grow { flex: 1; }";
+.status .grow { flex: 1; }
+.find { position: absolute; left: 0; right: 0; top: 0; z-index: 1; box-sizing: border-box;
+        padding: 0 16px; background: #f6f8fa; border-bottom: 1px solid #e1e4e8;
+        font: 13px system-ui, sans-serif; color: #24292f; }
+.find .find-row { display: flex; align-items: center; gap: 8px; height: 34px; }
+.find .label { width: 56px; color: #5f6368; }
+.find .field { flex: 1; height: 22px; line-height: 22px; padding: 0 6px; white-space: pre;
+               background: #fff; border: 1px solid #c8ccd0; border-radius: 5px; overflow: hidden; }
+.find .field.focused { border-color: #1a73e8; }
+.find .count { min-width: 72px; color: #5f6368; text-align: right; }
+.find .btn { height: 22px; line-height: 22px; padding: 0 9px; background: #fff;
+             border: 1px solid #c8ccd0; border-radius: 5px; }
+.find .caret-in { display: inline-block; width: 0; height: 16px; vertical-align: text-bottom;
+                  border-left: 2px solid #1a73e8; margin-right: -2px; }";
 
 fn main() {
     let path = std::env::args().nth(1).map(PathBuf::from);
@@ -134,14 +152,28 @@ fn viewport_height(physical: u32, scale: f64) -> f64 {
     (physical as f64 / scale - STATUS).max(LINE)
 }
 
+/// The window's width in CSS pixels.
+fn window_width(physical: u32, scale: f64) -> f32 {
+    (physical as f64 / scale) as f32
+}
+
 /// The text column's width in CSS pixels: the window less the side padding,
-/// up to a measure that reads as prose — the Swift editor's column width.
-fn column_width(physical: u32, scale: f64) -> f32 {
-    ((physical as f64 / scale - 2.0 * row::PAD) as f32).clamp(SIZE * 10.0, MEASURE)
+/// up to a measure that reads as prose — the Swift editor's column width —
+/// or, in the source view, one that fits a line wrapped at 80 columns, which
+/// is how most markup is written.
+fn column_width(window: f32, view: View) -> f32 {
+    let measure = match view {
+        View::Wysiwyg => MEASURE,
+        View::Source => SOURCE_MEASURE,
+    };
+    (window - 2.0 * row::PAD as f32).clamp(SIZE * 10.0, measure)
 }
 
 /// The widest the text column grows, in CSS pixels.
 const MEASURE: f32 = 680.0;
+
+/// The source view's: 82 Menlo cells (0.602em each) at the body size.
+const SOURCE_MEASURE: f32 = 82.0 * 0.602 * SIZE;
 
 /// The last press, for counting a double- and triple-click.
 #[derive(Clone, Copy)]
@@ -156,10 +188,15 @@ struct Press {
 /// Keyed by the handle's address: the frame keeps an unchanged row's `Rc`
 /// even when an edit above it shifts its index, so a Return relays out the
 /// rows it touched, not every row below.
+///
+/// Each entry holds the row's handle as well as its layout: an address is
+/// only a safe key while the `Rc` behind it is alive, and a dropped row's
+/// address is free to be reused by the next row allocated — which would then
+/// be drawn with a stale layout.
 #[derive(Default)]
 struct Layouts {
     width: f32,
-    by_row: HashMap<*const RowView, LayoutHandle>,
+    by_row: HashMap<*const RowView, (RowHandle, Kind, LayoutHandle)>,
 }
 
 #[allow(non_snake_case)]
@@ -173,7 +210,13 @@ fn App() -> Element {
     let frame = use_hook(|| Rc::new(RefCell::new(Frame::default())));
     let fonts = use_hook(|| Rc::new(RefCell::new(Fonts::new())));
     let cache = use_hook(|| Rc::new(RefCell::new(Layouts::default())));
+    let srows = use_hook(|| Rc::new(RefCell::new(SourceRows::default())));
+    // The view the rows were last built for, to start afresh on a switch.
+    let shown = use_hook(|| Rc::new(Cell::new(None::<View>)));
     let composer = use_hook(|| Rc::new(RefCell::new(Composer::default())));
+    let find = use_hook(|| Rc::new(RefCell::new(Find::default())));
+    // What the find bar draws, refreshed whenever it or the document changes.
+    let mut bar = use_signal(BarView::default);
     let last_press = use_hook(|| Rc::new(Cell::new(None::<Press>)));
     // The x a run of ↑/↓ aims for, kept across the lines it passes through
     // so a short line does not pull the caret left for good.
@@ -182,7 +225,7 @@ fn App() -> Element {
     let words = use_signal(|| None::<(u64, usize)>);
     let mut rows = use_signal(Vec::<RowHandle>::new);
     let mut lays = use_signal(Vec::<LayoutHandle>::new);
-    let mut monos = use_signal(Vec::<bool>::new);
+    let mut row_kinds = use_signal(Vec::<Kind>::new);
     let mut layout = use_signal(Layout::default);
     let mut status = use_signal(String::new);
     // The viewport: how far down the document it starts, how tall it is, and
@@ -200,74 +243,97 @@ fn App() -> Element {
     let window = dioxus_native::use_window();
     let mut top = use_signal(|| 0.0_f64);
     let mut height = use_signal(|| viewport_height(window.surface_size().height, window.scale_factor()));
-    let mut width = use_signal(|| column_width(window.surface_size().width, window.scale_factor()));
+    let mut win_w = use_signal(|| window_width(window.surface_size().width, window.scale_factor()));
+    // The column the rows were last laid out for; set by `repaint`.
+    let mut width = use_signal(|| MEASURE);
 
     // The first paint, and every repaint after a key, a click or a resize.
     // Answers the caret's row, for the viewport to follow.
     let repaint = {
         let doc_rc = doc.clone();
         let (doc, frame, fonts, cache) = (doc.clone(), frame.clone(), fonts.clone(), cache.clone());
-        let composer = composer.clone();
+        let (composer, srows, shown) = (composer.clone(), srows.clone(), shown.clone());
         move || -> Option<usize> {
             let t0 = Instant::now();
             let mut doc = doc.borrow_mut();
-            doc.build_visual_unwrapped();
-            let t1 = Instant::now();
             // While composing, the caret is drawn at the input method's
             // cursor and the marked text underlined; see `ime.rs`.
             let composer = composer.borrow();
             let caret = composer.caret().unwrap_or(doc.caret);
-            let marks = Marks::of(&doc.vmap, caret, doc.anchor).composing(composer.marked());
             let mut frame = frame.borrow_mut();
-            let handles = frame.update(&doc.vmap, &marks).to_vec();
-            let t2 = Instant::now();
-
-            // A table's picture is box-drawn in character cells, so its rows
-            // stay monospace, as code does.
-            let mut mono: Vec<bool> = handles.iter().map(|h| h.0.code).collect();
-            for t in &doc.vmap.tables {
-                for r in t.rows_span.clone() {
-                    if let Some(m) = mono.get_mut(r) {
-                        *m = true;
-                    }
-                }
+            let mut srows = srows.borrow_mut();
+            // A switch of view shares no rows with the view before it.
+            if shown.get() != Some(doc.view) {
+                *frame = Frame::default();
+                srows.clear();
+                shown.set(Some(doc.view));
             }
-            let w = *width.peek();
+            let (handles, kinds, caret_row, rebuilt) = match doc.view {
+                View::Source => {
+                    doc.build_source();
+                    let (h, (row, _)) = srows.update(&doc, caret, doc.selection(), composer.marked());
+                    let h = h.to_vec();
+                    let kinds = vec![Kind::Source; h.len()];
+                    (h, kinds, Some(row), srows.rebuilt)
+                }
+                View::Wysiwyg => {
+                    doc.build_visual_unwrapped();
+                    let marks = Marks::of(&doc.vmap, caret, doc.anchor).composing(composer.marked());
+                    let h = frame.update(&doc.vmap, &marks).to_vec();
+                    // A table's picture is box-drawn in character cells, so
+                    // its rows stay monospace, as code does.
+                    let mut kinds: Vec<Kind> =
+                        h.iter().map(|r| if r.0.code { Kind::Cells } else { Kind::Prose }).collect();
+                    for t in &doc.vmap.tables {
+                        for r in t.rows_span.clone() {
+                            if let Some(k) = kinds.get_mut(r) {
+                                *k = Kind::Cells;
+                            }
+                        }
+                    }
+                    (h, kinds, marks.caret.map(|(r, _)| r), frame.last.rebuilt)
+                }
+            };
+            let t1 = Instant::now();
+            let w = column_width(*win_w.peek(), doc.view);
+            if w != *width.peek() {
+                width.set(w);
+            }
             let mut cache = cache.borrow_mut();
             let mut fonts = fonts.borrow_mut();
             let mut kept = HashMap::with_capacity(handles.len());
             let mut laid = 0;
             let row_lays: Vec<LayoutHandle> = handles
                 .iter()
-                .zip(&mono)
-                .map(|(h, &m)| {
+                .zip(&kinds)
+                .map(|(h, &k)| {
                     let key = Rc::as_ptr(&h.0);
                     let l = match cache.by_row.get(&key) {
-                        Some(l) if cache.width == w => l.clone(),
+                        Some((_, kind, l)) if cache.width == w && *kind == k => l.clone(),
                         _ => {
                             laid += 1;
-                            LayoutHandle(Rc::new(fonts.layout(&h.0, w, m)))
+                            LayoutHandle(Rc::new(fonts.layout(&h.0, w, k)))
                         }
                     };
-                    kept.insert(key, l.clone());
+                    kept.insert(key, (h.clone(), k, l.clone()));
                     l
                 })
                 .collect();
             cache.by_row = kept;
             cache.width = w;
-            let t3 = Instant::now();
+            let t2 = Instant::now();
 
             layout.set(Layout::of(row_lays.iter().map(|l| l.0.height as f64)));
             rows.set(handles);
             lays.set(row_lays);
-            monos.set(mono);
+            row_kinds.set(kinds);
             status.set(status_line(&doc));
             if words.peek().is_none_or(|(r, _)| r != doc.revision()) {
                 recount(doc_rc.clone(), doc.revision(), words);
             }
-            trace(|| format!("repaint: build {:.1?} frame {:.1?} text {:.1?} ({laid} rows laid out); {} rows rebuilt",
-                t1 - t0, t2 - t1, t3 - t2, frame.last.rebuilt));
-            marks.caret.map(|(r, _)| r)
+            trace(|| format!("repaint: rows {:.1?} text {:.1?} ({laid} rows laid out); {rebuilt} rows rebuilt",
+                t1 - t0, t2 - t1));
+            caret_row
         }
     };
     use_hook({
@@ -281,7 +347,7 @@ fn App() -> Element {
     // it alone is what lets them scroll past the caret.
     let mut follow = move |caret_row: Option<usize>| {
         let Some(r) = caret_row else { return };
-        let to = layout.peek().reveal(r, *top.peek(), *height.peek());
+        let to = layout.peek().reveal(r, *top.peek(), *height.peek() - bar.peek().height());
         trace(|| format!("follow caret row {r} -> {to:?}"));
         let Some(y) = to else { return };
         top.set(y);
@@ -309,10 +375,22 @@ fn App() -> Element {
         let repaint = repaint.clone();
         let goal = goal.clone();
         let composer = composer.clone();
+        let find = find.clone();
         move || {
             PointerSink(Rc::new(move |p| {
                 goal.set(None);
                 composer.borrow_mut().settle(&mut doc.borrow_mut());
+                // A click in the document takes typing back from the find
+                // bar, and leaves the bar open, as on a Mac.
+                {
+                    let mut f = find.borrow_mut();
+                    if f.focus != Focus::Doc {
+                        f.focus = Focus::Doc;
+                        // A copy of the handle: this closure is `Fn`.
+                        let mut bar = bar;
+                        bar.set(BarView::of(&mut f, &doc.borrow()));
+                    }
+                }
                 let (row, line, x) = match p {
                     Pointer::Press { row, line, x, .. } | Pointer::Drag { row, line, x } => (row, line, x),
                 };
@@ -332,7 +410,7 @@ fn App() -> Element {
         move || -> Option<(usize, usize, f32)> {
             let doc = doc.borrow();
             let at = composer.borrow().caret().unwrap_or(doc.caret);
-            let (row, col) = doc.vmap.pos_of_offset(at);
+            let (row, col) = pos_of(&doc, at);
             let lays = lays.peek();
             let (line, x) = lays.get(row)?.0.caret(col);
             Some((row, line, x))
@@ -373,6 +451,47 @@ fn App() -> Element {
         }
     };
 
+    // Carry out what the find bar asked for: select a match, replace, close.
+    let run_find = {
+        let (doc, find) = (doc.clone(), find.clone());
+        let repaint = repaint.clone();
+        move |o: Outcome| {
+            {
+                let mut f = find.borrow_mut();
+                let mut d = doc.borrow_mut();
+                let select = |d: &mut Doc, m: Option<(usize, usize)>| {
+                    if let Some((s, e)) = m {
+                        d.select_range(s, e);
+                    }
+                };
+                match o {
+                    Outcome::Searched => {
+                        let origin = f.origin;
+                        let m = f.first_from(&d, origin);
+                        select(&mut d, m);
+                    }
+                    Outcome::Step { forward } => {
+                        let m = f.step(&d, forward);
+                        select(&mut d, m);
+                    }
+                    Outcome::Replace => {
+                        find::replace_current(&mut f, &mut d);
+                        let m = f.step(&d, true);
+                        select(&mut d, m);
+                    }
+                    Outcome::ReplaceAll => {
+                        let n = find::replace_all(&mut f, &mut d);
+                        d.status = Some(format!("{n} replaced"));
+                    }
+                    Outcome::Close => f.close(),
+                    Outcome::Edited | Outcome::Ignored => {}
+                }
+            }
+            follow((repaint.clone())());
+            bar.set(BarView::of(&mut find.borrow_mut(), &doc.borrow()));
+        }
+    };
+
     // The keyboard, from winit — see `keys.rs` for why not `onkeydown`.
     let mut on_key = {
         let doc = doc.clone();
@@ -380,8 +499,19 @@ fn App() -> Element {
         let goal = goal.clone();
         let composer = composer.clone();
         let caret_at = caret_at.clone();
+        let (find, mut run_find) = (find.clone(), run_find.clone());
         move |key: Key, code: Code, mods: Modifiers| {
             composer.borrow_mut().settle(&mut doc.borrow_mut());
+            // Typing goes to the find bar while it has focus; a key it does
+            // not take (⌘G, ⌘Z, ⌘S…) falls through to the document's.
+            if find.borrow().open && find.borrow().focus != Focus::Doc {
+                let o = find.borrow_mut().key(&key, mods);
+                if o != Outcome::Ignored {
+                    trace(|| format!("find key {key:?} -> {o:?}"));
+                    run_find(o);
+                    return;
+                }
+            }
             let action = apply_key(&mut doc.borrow_mut(), &key, code, mods);
             trace(|| format!("key {key:?} {code:?} {mods:?} -> {action:?}"));
             if !matches!(action, Action::Vertical { .. } | Action::Page { .. } | Action::Ignored) {
@@ -411,6 +541,24 @@ fn App() -> Element {
                     }
                     true
                 }
+                Action::Find(cmd) => {
+                    let empty = find.borrow().query.text.is_empty();
+                    let o = match cmd {
+                        FindCommand::Open { replace } => {
+                            find.borrow_mut().show(&doc.borrow(), replace);
+                            Outcome::Searched
+                        }
+                        // ⌘G with nothing to look for opens the bar instead.
+                        _ if empty => {
+                            find.borrow_mut().show(&doc.borrow(), false);
+                            Outcome::Edited
+                        }
+                        FindCommand::Next => Outcome::Step { forward: true },
+                        FindCommand::Previous => Outcome::Step { forward: false },
+                    };
+                    run_find(o);
+                    return;
+                }
             };
             if changed {
                 follow(repaint());
@@ -427,7 +575,7 @@ fn App() -> Element {
             let Some((row, line, x)) = caret_at() else { return };
             let lays = lays.peek();
             let Some(l) = lays.get(row).and_then(|l| l.0.lines.get(line)) else { return };
-            let y = layout.peek().top(row) - *top.peek() + l.top as f64;
+            let y = layout.peek().top(row) - *top.peek() + l.top as f64 + bar.peek().height();
             let mut data = ImeRequestData::default().with_cursor_area(
                 LogicalPosition::new(row::PAD + x as f64, y).into(),
                 LogicalSize::new(2.0, l.height as f64).into(),
@@ -460,10 +608,20 @@ fn App() -> Element {
     });
     let mut on_ime = {
         let (doc, composer) = (doc.clone(), composer.clone());
+        let (find, mut run_find) = (find.clone(), run_find.clone());
         let mut repaint = repaint.clone();
         let ime_area = ime_area.clone();
         move |ime: &Ime| {
             trace(|| format!("ime {ime:?}"));
+            // An accent or an emoji committed while the find bar has focus
+            // is the query's. A composition's preedit is not drawn there.
+            if find.borrow().open && find.borrow().focus != Focus::Doc {
+                if let Ime::Commit(text) = ime {
+                    let o = find.borrow_mut().commit(text);
+                    run_find(o);
+                }
+                return;
+            }
             let mut c = composer.borrow_mut();
             let mut d = doc.borrow_mut();
             match ime {
@@ -489,9 +647,9 @@ fn App() -> Element {
             WindowEvent::SurfaceResized(size) => {
                 let scale = window.scale_factor();
                 height.set(viewport_height(size.height, scale));
-                let w = column_width(size.width, scale);
-                if w != *width.peek() {
-                    width.set(w);
+                let w = window_width(size.width, scale);
+                if w != *win_w.peek() {
+                    win_w.set(w);
                     repaint();
                 }
             }
@@ -525,15 +683,50 @@ fn App() -> Element {
         }
     };
 
+    let bar_view = bar.read().clone();
+    let bar_h = bar_view.height();
     let layout = layout.read();
-    let (first, last) = layout.window(*top.read(), *height.read());
+    let (first, last) = layout.window(*top.read(), *height.read() - bar_h);
     trace(|| format!("render rows {first}..{last} of {}, top {:.0}, height {:.0}", layout.rows(), *top.peek(), *height.peek()));
     // The first drawn row is `top - above` above the viewport's top edge.
-    let shift = layout.top(first) - *top.read();
+    let shift = layout.top(first) - *top.read() + bar_h;
     let rows = rows.read();
     let lays = lays.read();
-    let monos = monos.read();
+    let row_kinds = row_kinds.read();
     let column = *width.read() + 2.0 * row::PAD as f32;
+    // The find bar's buttons and fields.
+    let on_bar = {
+        let (find, mut run_find) = (find.clone(), run_find.clone());
+        move |what: BarClick| {
+            let o = {
+                let mut f = find.borrow_mut();
+                match what {
+                    BarClick::Query => {
+                        f.focus = Focus::Query;
+                        Outcome::Edited
+                    }
+                    BarClick::Replacement => {
+                        f.focus = Focus::Replacement;
+                        Outcome::Edited
+                    }
+                    BarClick::Previous => Outcome::Step { forward: false },
+                    BarClick::Next => Outcome::Step { forward: true },
+                    BarClick::Replace => Outcome::Replace,
+                    BarClick::All => Outcome::ReplaceAll,
+                    BarClick::Done => Outcome::Close,
+                }
+            };
+            run_find(o);
+        }
+    };
+    let click = |what: BarClick| {
+        let mut on_bar = on_bar.clone();
+        move |e: MouseEvent| {
+            e.prevent_default();
+            on_bar(what);
+        }
+    };
+    let display = if bar_view.open { "block" } else { "none" };
     let mut css = layout_css();
     if std::env::var_os("LEAF_OUTLINE").is_some() {
         css.push_str(".leaf .line { outline: 1px solid #f00; } .leaf .line > span { outline: 1px solid #0a0; }");
@@ -552,12 +745,31 @@ fn App() -> Element {
             onclick: move |e: MouseEvent| e.prevent_default(),
             div { style: "height: 0; margin-top: {shift}px" }
             for i in first..last {
-                Row { key: "{i}", index: i, row: rows[i].clone(), layout: lays[i].clone(), mono: monos[i] }
+                Row { key: "{i}", index: i, row: rows[i].clone(), layout: lays[i].clone(), kind: row_kinds[i] }
             }
             // Room under the last row, as a page has, so there is somewhere
             // to click past the end.
             div { style: "height: {*height.read() / 2.0}px",
                 onmousedown: on_past_end,
+            }
+        }
+        div { class: "find", style: "display: {display}; height: {bar_h}px",
+            onmousedown: move |e: MouseEvent| e.prevent_default(),
+            div { class: "find-row",
+                span { class: "label", "Find" }
+                {field(&bar_view.query, bar_view.focus == Focus::Query, click(BarClick::Query))}
+                span { class: "count", "{bar_view.count}" }
+                span { class: "btn", onmousedown: click(BarClick::Previous), "‹" }
+                span { class: "btn", onmousedown: click(BarClick::Next), "›" }
+                span { class: "btn", onmousedown: click(BarClick::Done), "Done" }
+            }
+            if bar_view.replacing {
+                div { class: "find-row",
+                    span { class: "label", "Replace" }
+                    {field(&bar_view.replacement, bar_view.focus == Focus::Replacement, click(BarClick::Replacement))}
+                    span { class: "btn", onmousedown: click(BarClick::Replace), "Replace" }
+                    span { class: "btn", onmousedown: click(BarClick::All), "All" }
+                }
             }
         }
         div { class: "status",
@@ -586,6 +798,7 @@ fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer, row: usize, co
             last.set(Some(Press { at: now, row, col, count }));
             if count == 1
                 && !extend
+                && doc.view == View::Wysiwyg
                 && let Some(offset) = doc.vmap.task_box_at(row, col)
             {
                 // A tick, not a caret placement: the caret stays where it was,
@@ -595,11 +808,11 @@ fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer, row: usize, co
             }
             match count {
                 2 => {
-                    let at = doc.vmap.offset_of_pos(row, col);
+                    let at = offset_at(doc, row, col);
                     doc.select_word_at(at);
                 }
                 3 => {
-                    let at = doc.vmap.offset_of_pos(row, col);
+                    let at = offset_at(doc, row, col);
                     doc.select_block_at(at);
                 }
                 _ => doc.click(row, col, extend),
@@ -616,6 +829,49 @@ fn pointer(doc: &mut Doc, last: &Cell<Option<Press>>, p: Pointer, row: usize, co
                 _ => doc.click(row, col, true),
             }
         }
+    }
+}
+
+/// Where on the find bar a click landed.
+#[derive(Clone, Copy, Debug)]
+enum BarClick {
+    Query,
+    Replacement,
+    Previous,
+    Next,
+    Replace,
+    All,
+    Done,
+}
+
+/// A find-bar field: its text, with the caret drawn in it when it has focus.
+fn field(f: &find::Field, focused: bool, on_press: impl FnMut(MouseEvent) + 'static) -> Element {
+    let (before, after) = f.text.split_at(f.caret.min(f.text.len()));
+    let class = if focused { "field focused" } else { "field" };
+    rsx! {
+        span { class, onmousedown: on_press,
+            "{before}"
+            if focused {
+                span { class: "caret-in" }
+            }
+            "{after}"
+        }
+    }
+}
+
+/// A source offset's (row, column) in whichever view is showing.
+fn pos_of(doc: &Doc, offset: usize) -> (usize, usize) {
+    match doc.view {
+        View::Source => source::pos_of(doc, offset),
+        View::Wysiwyg => doc.vmap.pos_of_offset(offset),
+    }
+}
+
+/// The source offset at (row, column) of whichever view is showing.
+fn offset_at(doc: &Doc, row: usize, col: usize) -> usize {
+    match doc.view {
+        View::Source => source::offset_at(doc, row, col),
+        View::Wysiwyg => doc.vmap.offset_of_pos(row, col),
     }
 }
 

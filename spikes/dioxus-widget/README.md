@@ -430,8 +430,30 @@ draw a bitmap glyph (Apple Color Emoji is all sbix PNGs), drawing nothing or,
 with glifo's `png` on, panicking. The editor builds with classic `vello`,
 which draws them. Checked on macOS: press-and-hold accents and emoji.
 
+### Source view and find
+
+**⌘E** shows the markup, one row per source line, from core's `SourceMap` —
+styled byte ranges off the same parse the caret rides, so delimiters are
+dimmed and a fence keeps its syntax colours (`native-alpha/src/source.rs`).
+Core already works in source rows and columns for `click`, motion and the
+caret, so the rest of the editor does not know which view it draws: rows are
+`RowView`s either way, set in Menlo, wrapped, every run at body size. With no
+`VisualMap` to diff, a source row is reused by *content*, so a Return relays
+out the line it split, not every line below. The column widens to 82 cells,
+since markup is usually wrapped near 80.
+
+**⌘F / ⌥⌘F / ⌘G / ⇧⌘G**: a find bar with a replace row
+(`native-alpha/src/find.rs`) — incremental, case-insensitive (ASCII folding,
+so offsets never move), wrapping, "2 of 5", the match shown as the selection
+in either view. Replace replaces the selected match and steps on; Replace All
+(⌥↩ in the replace field) is one undo step. Its fields are the editor's own,
+not Blitz `<input>`s, which depend on the DOM focus the editor gave up on.
+
+Checked on macOS: ⌘E both ways; find stepping across a view switch; Replace
+All of 5 and its single undo.
+
 **Still not at parity**, all frontend work: dictation, tables, images, math and Mermaid drawn as pictures rather than as
-core's monospace fallbacks, the source view, find and replace, spellcheck and
+core's monospace fallbacks, spellcheck and
 autocorrect, context menus, link and footnote ⌘-click, block drag, menus and a
 toolbar, Save As / New / Open, settings and dark mode, print and PDF,
 accessibility. Tables are core's box-drawn picture, kept monospace so it

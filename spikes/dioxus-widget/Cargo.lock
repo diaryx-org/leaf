@@ -1291,6 +1291,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "fig"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1912585cea7b84fd1cbacdd0ee85c57b12f54cc46a917145d97a62b95c3eafab"
+dependencies = [
+ "fig-core",
+]
+
+[[package]]
+name = "fig-core"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "310da8e88299b38abe3aadfa1aecce5c46a93dc767ee38900f23e9f630e05290"
+dependencies = [
+ "fig-kit",
+]
+
+[[package]]
+name = "fig-css"
+version = "0.1.0"
+source = "git+https://github.com/diaryx-org/fig-css?branch=main#d2400882084ed83510f452ded0603cf1d05fc611"
+dependencies = [
+ "fig",
+]
+
+[[package]]
+name = "fig-kit"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0005cbc0579d07474d9a452c76f23cbf55ba6c82dd84c7e7ed5c38ace903a7a"
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2214,6 +2246,7 @@ name = "leaf-core"
 version = "0.5.1"
 dependencies = [
  "anyhow",
+ "fig-css",
  "syntect",
  "twig-doc",
  "two-face",
