@@ -24,11 +24,11 @@ part_of: '[leaf](/README.md)'
 Work that has been deferred, not work that is planned. A task lands here when
 it is worth doing and will not be done in the commit that noticed it; a fix
 that takes ten minutes gets a commit, not a file. Each carries `status`
-(`open`, `in-progress`, `done`, `dropped`) in its frontmatter — `dx tasks`
+(`open`, `in-progress`, `done`, `dropped`) in its frontmatter — `org tasks`
 reads the key — and closing one is an edit, naming the commit or release
 that resolved it, never a deletion. What is done then moves to
-[Closed tasks](closed/closed.md) (`dx shelve`), which is part of this index —
-the index is the spine, and what is open is a view of it (`dx tasks`) — and
+[Closed tasks](closed/closed.md) (`org shelve`), which is part of this index —
+the index is the spine, and what is open is a view of it (`org tasks`) — and
 stays findable by grep.
 
 What this is not: a commitment to consumers, which goes in the changelog's

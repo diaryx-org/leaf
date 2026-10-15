@@ -22,7 +22,7 @@ and the record of the argument *after*, so a proposal that lost is still worth
 keeping — the reasoning is the value, and the outcome is part of it.
 
 Each carries `status` in its frontmatter — `draft`, `accepted`, `implemented`,
-`deferred`, `rejected` — which `dx tasks` reads. A proposal leaves the list
+`deferred`, `rejected` — which `org tasks` reads. A proposal leaves the list
 above only by reaching `implemented` or `rejected`; `accepted` is a decision
 made and not yet built, and stays visible. Closing one is an edit that names the
 release or commit that resolved it, with the outcome in a **Status** section at
