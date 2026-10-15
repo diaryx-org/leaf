@@ -28,6 +28,11 @@ impl Editor {
     pub fn key(&self, key: Key, code: Code, mods: Modifiers) {
         let st = &*self.st;
         st.composer.borrow_mut().settle(&mut st.doc.borrow_mut());
+        // Escape closes the settings panel before anything else has it.
+        if key == Key::Escape && mods.is_empty() && self.prefs_open() {
+            self.show_prefs(false);
+            return;
+        }
         // Typing goes to the find bar while it has focus; a key it does not
         // take (⌘G, ⌘Z, ⌘S…) falls through to the document's.
         let in_bar = st.find.borrow().open && st.find.borrow().focus != Focus::Doc;
@@ -68,6 +73,14 @@ impl Editor {
             }
             Action::Find(cmd) => {
                 self.find_command(cmd);
+                return;
+            }
+            Action::Zoom(z) => {
+                self.zoom(z);
+                return;
+            }
+            Action::Settings => {
+                self.toggle_prefs();
                 return;
             }
         };

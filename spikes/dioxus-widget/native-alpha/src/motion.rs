@@ -17,7 +17,6 @@ use crate::find::Focus;
 use crate::row::{Pointer, PressMode, Target};
 use crate::source;
 use crate::trace::trace;
-use crate::viewport::LINE;
 
 /// Presses closer together than this, on the same row, count as one double-
 /// or triple-click — the system default on macOS.
@@ -114,7 +113,8 @@ impl Editor {
     /// A page up or down: the viewport less a line of overlap, in body lines
     /// — Swift's and gpui's rule.
     pub fn page(&self, down: bool, extend: bool) {
-        let lines = ((self.view_height() / LINE) as usize).saturating_sub(1).max(1);
+        let line = self.st.fonts.borrow().ty().line() as f64;
+        let lines = ((self.view_height() / line) as usize).saturating_sub(1).max(1);
         for _ in 0..lines {
             self.vertical(down, extend);
         }

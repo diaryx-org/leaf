@@ -98,16 +98,80 @@ fn token_class(t: Token) -> &'static str {
 /// The stylesheet the classes above are written against. A spike's worth of it
 /// — enough that the rendered document is legible in a browser and that the
 /// class strings are real, not enough to be a theme.
+///
+/// Every colour is a custom property, set once for a light appearance and
+/// once for a dark one (`prefers-color-scheme`, which a browser, a webview
+/// and Blitz all answer from the system's). The values are the Swift
+/// editor's (`LeafUI/Platform.swift`'s `Palette`): AppKit's semantic colours
+/// as each appearance resolves them, its syntax pairs, and its highlighter
+/// washes — the system colours at 28%.
 pub const STYLESHEET: &str = r#"
+:root {
+  color-scheme: light dark;
+  --leaf-bg: #ffffff;
+  --leaf-text: #262626;
+  --leaf-secondary: #808080;
+  --leaf-tertiary: #b3b3b3;
+  --leaf-accent: #007aff;
+  --leaf-link: #0068da;
+  --leaf-selection: #b3d7ff;
+  --leaf-code-bg: rgba(0, 0, 0, 0.05);
+  --leaf-separator: rgba(0, 0, 0, 0.12);
+  --leaf-table-head: rgba(0, 0, 0, 0.05);
+  --leaf-mark: rgba(255, 204, 0, 0.28);
+  --leaf-mark-red: rgba(255, 59, 48, 0.28);
+  --leaf-mark-orange: rgba(255, 149, 0, 0.28);
+  --leaf-mark-green: rgba(52, 199, 89, 0.28);
+  --leaf-mark-blue: rgba(0, 122, 255, 0.28);
+  --leaf-mark-purple: rgba(175, 82, 222, 0.28);
+  --leaf-mark-brown: rgba(162, 132, 94, 0.28);
+  --leaf-t-punct: #6a7580;
+  --leaf-t-kw: #9526a0;
+  --leaf-t-entity: #2b62d9;
+  --leaf-t-support: #016a99;
+  --leaf-t-const: #98590a;
+  --leaf-t-str: #0a7040;
+  --leaf-t-comment: #6a7580;
+  --leaf-t-invalid: #c02617;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --leaf-bg: #1e1e1e;
+    --leaf-text: #dfdfdf;
+    --leaf-secondary: #8c8c8c;
+    --leaf-tertiary: #595959;
+    --leaf-accent: #0a84ff;
+    --leaf-link: #419cff;
+    --leaf-selection: #3f638b;
+    --leaf-code-bg: rgba(255, 255, 255, 0.07);
+    --leaf-separator: rgba(255, 255, 255, 0.16);
+    --leaf-table-head: rgba(255, 255, 255, 0.07);
+    --leaf-mark: rgba(255, 214, 10, 0.28);
+    --leaf-mark-red: rgba(255, 69, 58, 0.28);
+    --leaf-mark-orange: rgba(255, 159, 10, 0.28);
+    --leaf-mark-green: rgba(48, 209, 88, 0.28);
+    --leaf-mark-blue: rgba(10, 132, 255, 0.28);
+    --leaf-mark-purple: rgba(191, 90, 242, 0.28);
+    --leaf-mark-brown: rgba(172, 142, 104, 0.28);
+    --leaf-t-punct: #7f8b99;
+    --leaf-t-kw: #c678dd;
+    --leaf-t-entity: #7aa2f7;
+    --leaf-t-support: #56b6c2;
+    --leaf-t-const: #e0af68;
+    --leaf-t-str: #9ece6a;
+    --leaf-t-comment: #7f8b99;
+    --leaf-t-invalid: #f7768e;
+  }
+}
 .leaf { font: 15px/1.5 ui-monospace, monospace; white-space: pre; tab-size: 4;
-        caret-color: transparent; outline: none; }
+        caret-color: transparent; outline: none; color: var(--leaf-text); }
 .leaf .row { position: relative; min-height: 1.5em; }
-.leaf .row.code { background: #f6f8fa; }
-.leaf .row.decoration { color: #9aa0a6; }
-.leaf .caret { position: absolute; width: 2px; background: #1a73e8;
+.leaf .row.code { background: var(--leaf-code-bg); }
+.leaf .row.decoration { color: var(--leaf-secondary); }
+.leaf .caret { position: absolute; width: 2px; background: var(--leaf-accent);
                top: 0.1em; bottom: 0.1em; animation: leaf-blink 1s step-end infinite; }
 @keyframes leaf-blink { 50% { opacity: 0; } }
-.leaf .sel { background: #b3d4fd; }
+.leaf .sel { background: var(--leaf-selection); }
 .leaf .h1 { font-size: 2em; font-weight: 700; }
 .leaf .h2 { font-size: 1.6em; font-weight: 700; }
 .leaf .h3 { font-size: 1.3em; font-weight: 700; }
@@ -118,26 +182,27 @@ pub const STYLESHEET: &str = r#"
 .leaf .s { text-decoration: line-through; }
 .leaf .sup { vertical-align: super; font-size: 0.8em; }
 .leaf .sub { vertical-align: sub; font-size: 0.8em; }
-.leaf .link { color: #1a73e8; text-decoration: underline; }
-.leaf .delim { color: #9aa0a6; }
-.leaf .marker, .leaf .gutter { color: #5f6368; }
-.leaf .rule { color: #9aa0a6; }
-.leaf .mark { background: #fff2a8; }
-.leaf .mark.red { background: #ffd4d4; }
-.leaf .mark.orange { background: #ffe0c2; }
-.leaf .mark.yellow { background: #fff2a8; }
-.leaf .mark.green { background: #ccf0d2; }
-.leaf .mark.blue { background: #cfe3fd; }
-.leaf .mark.purple { background: #e6d6fb; }
-.leaf .mark.brown { background: #e8dcc8; }
-.leaf .t-punct { color: #5f6368; }
-.leaf .t-kw { color: #a626a4; }
-.leaf .t-entity { color: #4078f2; }
-.leaf .t-support { color: #0184bc; }
-.leaf .t-const { color: #986801; }
-.leaf .t-str { color: #50a14f; }
-.leaf .t-comment { color: #9aa0a6; font-style: italic; }
-.leaf .t-invalid { color: #e45649; text-decoration: underline wavy; }
+.leaf .link { color: var(--leaf-link); text-decoration: underline; }
+.leaf .delim { color: var(--leaf-secondary); }
+.leaf .marker { color: var(--leaf-secondary); }
+.leaf .gutter { color: var(--leaf-tertiary); }
+.leaf .rule { color: var(--leaf-secondary); }
+.leaf .mark { background: var(--leaf-mark); }
+.leaf .mark.red { background: var(--leaf-mark-red); }
+.leaf .mark.orange { background: var(--leaf-mark-orange); }
+.leaf .mark.yellow { background: var(--leaf-mark); }
+.leaf .mark.green { background: var(--leaf-mark-green); }
+.leaf .mark.blue { background: var(--leaf-mark-blue); }
+.leaf .mark.purple { background: var(--leaf-mark-purple); }
+.leaf .mark.brown { background: var(--leaf-mark-brown); }
+.leaf .t-punct { color: var(--leaf-t-punct); }
+.leaf .t-kw { color: var(--leaf-t-kw); }
+.leaf .t-entity { color: var(--leaf-t-entity); }
+.leaf .t-support { color: var(--leaf-t-support); }
+.leaf .t-const { color: var(--leaf-t-const); }
+.leaf .t-str { color: var(--leaf-t-str); }
+.leaf .t-comment { color: var(--leaf-t-comment); font-style: italic; }
+.leaf .t-invalid { color: var(--leaf-t-invalid); text-decoration: underline wavy; }
 "#;
 
 #[cfg(test)]

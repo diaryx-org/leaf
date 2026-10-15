@@ -394,7 +394,7 @@ mod tests {
     }
 
     fn blocks_of(d: &Doc, caret: usize) -> Vec<Block> {
-        let mut fonts = Fonts::new();
+        let mut fonts = Fonts::new(crate::text::Type::default());
         let dir = Some(Path::new("/nowhere"));
         d.vmap
             .media
@@ -448,7 +448,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         image::RgbImage::new(64, 48).save(dir.join("pic.png")).unwrap();
         let d = doc("![](pic.png)\n");
-        let b = block(&d.vmap.media[0], &d.vmap.rows, Some(&dir), 0, None, &mut Fonts::new(), 600.0, |_| None);
+        let b = block(&d.vmap.media[0], &d.vmap.rows, Some(&dir), 0, None, &mut Fonts::new(crate::text::Type::default()), 600.0, |_| None);
         std::fs::remove_dir_all(&dir).unwrap();
         let still = b.unwrap().still.expect("the picture loaded");
         assert_eq!(still.size, (64.0, 48.0));
@@ -522,7 +522,7 @@ mod tests {
             still: None,
             label: String::new(),
             prefix: RowView::default(),
-            prefix_layout: LayoutHandle(Rc::new(Fonts::new().layout(&RowView::default(), f32::INFINITY, Kind::Prose))),
+            prefix_layout: LayoutHandle(Rc::new(Fonts::new(crate::text::Type::default()).layout(&RowView::default(), f32::INFINITY, Kind::Prose))),
             indent: 20.0,
             size: (200.0, 100.0),
             start: 2,

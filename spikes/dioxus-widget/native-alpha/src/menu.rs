@@ -103,6 +103,10 @@ pub fn install() -> AppMenu {
         ],
     )
     .expect("the app menu");
+    // Leaf ▸ Settings…, where a Mac app keeps it.
+    let settings = b.item("Settings…", Command::Chord(ch(","), Code::Comma, CMD), Some((CMD, Code::Comma)));
+    let _ = app.insert(&settings, 2);
+    let _ = app.insert(&PredefinedMenuItem::separator(), 3);
 
     let file = Submenu::new("File", true);
     b.add(&file, "New", Command::New, Some((CMD, Code::KeyN)));
@@ -169,6 +173,13 @@ pub fn install() -> AppMenu {
 
     let view = Submenu::new("View", true);
     b.chord(&view, "Source View", ch("e"), Code::KeyE, CMD);
+    sep(&view);
+    // Items of their own, not just keys: macOS hands the menu a chord it
+    // names before the window sees it, which keeps Blitz's page zoom (on the
+    // same three chords in blitz-shell's window.rs) from also acting.
+    b.chord(&view, "Make Text Bigger", ch("="), Code::Equal, CMD);
+    b.chord(&view, "Make Text Smaller", ch("-"), Code::Minus, CMD);
+    b.chord(&view, "Actual Size", ch("0"), Code::Digit0, CMD);
     sep(&view);
     let _ = view.append(&PredefinedMenuItem::fullscreen(None));
 
@@ -364,11 +375,19 @@ impl Builder {
         self.add(menu, label, Command::Chord(key, code, mods), Some((mods, code)));
     }
 
+    /// An item, appended to `menu` — and handed back, for a caller that
+    /// enables or disables it later (the Table items outside a table).
     fn add(&mut self, menu: &Submenu, label: &str, command: Command, shortcut: Option<(Modifiers, Code)>) -> MenuItem {
+        let item = self.item(label, command, shortcut);
+        let _ = menu.append(&item);
+        item
+    }
+
+    /// An item, for a menu to take where it likes.
+    fn item(&mut self, label: &str, command: Command, shortcut: Option<(Modifiers, Code)>) -> MenuItem {
         let id = MenuId::new(format!("leaf.{}", self.commands.len()));
         let accel = shortcut.and_then(|(m, c)| accelerator(m, c));
         let item = MenuItem::with_id(id.clone(), label, true, accel);
-        let _ = menu.append(&item);
         self.commands.insert(id, command);
         item
     }

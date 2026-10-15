@@ -555,6 +555,68 @@ handed to the system — the resolution is unit-tested. A click on a note's own
 `[1]` marker lands on the line above (core's mapping of that decoration), so
 following back is a ⌘-click on the note's text.
 
+### Dark mode, settings and text zoom
+
+**Dark mode needs no Rust.** Blitz turns winit's theme into the stylesheet's
+`prefers-color-scheme` and recascades on `ThemeChanged` (blitz-dom's
+`DeviceChanges::COLOR_SCHEME`), and Stylo has CSS custom properties. So every
+colour — the parent's `STYLESHEET` and `native-alpha/src/view.rs`'s chrome —
+is a `var(--…)`, set once in a light `:root` and once under
+`@media (prefers-color-scheme: dark)`, with the Swift editor's values
+(`Palette` in `LeafUI/Platform.swift`: AppKit's semantic colours as each
+appearance resolves them, its syntax pairs, its 28% highlighter washes). A
+test fails if a property is used but not set, set for one appearance only, or
+a literal colour appears outside the two palettes. The one Rust is a
+`request_redraw` on `ThemeChanged`, which Blitz handles without asking for a
+frame — and the Appearance override below, which cannot go through Blitz:
+winit sends no `ThemeChanged` for the app's own `Window::set_theme` (its
+appearance observer ignores a window whose appearance is set), so a forced
+appearance rewrites the dark block's media query to `all` or `not all`
+(`view::themed`).
+
+**Settings (⌘,, Leaf ▸ Settings…)** are Swift's `SettingsView` choices with
+its values: font and code font, size (14/16/19), line spacing
+(1.3/1.5/1.75/2), column width (52/68/88 characters, or full) — plus
+Appearance (System/Light/Dark, through `Window::set_theme`), which Swift does
+not have and which is how to see the dark stylesheet without switching the
+whole Mac. They are a panel in the window, not a window of their own:
+dioxus-native's `launch` opens one window. The font menus are a short list of
+installed faces rather than every family. Choices persist in
+`~/Library/Application Support/leaf-native-spike/settings.toml`
+(`LEAF_SETTINGS` names another file).
+
+The faces, size and leading that were `text.rs` constants are one runtime
+`text::Type`, held by `Fonts` and written into the stylesheet by
+`view::css(&Type)`, so parley measures what Blitz draws; a change relays out
+every row (the layout cache is keyed by type as well as width) and drops the
+tables' cache. The column's measure is counted in characters of the body face
+— `Fonts::char_width`, Swift's `averageCharWidth`, measured the same way — so
+it follows the face, the size and the zoom.
+
+**Text zoom (⌘+ / ⌘− / ⌘0)** scales the type through browser-like steps
+(50–300%) and reflows; it is not saved. Blitz has its own *page* zoom on
+⌘= / ⌘- / ⌘0 (blitz-shell's `window.rs`, matched on the physical key with
+⌘ or ⌃): it scales CSS pixels, which leaves the editor's window width and the
+viewport in the wrong units. The editor wins by naming the three chords as
+View menu items: macOS hands a key equivalent to the menu before the window,
+so Blitz never sees them. ⇧⌘= (⌘+ typed with Shift) is not the menu item's
+equivalent: it reaches the editor through the window, which zooms the text,
+and Blitz, which almost certainly zooms the page as well — dioxus-native gives
+the app no handle on Blitz's viewport to undo it. Not verified, since the
+tools here synthesise that chord as `NumpadEqual`.
+
+Checked on macOS: the panel from Leaf ▸ Settings… and ⌘,, closed by Done and
+Escape; Dark, Light and back from the panel, the window's title bar with them;
+Dark kept across a relaunch through the settings file; Charter at Large, and
+⌘= / ⌘− / ⌘0 from the keyboard (125%, 150%, back to 100%), each reflowing
+with the column widening by its measure while the status line stays at 12px —
+Blitz's page zoom never acted; a click in the right half of a glyph putting
+the caret after it, in Charter at 19px and again at 125%; Restore Defaults
+back to the System appearance; the source view at its 82-cell measure. Not
+checked: a change of the *system's* appearance while the app runs (the
+`prefers-color-scheme` path is the one the launch used, and Blitz's handler
+is above), which needs System Settings changed.
+
 ### Working on the native editor
 
 `native-alpha/src/main.rs` is only the app's wiring: every event source —
@@ -580,7 +642,7 @@ covered by others does not paint — see `occluded` in the trace.
 **Still not at parity**, all frontend work: dictation, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, video and audio playback, spellcheck and
 autocorrect, Writing Tools and data detectors in the context menu, link
-peeks, block drag, a toolbar, settings and dark mode, print and PDF,
+peeks, block drag, a toolbar, print and PDF,
 accessibility.
 
 ## The verdict
