@@ -21,7 +21,15 @@ dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
     "signals",
     "hooks",
 ] }
-dioxus-native = "0.8.0-alpha.2"
+# dioxus-native's defaults, but the classic `vello` renderer for
+# `vello-hybrid`: hybrid cannot draw a bitmap glyph — with glifo's `png` on,
+# vello_gpu panics ("pixmap image sources are not supported by Vello GPU"),
+# and without it every emoji (Apple Color Emoji is sbix PNGs) draws as
+# nothing. Classic vello draws them.
+dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features = [
+    "accessibility", "net", "html", "svg", "system-fonts", "clipboard", "file-dialog",
+    "woff", "text-transform-icu", "apple-font-embolden", "vello",
+] }
 # The bridge, with the parent's own Dioxus (0.7.10) switched off.
 dioxus-widget-spike = { path = "..", default-features = false }
 # `fs` on, unlike the parent's widget: this is an app with a file to open and

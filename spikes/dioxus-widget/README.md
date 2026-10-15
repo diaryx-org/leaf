@@ -418,8 +418,17 @@ Two macOS text features do not, and neither is the editor's to fix:
   forwards only text that ends a composition, so its insertion would be
   dropped.
 
-Both want a winit patch (its macOS `insertText` and key-repeat handling) and
-a real menu bar, which parity needs anyway.
+Both are now fixed by a patch to winit's macOS backend, vendored under
+`native-alpha/patches/winit-appkit` (its `PATCH.md` says what and why): the
+text input client answers from the surrounding text the editor reports,
+replacement ranges become `Ime::DeleteSurrounding`, picker and dictation text
+arrives as `Ime::Commit`, and keys meant for the accent menu are not typed.
+⌃⌘Space opens the Character Viewer from the editor, for want of an Edit menu.
+
+Emoji then needed a different renderer: Blitz's default `vello-hybrid` cannot
+draw a bitmap glyph (Apple Color Emoji is all sbix PNGs), drawing nothing or,
+with glifo's `png` on, panicking. The editor builds with classic `vello`,
+which draws them. Checked on macOS: press-and-hold accents and emoji.
 
 **Still not at parity**, all frontend work: dictation, tables, images, math and Mermaid drawn as pictures rather than as
 core's monospace fallbacks, the source view, find and replace, spellcheck and
