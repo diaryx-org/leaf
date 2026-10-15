@@ -81,5 +81,13 @@ dispatch2 = "0.3"
 # no questions about the text around the caret, so macOS's press-and-hold
 # accent menu never opened, and it dropped any insertText that did not end a
 # composition, which is how the emoji picker inserts.
+#
+# An exception to the org rule against [patch] in a tracked manifest, granted
+# by Adam on 2026-10-15 for this spike workspace only. The rule keeps each org
+# crate spelled one way in every manifest; this patches a third-party crate,
+# vendored inside the repository, in a workspace nothing depends on — and
+# winit-appkit reaches the spike only transitively (dioxus-native →
+# blitz-shell → winit), which nothing but [patch] can override. It goes when
+# the change lands upstream (PATCH.md, "Upstream") and Blitz takes that winit.
 [patch.crates-io]
 winit-appkit = { path = "patches/winit-appkit" }
