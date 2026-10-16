@@ -20,6 +20,7 @@ use blitz_traits::events::MouseEventButtons;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use dioxus::prelude::*;
 use dioxus_core::{Runtime, ScopeId, VirtualDom};
+use dioxus_native::DioxusDocument;
 use dioxus_native::winit::dpi::PhysicalPosition;
 use dioxus_native::winit::event::{
     ButtonSource, ElementState, Ime, MouseButton, MouseScrollDelta, PointerKind, PointerSource,
@@ -27,7 +28,8 @@ use dioxus_native::winit::event::{
 };
 use dioxus_native::winit::keyboard::ModifiersState;
 use dioxus_native::winit::window::{Theme, Window, WindowId};
-use dioxus_native::{DioxusDocument, DioxusNativeWindowRenderer};
+
+use crate::renderer::Renderer;
 use leaf_core::Doc;
 use leaf_dioxus::{Editor, Host, Look, use_editor};
 
@@ -75,7 +77,7 @@ pub(crate) fn Root() -> Element {
 
 pub struct Hosted {
     window: Arc<HostedWindow>,
-    view: RefCell<View<DioxusNativeWindowRenderer>>,
+    view: RefCell<View<Renderer>>,
     runtime: Rc<Runtime>,
     editor: Rc<RefCell<Option<Editor>>>,
     mods: Cell<ModifiersState>,
@@ -145,7 +147,7 @@ impl Hosted {
         // What dioxus-native provides every window's root, but for its
         // window-event handlers (the host sends events itself) and its head
         // elements (the editor sets no title).
-        let renderer = DioxusNativeWindowRenderer::new();
+        let renderer = Renderer::new();
         {
             let (w, r) = (as_dyn.clone(), renderer.clone());
             document.vdom.in_scope(ScopeId::ROOT, move || {

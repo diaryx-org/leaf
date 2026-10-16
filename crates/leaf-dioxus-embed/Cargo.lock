@@ -2419,6 +2419,7 @@ name = "leaf-dioxus-embed"
 version = "0.0.0"
 dependencies = [
  "anyrender",
+ "anyrender_vello",
  "blitz-dom",
  "blitz-net",
  "blitz-paint",
@@ -2436,6 +2437,7 @@ dependencies = [
  "raw-window-handle",
  "skrifa 0.44.0",
  "tokio",
+ "vello",
 ]
 
 [[package]]

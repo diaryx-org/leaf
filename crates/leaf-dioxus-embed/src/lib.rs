@@ -28,6 +28,7 @@ mod ffi;
 mod guard;
 mod host;
 pub mod pdf;
+mod renderer;
 mod runtime;
 mod text;
 mod view;
