@@ -758,6 +758,46 @@ pub unsafe extern "C" fn leaf_view_range_rect(
     true
 }
 
+/// The face the character at UTF-16 `loc` of `leaf_view_text` is drawn in,
+/// by its PostScript name — free with `leaf_string_free` — with its size in
+/// points in `*size`; null on a block, or where no row is laid out.
+///
+/// # Safety
+/// `h` is null or a live handle; `size` points at a double.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_font_at(
+    h: *mut LeafView,
+    loc: usize,
+    size: *mut f64,
+) -> *mut c_char {
+    let Some((font, px)) = unsafe { hosted(h) }
+        .and_then(|v| {
+            v.with_editor(|ed| {
+                let off = text::offset_of(&mut ed.doc(), loc);
+                ed.font_at(off)
+            })
+        })
+        .flatten()
+    else {
+        return std::ptr::null_mut();
+    };
+    let name = skrifa::FontRef::from_index(font.data.data(), font.index)
+        .ok()
+        .and_then(|f| {
+            use skrifa::MetadataProvider;
+            f.localized_strings(skrifa::string::StringId::POSTSCRIPT_NAME)
+                .english_or_first()
+                .map(|s| s.to_string())
+        });
+    let Some(name) = name.and_then(|n| CString::new(n).ok()) else {
+        return std::ptr::null_mut();
+    };
+    if let Some(size) = unsafe { size.as_mut() } {
+        *size = f64::from(px);
+    }
+    name.into_raw()
+}
+
 /// Open (`begin`) or close an undo group: the edits between are one step.
 ///
 /// # Safety

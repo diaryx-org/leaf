@@ -607,6 +607,19 @@ mod tests {
             }
             // Off the rows, nothing.
             assert_eq!(ed.offset_at_point(10.0, 1.0e6), None);
+            // A heading's word is set larger than the body's, each in a face
+            // with a name to find it by.
+            let (head, head_px) = ed.font_at(src.find("Title").unwrap()).expect("a face");
+            let (body, body_px) = ed.font_at(src.find("brown").unwrap()).expect("a face");
+            assert!(head_px > body_px * 1.2, "{head_px} vs {body_px}");
+            for f in [head, body] {
+                use skrifa::MetadataProvider;
+                let f = skrifa::FontRef::from_index(f.data.data(), f.index).unwrap();
+                let name = f
+                    .localized_strings(skrifa::string::StringId::POSTSCRIPT_NAME)
+                    .english_or_first();
+                assert!(name.is_some(), "a face without a PostScript name");
+            }
         });
     }
 

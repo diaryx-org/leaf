@@ -417,6 +417,19 @@ impl RowLayout {
 
     /// The line a body byte belongs to: the last one starting at or before
     /// it, so a byte at a soft break is the next line's start.
+    /// The face and size the body's column `col` is set in: what a host
+    /// draws the same text in over it (Look Up's highlight). `None` in the
+    /// prefix, and on an inline box.
+    pub fn font_at(&self, col: usize) -> Option<(parley::FontData, f32)> {
+        let at = byte_of_col(&self.body.text, col.checked_sub(self.prefix_cols)?);
+        self.body
+            .layout
+            .lines()
+            .flat_map(|l| l.runs().collect::<Vec<_>>())
+            .find(|r| r.text_range().contains(&at))
+            .map(|r| (r.font().clone(), r.font_size()))
+    }
+
     pub fn line_of(&self, byte: usize) -> usize {
         self.lines
             .iter()

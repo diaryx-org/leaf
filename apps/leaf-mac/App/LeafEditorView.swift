@@ -37,6 +37,8 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
     /// Where the last right-click was, for the context menu the editor asks
     /// for after it.
     private var menuPoint = NSPoint.zero
+    /// The last pressure stage, to see a force click begin.
+    private var pressureStage = 0
     private(set) lazy var spelling = Spelling(view: self)
     /// The text the system indexes, with the revision and view it was read
     /// at: asked for by the input method around most keystrokes.
@@ -239,6 +241,28 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
         leaf_view_pointer(handle, kind, p.x, p.y, button, event.modifierFlags.leaf)
     }
 
+    /// A force click: the press deepening to its second stage. AppKit would
+    /// turn it into `quickLook(with:)` for a view of its own, but under
+    /// SwiftUI's hosting view that never arrives here, so the stage is read
+    /// directly — and acted on only where the trackpad's Look Up is a force
+    /// click, as it is in every other app.
+    override func pressureChange(with event: NSEvent) {
+        defer { pressureStage = event.stage }
+        guard event.stage == 2, pressureStage < 2, Self.forceClickLooksUp else { return }
+        lookUp(at: convert(event.locationInWindow, from: nil))
+    }
+
+    /// Whether System Settings ▸ Trackpad ▸ Look up & data detectors is
+    /// Force Click: force clicking on, and Look Up not given to a three-finger
+    /// tap instead.
+    static var forceClickLooksUp: Bool {
+        let global = UserDefaults.standard
+        let trackpad = UserDefaults(suiteName: "com.apple.AppleMultitouchTrackpad")
+        let forceClick = global.object(forKey: "com.apple.trackpad.forceClick") as? Bool ?? true
+        let threeFingerTap = trackpad?.integer(forKey: "TrackpadThreeFingerTapGesture") ?? 0
+        return forceClick && threeFingerTap != 2
+    }
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         // ⌃-click is a secondary click on a Mac.
@@ -412,12 +436,18 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
     /// the Dictionary's popover, drawn over the word where it stands — what
     /// any text view does.
     override func quickLook(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        let index = leaf_view_index_at_point(handle, p.x, p.y)
-        guard marked.isEmpty, index >= 0, let word = word(at: Int(index)) else {
-            return super.quickLook(with: event)
+        if !lookUp(at: convert(event.locationInWindow, from: nil)) {
+            super.quickLook(with: event)
         }
+    }
+
+    /// Look up the word at a point of this view; whether there was one.
+    @discardableResult
+    private func lookUp(at p: NSPoint) -> Bool {
+        let index = leaf_view_index_at_point(handle, p.x, p.y)
+        guard marked.isEmpty, index >= 0, let word = word(at: Int(index)) else { return false }
         showDefinition(of: word)
+        return true
     }
 
     /// The word around UTF-16 `index` of the text, if the index is in one.
@@ -437,11 +467,20 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
         return found
     }
 
+    /// The face and size the character at UTF-16 `index` is drawn in — a
+    /// heading's, a bold run's — for drawing it again over itself.
+    private func font(at index: Int) -> NSFont? {
+        var size = 0.0
+        guard let raw = leaf_view_font_at(handle, index, &size) else { return nil }
+        defer { leaf_string_free(raw) }
+        return NSFont(name: String(cString: raw), size: size)
+    }
+
     /// The Dictionary's popover for a range of the text, set on its baseline.
     private func showDefinition(of range: NSRange) {
         let text = self.text(prose: false) as NSString
         guard NSMaxRange(range) <= text.length, let rect = rect(of: range) else { return }
-        let font = model.bodyFont
+        let font = font(at: range.location) ?? model.bodyFont
         // The line box centres the face's ascent and descent.
         let baseline = rect.minY + (rect.height + font.ascender + font.descender) / 2
         let word = NSAttributedString(string: text.substring(with: range), attributes: [.font: font])

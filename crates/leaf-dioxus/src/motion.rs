@@ -118,6 +118,16 @@ impl Editor {
         ))
     }
 
+    /// The face and size the character at source offset `off` is set in,
+    /// in CSS pixels. `None` on a block, or where no row is laid out.
+    pub fn font_at(&self, off: usize) -> Option<(parley::FontData, f32)> {
+        let (row, col) = pos_of(&self.st.doc.borrow(), off);
+        if self.in_block(row) {
+            return None;
+        }
+        self.sig.lays.peek().get(row)?.0.font_at(col)
+    }
+
     fn in_block(&self, row: usize) -> bool {
         self.sig
             .blocks

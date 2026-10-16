@@ -168,6 +168,8 @@ void leaf_view_undo_group(LeafView *view, bool begin);
 // and where a range is drawn (its first line), as x, y, width, height.
 int64_t leaf_view_index_at_point(LeafView *view, double x, double y);
 bool leaf_view_range_rect(LeafView *view, size_t loc, size_t len, double out[4]);
+// The face (PostScript name; free it) and size the character at loc is drawn in.
+char *leaf_view_font_at(LeafView *view, size_t loc, double *size);
 // ranges: count (location, length) pairs, misspelled in the text at revision.
 void leaf_view_set_misspellings(LeafView *view, uint64_t revision, const size_t *ranges,
                                 size_t count);
