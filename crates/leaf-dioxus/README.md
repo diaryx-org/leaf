@@ -66,6 +66,10 @@ fn App() -> Element {
   own beside it; `Palette` checks that the host's chrome sets every colour it
   uses for both appearances, as the editor's own stylesheet test does.
 
+`use_shared_editor` is `use_editor` on a document the host keeps a hold of
+too, an `Rc<RefCell<Doc>>`: to save it as it changes, or to change it from a
+formatting bar of its own and then `refresh` the editor.
+
 Beyond those, a host drives the editor through its methods: `doc()` to read
 or change the document, `table` for the Table menu's commands, `open_link`,
 `copy_link` and `follow_footnote` for a context menu's choices, `has_family`
@@ -86,6 +90,8 @@ default, so an empty `impl Host for Mine {}` is a host.
 | `open` | a link to a URL or a file beside the document | nothing |
 | `context_menu` | a right-click, with what it should offer (`Context`) | nothing |
 | `repainted` | after every repaint, with the document: a window title, a dirty dot | nothing |
+| `turn` | a finger dragged the page sideways far enough to turn it (`set_turns`) | nothing |
+| `directive_height` / `draw_directive` | a directive, `::name[label]{…}`: how tall a card to draw under its label, and the card | no card |
 
 The editor never reads or writes a document: Save is a `Request`, so a host
 whose documents are not files can store them where it likes, and the crate
@@ -115,11 +121,21 @@ is the Swift editor's defaults.
   editor needs to draw correctly — classic `vello` (the default
   `vello-hybrid` cannot draw a colour emoji), `system-fonts`, `net` and
   `svg` — and leaves the rest to the host.
-- **The editor assumes the window is its own.** Its stylesheet clips at
-  `body`, its viewport is the window's surface less the status line, and it
-  tells the input method where the caret is relative to the window's
-  top-left corner. Placing it in part of a window is the task "Place the
-  Dioxus editor in part of a window" in `docs/tasks/`.
+- **A box of its own, if the window is not.** By default the editor fills
+  the window. `Editor::set_bounds` gives it a box instead — beside a
+  sidebar, under a toolbar, over a keyboard — which its viewport, its centred
+  column, its find bar, its status line and the input method's caret all
+  follow. It does not clip to the box: Blitz will not repaint a clip that
+  changes, so the stylesheet still clips at `body`, and the host covers what
+  lies outside the box with its own chrome, in a stacking layer above it.
+- **Under a finger** (iOS), a tap places the caret and raises the keyboard,
+  a drag scrolls, and a sideways drag, where `Editor::set_turns` allows it,
+  slides the page and is `Host::turn` when let go far enough. The keyboard is
+  not asked for until that first tap.
+- **The renderer is a feature.** `vello`, on by default, is Blitz's classic
+  renderer, which draws colour emoji. A host where it cannot run — the iOS
+  Simulator — turns default features off and picks `dioxus-native`'s
+  `vello-hybrid` itself.
 - **A debug build can trip a Blitz assertion.** With `debug_assertions`,
   blitz-dom checks its layout tree after every change, and closing the find
   bar after a search has been seen to fail it ("layout child … is not in the

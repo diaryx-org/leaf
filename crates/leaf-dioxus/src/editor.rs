@@ -80,6 +80,37 @@ pub fn viewport_height(physical: u32, scale: f64) -> f64 {
     (physical as f64 / scale - STATUS).max(LINE)
 }
 
+/// Where the editor is in the window, in CSS pixels from the window's
+/// top-left: the box its rows are laid out and scrolled in, the find bar
+/// pinned to its top and the status line to its bottom.
+///
+/// The editor does not clip to it. Blitz paints the first frame of an
+/// `overflow: hidden` element and not its changes, and skips a child that
+/// hangs past its parent's box (`view.rs`), so the rows scrolled past the
+/// box's top are still drawn above it, and those past its bottom below it,
+/// as far as the window. A host covers what lies outside the box with its own
+/// chrome, each piece in a stacking layer above the editor's — a toolbar over
+/// the top, a sidebar beside it — and the window cuts off the rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Bounds {
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// What the status line under the editor shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Status {
+    /// The file, whether it is saved, the view, a note, and the word count.
+    #[default]
+    Full,
+    /// The word count alone.
+    Words,
+    /// No status line: the rows run to the bottom of the box.
+    Hidden,
+}
+
 /// The window's width in CSS pixels.
 pub fn window_width(physical: u32, scale: f64) -> f32 {
     (physical as f64 / scale) as f32
@@ -106,6 +137,8 @@ pub struct Look {
     pub measure: Option<f32>,
     /// Light or dark: the system's, or one of the two.
     pub appearance: Appearance,
+    /// What the status line shows, if there is one.
+    pub status: Status,
 }
 
 impl Default for Look {
@@ -116,6 +149,7 @@ impl Default for Look {
             ty: Type::default(),
             measure: Some(68.0),
             appearance: Appearance::System,
+            status: Status::Full,
         }
     }
 }
@@ -146,7 +180,8 @@ impl Measures {
 
 /// What the editor keeps between events.
 pub struct State {
-    pub doc: RefCell<Doc>,
+    /// The document, which the host may hold too ([`use_shared_editor`]).
+    pub doc: Rc<RefCell<Doc>>,
     pub window: Arc<dyn Window>,
     /// Whoever embeds the editor; see `host.rs`.
     pub host: Rc<dyn Host>,
@@ -174,6 +209,17 @@ pub struct State {
     /// drawn only while the text is still at that revision: after an edit
     /// they stand where the words were, so they wait for the next check.
     misspelled: RefCell<(u64, Vec<(usize, usize)>)>,
+    /// The window's surface, in CSS pixels, from its last resize.
+    surface: Cell<(f64, f64)>,
+    /// The host's box for the editor, or `None` for the whole window.
+    bounds: Cell<Option<Bounds>>,
+    /// A finger that went down and has not yet come up; see `touch.rs`.
+    pub touch: Cell<Option<crate::touch::Touch>>,
+    /// Whether the last pointer was a finger, which decides how a row hears
+    /// it: a mouse by its press, a finger by its tap.
+    pub touch_mode: Cell<bool>,
+    /// Which ways a sideways drag may turn the page: back, and forward.
+    pub turns: Cell<(bool, bool)>,
 }
 
 /// What the render reads. Each is a signal, so the page re-renders when an
@@ -207,6 +253,11 @@ pub struct Signals {
     pub width: Signal<f32>,
     /// What the rows are drawn with, which the stylesheet writes out.
     pub look: Signal<Look>,
+    /// Where the editor's box starts in the window; see [`Bounds`]. With
+    /// `height` and `win_w`, the box.
+    pub origin: Signal<(f64, f64)>,
+    /// How far the page stands off sideways under a finger turning it.
+    pub slide: Signal<f64>,
 }
 
 impl Signals {
@@ -228,6 +279,8 @@ impl Signals {
             win_w: use_signal(|| window_width(size.width, scale)),
             width: use_signal(|| 0.0),
             look: use_signal(Look::default),
+            origin: use_signal(|| (0.0, 0.0)),
+            slide: use_signal(|| 0.0),
         }
     }
 }
@@ -276,14 +329,36 @@ pub fn use_editor(
     look: impl FnOnce() -> Look,
     host: impl FnOnce() -> Rc<dyn Host>,
 ) -> Editor {
+    use_shared_editor(|| Rc::new(RefCell::new(doc())), look, host)
+}
+
+/// [`use_editor`], on a document the host keeps a hold of too — to save it
+/// as it changes, or to change it from controls of its own (a formatting
+/// bar) and then [`refresh`](Editor::refresh) the editor. The host must not
+/// hold it borrowed across a call into the editor.
+pub fn use_shared_editor(
+    doc: impl FnOnce() -> Rc<RefCell<Doc>>,
+    look: impl FnOnce() -> Look,
+    host: impl FnOnce() -> Rc<dyn Host>,
+) -> Editor {
     let window = dioxus_native::use_window();
     let sig = Signals::new(&window);
     let ed = use_hook(|| {
         let ed = Editor::new(doc(), window.clone(), sig, host());
-        // The first paint, and the input method allowed on the window.
+        // The first paint, and the input method allowed on the window —
+        // but under a finger, where allowing it raises the keyboard, that
+        // waits for a tap on the page.
         ed.set_look(look());
-        ed.enable_ime();
+        if !crate::touch::KEYBOARD_ON_TAP {
+            ed.enable_ime();
+        }
         ed
+    });
+    // Leaving the page lowers the keyboard, and lets another editor in the
+    // window ask for the input method.
+    use_drop({
+        let ed = ed.clone();
+        move || ed.disable_ime()
     });
     // The pointer, from every line of every row and block.
     use_context_provider({
@@ -294,11 +369,18 @@ pub fn use_editor(
 }
 
 impl Editor {
-    fn new(doc: Doc, window: Arc<dyn Window>, sig: Signals, host: Rc<dyn Host>) -> Self {
+    fn new(
+        doc: Rc<RefCell<Doc>>,
+        window: Arc<dyn Window>,
+        sig: Signals,
+        host: Rc<dyn Host>,
+    ) -> Self {
         let mut fonts = Fonts::new(Type::default());
         let measures = Measures::of(Look::default().measure, &mut fonts);
+        let size = window.surface_size();
+        let scale = window.scale_factor();
         let st = State {
-            doc: RefCell::new(doc),
+            doc,
             window,
             host,
             frame: RefCell::default(),
@@ -313,6 +395,11 @@ impl Editor {
             goal: Cell::new(None),
             measures: Cell::new(measures),
             misspelled: RefCell::default(),
+            surface: Cell::new((size.width as f64 / scale, size.height as f64 / scale)),
+            bounds: Cell::new(None),
+            touch: Cell::new(None),
+            touch_mode: Cell::new(false),
+            turns: Cell::new((false, false)),
         };
         Self {
             st: Rc::new(st),
@@ -361,7 +448,8 @@ impl Editor {
                 };
                 let marks = Marks::of(&doc.vmap, shown, doc.anchor)
                     .composing(composer.marked())
-                    .misspelled(current);
+                    .misspelled(current)
+                    .highlighted(doc.highlights());
                 let h = frame.update(&doc.vmap, &marks).to_vec();
                 // A table's picture is box-drawn in character cells, so its
                 // rows stay monospace, as code does.
@@ -448,6 +536,10 @@ impl Editor {
             self.dark(),
             &st.block_cache,
         );
+        let mut blocks = blocks;
+        blocks.extend(blocks::directives(
+            &doc, &*st.host, &handles, &row_lays, &kinds,
+        ));
         let t2 = Instant::now();
         let mut heights: Vec<f64> = row_lays.iter().map(|l| l.0.height as f64).collect();
         for b in &blocks {
@@ -564,7 +656,7 @@ impl Editor {
 
     /// The furthest down the viewport goes: to where the last row sits
     /// mid-viewport.
-    fn max_top(&self) -> f64 {
+    pub(crate) fn max_top(&self) -> f64 {
         (self.sig.layout.peek().height() - *self.sig.height.peek() / 2.0).max(0.0)
     }
 
@@ -572,15 +664,87 @@ impl Editor {
     /// as tall as the whole surface at the furthest scroll, so that a
     /// scroll view's range is the editor's own.
     pub fn scroll_height(&self) -> f64 {
-        self.max_top() + *self.sig.height.peek() + STATUS
+        self.max_top() + *self.sig.height.peek() + self.status_height()
     }
 
-    /// Where the text starts in the window, in CSS pixels: past the side
-    /// padding, and past half of whatever room the column leaves, as it is
-    /// centred.
+    /// How tall the status line is: [`STATUS`], or nothing when the look
+    /// hides it.
+    pub fn status_height(&self) -> f64 {
+        match self.sig.look.peek().status {
+            Status::Hidden => 0.0,
+            Status::Full | Status::Words => STATUS,
+        }
+    }
+
+    /// Where the text starts in the window, in CSS pixels: past the box's
+    /// left edge and the side padding, and past half of whatever room the
+    /// column leaves, as it is centred in the box.
     pub fn left(&self) -> f64 {
+        self.column_left() + crate::row::PAD
+    }
+
+    /// Where the column — the text and its side padding — starts in the
+    /// window, in CSS pixels.
+    pub fn column_left(&self) -> f64 {
         let column = *self.sig.width.peek() + 2.0 * crate::row::PAD as f32;
-        crate::row::PAD + ((*self.sig.win_w.peek() - column) / 2.0).max(0.0) as f64
+        self.sig.origin.peek().0 + ((*self.sig.win_w.peek() - column) / 2.0).max(0.0) as f64
+    }
+
+    /// The editor's box in the window, as it stands: the host's, or the
+    /// window's surface.
+    pub fn bounds(&self) -> Bounds {
+        self.st.bounds.get().unwrap_or_else(|| {
+            let (width, height) = self.st.surface.get();
+            Bounds {
+                left: 0.0,
+                top: 0.0,
+                width,
+                height,
+            }
+        })
+    }
+
+    /// Lay the editor out in `bounds` from now on — a host with a sidebar
+    /// or a toolbar beside it, or a keyboard over its bottom — or, with
+    /// `None`, in the whole window again. See [`Bounds`] for what the host
+    /// owes it. A box that grows narrower or wider lays the rows out again;
+    /// one that grows shorter keeps the caret in view.
+    pub fn set_bounds(&self, bounds: Option<Bounds>) {
+        if self.st.bounds.get() != bounds {
+            self.st.bounds.set(bounds);
+            self.place();
+        }
+    }
+
+    /// Bring the viewport's signals up to date with the box.
+    fn place(&self) {
+        let b = self.bounds();
+        if *self.sig.origin.peek() != (b.left, b.top) {
+            set(self.sig.origin, (b.left, b.top));
+        }
+        let height = (b.height - self.status_height()).max(LINE);
+        let shorter = height < *self.sig.height.peek();
+        if height != *self.sig.height.peek() {
+            set(self.sig.height, height);
+        }
+        let w = b.width as f32;
+        if w != *self.sig.win_w.peek() {
+            set(self.sig.win_w, w);
+            self.refresh();
+        } else if shorter {
+            self.follow(self.caret_at().map(|(row, ..)| row));
+        }
+    }
+
+    /// The document, as the editor and any host that shares it hold it.
+    pub fn shared_doc(&self) -> Rc<RefCell<Doc>> {
+        self.st.doc.clone()
+    }
+
+    /// Which ways a sideways drag of a finger may turn the page — back, and
+    /// forward. A drag let go far enough that way is [`Host::turn`].
+    pub fn set_turns(&self, back: bool, forward: bool) {
+        self.st.turns.set((back, forward));
     }
 
     /// The find bar's height, open or not: what covers the top of the
@@ -589,15 +753,15 @@ impl Editor {
         self.sig.bar.peek().height()
     }
 
-    /// The window changed size.
+    /// The window changed size. With no box of the host's, the editor's
+    /// changes with it.
     pub fn resize(&self, physical_width: u32, physical_height: u32) {
         let scale = self.st.window.scale_factor();
-        set(self.sig.height, viewport_height(physical_height, scale));
-        let w = window_width(physical_width, scale);
-        if w != *self.sig.win_w.peek() {
-            set(self.sig.win_w, w);
-            self.repaint();
-        }
+        self.st.surface.set((
+            window_width(physical_width, scale) as f64,
+            physical_height as f64 / scale,
+        ));
+        self.place();
     }
 
     /// Refresh what the find bar draws from its state.
@@ -627,6 +791,8 @@ impl Editor {
         st.block_cache.borrow_mut().clear();
         trace(|| format!("look {look:?}, measures {:?}", st.measures.get()));
         set(self.sig.look, look);
+        // A status line shown or hidden is a taller or shorter viewport.
+        self.place();
         self.refresh();
     }
 

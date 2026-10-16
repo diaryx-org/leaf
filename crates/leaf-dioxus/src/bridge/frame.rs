@@ -136,15 +136,19 @@ impl Frame {
     }
 }
 
-/// The rows the caret, the selection, a composition and the misspellings
-/// decorate.
+/// The rows the caret, the selection, a composition, the misspellings and
+/// the host's highlights decorate.
 fn marked_rows(vmap: &VisualMap, marks: &Marks) -> Vec<usize> {
     let mut rows = Vec::new();
     if let Some((r, _)) = marks.caret {
         rows.push(r);
     }
     let ranges = [marks.selection, marks.composing].into_iter().flatten();
-    for (lo, hi) in ranges.chain(marks.misspelled.iter().copied()) {
+    let highlights = marks.highlights.iter().map(|h| (h.start, h.end));
+    for (lo, hi) in ranges
+        .chain(marks.misspelled.iter().copied())
+        .chain(highlights)
+    {
         let (first, last) = vmap.row_range_for(lo..hi);
         rows.extend(first..=last.min(vmap.rows.len().saturating_sub(1)));
     }

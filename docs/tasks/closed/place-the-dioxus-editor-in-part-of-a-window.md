@@ -1,12 +1,22 @@
 ---
 title: Place the Dioxus editor in part of a window
-part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
+status: done
 created: 2026-10-16
 updated: 2026-10-16
 ---
 
 # Place the Dioxus editor in part of a window
+
+**Status: done.** `Editor::set_bounds` gives the editor a box in the window:
+its viewport is the box's height less the status line, its column is centred
+in the box's width, the find bar and the status line are pinned to its top
+and bottom, and the input method is told the caret's place offset by the
+box's origin. The clip stayed where Blitz forced it: the editor does not clip
+to its box, and a host covers what lies outside it with its own chrome, in a
+stacking layer above the editor's (`Bounds`' doc says so). Diaryx's Dioxus
+port is the first host with a box: a navigation bar over the top, a keyboard
+over the bottom, and on a Mac a sidebar beside it.
 
 **Where.** `crates/leaf-dioxus/src`: `view.rs`, `editor.rs`, `dispatch.rs`.
 

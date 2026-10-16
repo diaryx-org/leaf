@@ -8,7 +8,7 @@ use dioxus::html::geometry::WheelDelta;
 use dioxus::prelude::*;
 
 use crate::blocks::{self, Block};
-use crate::editor::Editor;
+use crate::editor::{Editor, Status};
 use crate::findbar;
 use crate::row::{self, Row};
 use crate::table::{PAD_X, PAD_Y};
@@ -43,7 +43,9 @@ pub enum Appearance {
 // - It skips painting a child that hangs past its parent's box, so `.leaf`
 //   has no fixed height: its box is as tall as the rows in it, shifted up by
 //   the scroll, and the window cuts it off. The status line is pinned to the
-//   window's bottom over it, in a stacking layer of its own.
+//   bottom of the editor's box over it, and the find bar to its top, each in
+//   a stacking layer of its own (the box is the window's, unless the host
+//   gives it another: `Bounds`).
 pub fn css(ty: &Type) -> String {
     let Type {
         body,
@@ -124,12 +126,12 @@ const REST: &str = "
 .leaf .caret-in { display: inline-block; width: 0; height: 1.2em;
                   border-left: 2px solid var(--leaf-accent); margin-right: -2px;
                   vertical-align: text-bottom; }
-.status { position: absolute; left: 0; right: 0; bottom: 0; z-index: 1;
+.status { position: absolute; z-index: 1;
           height: 24px; line-height: 24px; padding: 0 16px; box-sizing: border-box;
           font: 12px ui-monospace, monospace; color: var(--leaf-secondary); background: var(--chrome-bg);
           border-top: 1px solid var(--leaf-separator); display: flex; gap: 16px; white-space: pre; }
 .status .grow { flex: 1; }
-.find { position: absolute; left: 0; right: 0; top: 0; z-index: 1; box-sizing: border-box;
+.find { position: absolute; z-index: 1; box-sizing: border-box;
         padding: 0 16px; background: var(--chrome-bg); border-bottom: 1px solid var(--leaf-separator);
         font: 13px system-ui, sans-serif; color: var(--chrome-text); }
 .find .find-row { display: flex; align-items: center; gap: 8px; height: 34px; }
@@ -249,7 +251,15 @@ fn render(ed: &Editor) -> Element {
     let status = sig.status.read().clone();
     let words = *sig.words.read();
     let look = sig.look.read().clone();
-    let (wheel, past_end) = (ed.clone(), ed.clone());
+    // The editor's box, which the column is centred in and the bars are
+    // pinned to; and how far a finger has slid the page aside.
+    let (bx, by) = *sig.origin.read();
+    let box_w = *sig.win_w.read();
+    let margin = bx + ((box_w - column) / 2.0).max(0.0) as f64;
+    let slide = *sig.slide.read();
+    let pinned = |top: f64| format!("left: {bx}px; top: {top}px; width: {box_w}px");
+    let host = ed.st.host.clone();
+    let (wheel, press_end, tap_end) = (ed.clone(), ed.clone(), ed.clone());
 
     rsx! {
         style { {themed(STYLESHEET, look.appearance)} }
@@ -258,7 +268,7 @@ fn render(ed: &Editor) -> Element {
         // text selection, drawn over leaf's, and the focus changes that made
         // `onkeydown` unreliable (see `keys.rs`). Not `onpointerdown`:
         // cancelling the pointer event stops Blitz dispatching `mousedown`.
-        div { class: "leaf", style: "width: {column}px; margin: 0 auto",
+        div { class: "leaf", style: "width: {column}px; margin-left: {margin}px; position: relative; left: {slide}px",
             // The wheel and the trackpad, in CSS pixels: a line is 20.
             onwheel: move |e: WheelEvent| {
                 e.prevent_default();
@@ -270,26 +280,33 @@ fn render(ed: &Editor) -> Element {
             },
             onmousedown: move |e: MouseEvent| e.prevent_default(),
             onclick: move |e: MouseEvent| e.prevent_default(),
-            div { style: "height: 0; margin-top: {shift}px" }
+            div { style: "height: 0; margin-top: {shift + by}px" }
             // Every child keyed, and a row's key never a block's: the Dioxus
             // alpha's keyed diff cannot place a child among unkeyed empty
             // ones, nor swap a row for the block that takes its key, and
             // panics — which leaves the page never rendering again.
             for (i, block) in drawn {
                 match block {
-                    Some(b) => blocks::render(i, b),
+                    Some(b) => blocks::render(i, b, &*host),
                     None => rsx! { Row { key: "r{i}", index: i, row: rows[i].clone(), layout: lays[i].clone(), kind: kinds[i] } },
                 }
             }
             // Room under the last row, as a page has, so there is somewhere
             // to click past the end.
             div { style: "height: {height / 2.0}px",
-                onmousedown: move |_: MouseEvent| past_end.past_end(),
+                onmousedown: move |_: MouseEvent| press_end.past_end(false),
+                onclick: move |_: MouseEvent| tap_end.past_end(true),
             }
         }
-        {findbar::render(ed, &bar)}
+        {findbar::render(ed, &bar, &pinned(by))}
+        // Always present, shown or hidden, as the find bar is: Blitz does not
+        // lay out an absolutely positioned element inserted after the first
+        // frame.
         div { class: "status",
-            "{status}"
+            style: if look.status == Status::Hidden { "display: none".to_string() } else { pinned(by + height) },
+            if look.status == Status::Full {
+                "{status}"
+            }
             span { class: "grow" }
             match words {
                 Some((_, n)) => rsx! { "{n} words" },

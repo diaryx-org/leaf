@@ -106,6 +106,10 @@ pub struct Marks<'a> {
     /// ranges in order. Their glyphs carry `miss`, which the stylesheet
     /// underlines in red.
     pub misspelled: &'a [(usize, usize)],
+    /// The host's highlights ([`Doc::highlights`](leaf_core::Doc::highlights)):
+    /// their glyphs carry `hl`, and the ink's name when it has one
+    /// ([`ink`]), which the stylesheet washes.
+    pub highlights: &'a [leaf_core::Highlight],
 }
 
 impl<'a> Marks<'a> {
@@ -116,7 +120,13 @@ impl<'a> Marks<'a> {
             selection: anchor.map(|a| (a.min(caret), a.max(caret))),
             composing: None,
             misspelled: &[],
+            highlights: &[],
         }
+    }
+
+    /// The same marks, with the host's highlights.
+    pub fn highlighted(self, highlights: &'a [leaf_core::Highlight]) -> Self {
+        Self { highlights, ..self }
     }
 
     /// The same marks, with `ranges` misspelled.
@@ -141,23 +151,34 @@ impl<'a> Marks<'a> {
 pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
     let mut runs: Vec<Run> = Vec::new();
     let mut class = String::new();
-    // The style, selection, composition and spelling state the open run was
-    // opened with. A glyph extends it when all four still match.
-    let mut open: Option<(leaf_core::Style, bool, bool, bool)> = None;
+    // The style, selection, composition, spelling and highlight state the
+    // open run was opened with. A glyph extends it when all five still match.
+    let mut open: Option<(leaf_core::Style, bool, bool, bool, Option<usize>)> = None;
 
     for g in &vrow.glyphs {
         let selected = within(g, marks.selection);
         let composing = within(g, marks.composing);
         let miss = misspelled(g, marks.misspelled);
+        let hl = marks
+            .highlights
+            .iter()
+            .position(|h| g.src >= h.start && g.src < h.end);
         // An inline formula's atom is a run of its own, with its offset,
         // which is how its picture is found (`picture.rs`).
         let math = g.style.role == leaf_core::Role::Math;
-        let extends = !math && open == Some((g.style, selected, composing, miss));
+        let extends = !math && open == Some((g.style, selected, composing, miss, hl));
         if !extends {
             class.clear();
             class_of(&g.style, &mut class);
             if selected {
                 class.push_str(" sel");
+            }
+            if let Some(i) = hl {
+                class.push_str(" hl");
+                if let Some(name) = ink(marks.highlights[i].color.as_deref()) {
+                    class.push(' ');
+                    class.push_str(name);
+                }
             }
             if composing {
                 class.push_str(" ime");
@@ -169,7 +190,7 @@ pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
                 class: class.clone(),
                 src: (opts.offsets || math).then_some(g.src),
             });
-            open = (!math).then_some((g.style, selected, composing, miss));
+            open = (!math).then_some((g.style, selected, composing, miss, hl));
         }
         // `drawn()` rather than `ch`: a list item's indent on a continuation
         // row is spelled with the marker's characters for its width and drawn
@@ -186,6 +207,18 @@ pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
         code: vrow.code,
         decoration: vrow.decoration,
     }
+}
+
+/// A highlight's ink as a class name: its colour when that is a name — the
+/// seven a `==mark==` takes (`red`, `green`, …), or one of the host's own,
+/// which its stylesheet inks — and `None` for the default wash. A `#RRGGBB`
+/// colour, which core also allows, is drawn in the default wash: a run has a
+/// class and no style of its own.
+pub fn ink(color: Option<&str>) -> Option<&str> {
+    color.filter(|c| {
+        c.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && c.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    })
 }
 
 fn within(g: &Glyph, range: Option<(usize, usize)>) -> bool {
@@ -244,6 +277,41 @@ mod tests {
     }
 
     #[test]
+    fn a_highlight_is_washed_in_its_ink() {
+        let d = doc("one two three\n");
+        let hl = |start, end, color: Option<&str>| leaf_core::Highlight {
+            start,
+            end,
+            id: format!("h{start}"),
+            color: color.map(str::to_owned),
+            marker: None,
+        };
+        let highlights = [
+            hl(0, 3, None),
+            hl(4, 7, Some("green")),
+            hl(8, 13, Some("#ff0000")),
+        ];
+        let marks = Marks::default().highlighted(&highlights);
+        let v = row_view(&d.vmap.rows[0], 0, &marks, Opts::default());
+        let runs: Vec<_> = v
+            .runs
+            .iter()
+            .map(|r| (r.text.as_str(), r.class.as_str()))
+            .collect();
+        // A hex colour is the default wash: a run has no style to carry it.
+        assert_eq!(
+            runs,
+            [
+                ("one", "g hl"),
+                (" ", "g"),
+                ("two", "g hl green"),
+                (" ", "g"),
+                ("three", "g hl"),
+            ]
+        );
+    }
+
+    #[test]
     fn a_selection_splits_a_run_and_classes_it() {
         let d = doc("hello world\n");
         let marks = Marks {
@@ -251,6 +319,7 @@ mod tests {
             selection: Some((0, 5)),
             composing: None,
             misspelled: &[],
+            highlights: &[],
         };
         let v = row_view(&d.vmap.rows[0], 0, &marks, Opts::default());
         assert_eq!(v.runs[0].text, "hello");

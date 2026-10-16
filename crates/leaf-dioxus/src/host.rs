@@ -21,6 +21,9 @@ use std::path::PathBuf;
 
 use leaf_core::Doc;
 
+use dioxus::prelude::*;
+
+use crate::blocks::Directive;
 use crate::editor::Editor;
 use crate::input::{Gesture, ZoomCommand};
 use crate::link::Context;
@@ -117,6 +120,31 @@ pub trait Host {
     /// outside the editor up to date with it, such as a window title.
     fn repainted(&self, doc: &Doc) {
         let _ = doc;
+    }
+
+    /// A finger dragged the page sideways far enough to turn it, the way
+    /// [`Editor::set_turns`] allowed: `1` forward (dragged leftward), `-1`
+    /// back. The host goes to the page before or after.
+    fn turn(&self, ed: &Editor, way: i32) {
+        let _ = (ed, way);
+    }
+
+    /// How tall a card the host draws under a directive's label, in CSS
+    /// pixels — an album's pictures, a page's opening words — or `None` (the
+    /// default) for none, leaving the label row alone. Asked on every
+    /// repaint, for every directive, while the document is borrowed.
+    fn directive_height(&self, doc: &Doc, directive: &Directive) -> Option<f32> {
+        let _ = (doc, directive);
+        None
+    }
+
+    /// The card under a directive's label, drawn in the height
+    /// [`directive_height`](Self::directive_height) answered: the host's own
+    /// markup, which handles its own clicks — calling `stop_propagation` on
+    /// one, so that it does not also place the caret.
+    fn draw_directive(&self, directive: &Directive) -> Element {
+        let _ = directive;
+        rsx! {}
     }
 }
 

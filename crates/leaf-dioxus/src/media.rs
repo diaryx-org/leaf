@@ -342,6 +342,7 @@ pub fn block(
 pub fn MediaBlock(block: Block) -> Element {
     let sink = use_context::<PointerSink>();
     let drag = sink.clone();
+    let tap = sink.clone();
     let first = block.first;
     let (w, h) = block.size;
     let prefix = lines(&block.prefix, &block.prefix_layout.0)
@@ -415,6 +416,10 @@ pub fn MediaBlock(block: Block) -> Element {
                     let x = (e.client_coordinates().x - PAD) as f32;
                     (drag.0)(Pointer::Drag { at: Target::Block { first }, line: 0, x });
                 }
+            },
+            onclick: move |e: MouseEvent| {
+                let x = (e.client_coordinates().x - PAD) as f32;
+                (tap.0)(Pointer::Tap { at: Target::Block { first }, line: 0, x });
             },
             span { style: "flex: none; width: {block.indent}px; white-space: pre;",
                 for seg in prefix {

@@ -332,6 +332,7 @@ pub fn diagram_block(
 pub fn PictureBlock(block: Block) -> Element {
     let sink = use_context::<PointerSink>();
     let drag = sink.clone();
+    let tap = sink.clone();
     let first = block.first;
     let (w, h) = block.size;
     let caret = |past: bool| {
@@ -369,6 +370,10 @@ pub fn PictureBlock(block: Block) -> Element {
                     let x = (e.client_coordinates().x - PAD) as f32;
                     (drag.0)(Pointer::Drag { at: Target::Block { first }, line: 0, x });
                 }
+            },
+            onclick: move |e: MouseEvent| {
+                let x = (e.client_coordinates().x - PAD) as f32;
+                (tap.0)(Pointer::Tap { at: Target::Block { first }, line: 0, x });
             },
             {caret(false)}
             {body}

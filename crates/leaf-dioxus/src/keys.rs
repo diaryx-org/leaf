@@ -34,8 +34,13 @@ pub fn pressed(event: &KeyEvent, mods: ModifiersState) -> Option<(Key, Code, Mod
 
 /// winit's named keys carry the W3C names `keyboard-types` parses, so the
 /// `Debug` spelling is the conversion; a character is itself.
+///
+/// But for a line break: the iOS keyboard's Return is not a named key —
+/// winit-uikit hears it as `insertText("\n")` and reports a character, which
+/// the editor would insert as a soft break inside the paragraph. It is Enter.
 fn key(k: &keyboard::Key) -> Key {
     match k {
+        keyboard::Key::Character(s) if s.as_str() == "\n" || s.as_str() == "\r" => Key::Enter,
         keyboard::Key::Character(s) => Key::Character(s.to_string()),
         keyboard::Key::Named(n) => Key::from_str(&format!("{n:?}")).unwrap_or(Key::Unidentified),
         _ => Key::Unidentified,
@@ -79,6 +84,16 @@ mod tests {
         assert_eq!(
             code(&PhysicalKey::Code(KeyCode::BracketRight)),
             Code::BracketRight
+        );
+    }
+
+    #[test]
+    fn a_typed_line_break_is_enter() {
+        assert_eq!(key(&keyboard::Key::Character("\n".into())), Key::Enter);
+        assert_eq!(key(&keyboard::Key::Character("\r".into())), Key::Enter);
+        assert_eq!(
+            key(&keyboard::Key::Character("a".into())),
+            Key::Character("a".into())
         );
     }
 

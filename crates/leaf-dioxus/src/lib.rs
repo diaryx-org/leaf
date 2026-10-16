@@ -38,12 +38,11 @@
 //!
 //! Two things a host should know, both from Blitz rather than from the editor:
 //!
-//! - **The editor assumes the window is its own.** Keys come from winit, not
-//!   DOM focus (`keys.rs` says why), so the host decides which key is the
-//!   editor's; and the page's stylesheet clips at `body`, sizes the viewport
-//!   from the window's surface less the status line, and tells the input
-//!   method where the caret is relative to the window's top-left corner.
-//!   Placing it in part of a window is work still to do.
+//! - **The window's keys are the host's to hand over.** Keys come from
+//!   winit, not DOM focus (`keys.rs` says why), so the host decides which key
+//!   is the editor's. The editor fills the window, or the box the host gives
+//!   it ([`Editor::set_bounds`]); the page's stylesheet still clips at
+//!   `body`, so a host covers what lies outside the box ([`Bounds`]).
 //! - **Patch winit on macOS.** Press-and-hold accents, the emoji picker and
 //!   dictation need the patched `winit-appkit` that `apps/leaf-dioxus`
 //!   vendors; a `[patch]` here would not reach a host's build.
@@ -67,11 +66,13 @@ mod source;
 mod status;
 mod table;
 mod text;
+mod touch;
 mod trace;
 mod view;
 mod viewport;
 
-pub use editor::{Editor, Look, STATUS, use_editor};
+pub use blocks::Directive;
+pub use editor::{Bounds, Editor, Look, STATUS, Status, use_editor, use_shared_editor};
 pub use host::{Clipboard, Host, Request};
 pub use input::{TableCommand, ZoomCommand};
 pub use keys::pressed;

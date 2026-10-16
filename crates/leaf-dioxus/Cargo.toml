@@ -22,7 +22,14 @@ description = "Embeddable Dioxus-native rich-text editor widget for leaf: the ed
 publish = false
 
 [features]
-default = ["system-clipboard"]
+default = ["system-clipboard", "vello"]
+# Blitz's classic renderer, `vello`, not the default `vello-hybrid`: see
+# `dioxus-native` below. A feature, on by default, rather than spelled into
+# the dependency, because Cargo features only add up: a host that cannot run
+# classic vello — the iOS Simulator, whose Metal lacks the indirect dispatch
+# it needs — turns default features off and picks `vello-hybrid` itself, and
+# draws no colour emoji there.
+vello = ["dioxus-native/vello"]
 # The default `Host`'s clipboard: the system's, through arboard. Off for a host
 # that brings its own, and for one where arboard does not build — its cfg
 # cascade sends every unix that is not macOS to X11/Wayland, iOS included,
@@ -40,7 +47,8 @@ dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
 # of dioxus-native's features (accessibility, Blitz's own clipboard and file
 # inputs, woff, …) are the host's to choose.
 #
-# - `vello`, the classic renderer, not the default `vello-hybrid`: hybrid
+# - `vello` (the feature above), the classic renderer, not the default
+#   `vello-hybrid`: hybrid
 #   cannot draw a bitmap glyph — with glifo's `png` on, vello_gpu panics
 #   ("pixmap image sources are not supported by Vello GPU"), and without it
 #   every emoji (Apple Color Emoji is sbix PNGs) draws as nothing. Classic
@@ -52,7 +60,7 @@ dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
 #   count's timer runs on.
 # - `svg`: SVG pictures.
 dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features = [
-    "net", "svg", "system-fonts", "vello",
+    "net", "svg", "system-fonts",
 ] }
 # `fs` off: the widget never touches a path to read or write a document — Save
 # and Save As are the host's (`Request`) — so a host whose documents are not

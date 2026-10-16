@@ -92,8 +92,9 @@ impl Editor {
 
 /// The find bar's markup. Always present, shown or hidden, because Blitz does
 /// not lay out an absolutely positioned element inserted after the first
-/// frame.
-pub fn render(ed: &Editor, bar: &BarView) -> Element {
+/// frame. It is `place`d — its left, top and width — at the top of the editor's
+/// box.
+pub fn render(ed: &Editor, bar: &BarView, place: &str) -> Element {
     let click = |what: BarClick| {
         let ed = ed.clone();
         move |e: MouseEvent| {
@@ -104,7 +105,7 @@ pub fn render(ed: &Editor, bar: &BarView) -> Element {
     let display = if bar.open { "block" } else { "none" };
     let h = bar.height();
     rsx! {
-        div { class: "find", style: "display: {display}; height: {h}px",
+        div { class: "find", style: "display: {display}; height: {h}px; {place}",
             onmousedown: move |e: MouseEvent| e.prevent_default(),
             div { class: "find-row",
                 span { class: "label", "Find" }

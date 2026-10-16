@@ -20,12 +20,53 @@ use std::path::PathBuf;
 use dioxus::prelude::*;
 use leaf_core::{Doc, View};
 
+use crate::bridge::rows::RowHandle;
 use crate::host::Host;
 use crate::media::{self, MediaBlock};
 use crate::picture::{self, PictureBlock};
-use crate::row::{Pointer, TableBlock};
+use crate::row::{LayoutHandle, Pointer, Row, TableBlock};
 use crate::table;
-use crate::text::{Fonts, byte_of_col};
+use crate::text::{Fonts, Kind, byte_of_col};
+
+/// The gap between a directive's label and the host's card under it.
+const CARD_GAP: f32 = 8.0;
+
+/// A directive in the document — `::name[label]{attrs}` — as a host reads
+/// it to draw a card for it ([`Host::directive_height`]). Core knows no
+/// vocabulary of directives; what each one means is the host's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Directive {
+    /// Its type, with no leading colons.
+    pub name: String,
+    /// Its `{…}` attributes in source order; a bare one has a `None` value.
+    pub attrs: Vec<(String, Option<String>)>,
+    /// Its `[label]` text, flattened.
+    pub label: String,
+}
+
+impl Directive {
+    /// The value of the attribute `key`, if it has one.
+    pub fn attr(&self, key: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, v)| v.as_deref())
+    }
+}
+
+/// A directive the host draws a card for: its label row, drawn and hit as
+/// any row is, and the card under it.
+#[derive(Clone, PartialEq)]
+pub struct DirectiveBlock {
+    pub first: usize,
+    pub rows: Range<usize>,
+    row: RowHandle,
+    layout: LayoutHandle,
+    kind: Kind,
+    pub directive: Directive,
+    /// The card's height, as the host answered it.
+    card: f32,
+}
 
 /// Something drawn in place of rows.
 #[derive(Clone, PartialEq)]
@@ -33,6 +74,7 @@ pub enum Block {
     Table(table::Block),
     Media(media::Block),
     Picture(picture::Block),
+    Directive(DirectiveBlock),
 }
 
 impl Block {
@@ -42,6 +84,7 @@ impl Block {
             Block::Table(t) => t.rows.clone(),
             Block::Media(m) => m.rows.clone(),
             Block::Picture(p) => p.rows.clone(),
+            Block::Directive(d) => d.rows.clone(),
         }
     }
 
@@ -51,6 +94,7 @@ impl Block {
             Block::Table(t) => t.first,
             Block::Media(m) => m.first,
             Block::Picture(p) => p.first,
+            Block::Directive(d) => d.first,
         }
     }
 
@@ -60,6 +104,7 @@ impl Block {
             Block::Table(t) => t.layout.height as f64,
             Block::Media(m) => m.height() as f64,
             Block::Picture(p) => p.height() as f64,
+            Block::Directive(d) => (d.layout.0.height + CARD_GAP + d.card) as f64,
         }
     }
 
@@ -67,7 +112,9 @@ impl Block {
     /// glyph under it, never a column of core's picture.
     pub fn hit(&self, p: &Pointer) -> Option<usize> {
         let (at, line, x) = match *p {
-            Pointer::Press { at, line, x, .. } | Pointer::Drag { at, line, x } => (at, line, x),
+            Pointer::Press { at, line, x, .. }
+            | Pointer::Drag { at, line, x }
+            | Pointer::Tap { at, line, x } => (at, line, x),
         };
         match (self, at) {
             (Block::Table(t), crate::row::Target::Cell { r, c, .. }) => {
@@ -175,9 +222,53 @@ pub fn build(
     out
 }
 
-/// A block's markup, at row `i`.
-pub fn render(i: usize, block: &Block) -> Element {
+/// Every directive the host draws a card for, given the frame's rows and
+/// their layouts — its label row is one of them, drawn as it is.
+pub fn directives(
+    doc: &Doc,
+    host: &dyn Host,
+    handles: &[RowHandle],
+    lays: &[LayoutHandle],
+    kinds: &[Kind],
+) -> Vec<Block> {
+    if doc.view == View::Source {
+        return Vec::new();
+    }
+    doc.vmap
+        .directives
+        .iter()
+        .filter_map(|d| {
+            let first = d.rows_span.start;
+            let directive = Directive {
+                name: d.name.clone(),
+                attrs: d.attrs.clone(),
+                label: d.label.clone(),
+            };
+            let card = host.directive_height(doc, &directive)?;
+            Some(Block::Directive(DirectiveBlock {
+                first,
+                rows: d.rows_span.clone(),
+                row: handles.get(first)?.clone(),
+                layout: lays.get(first)?.clone(),
+                kind: *kinds.get(first)?,
+                directive,
+                card,
+            }))
+        })
+        .collect()
+}
+
+/// A block's markup, at row `i`; `host` draws a directive's card.
+pub fn render(i: usize, block: &Block, host: &dyn Host) -> Element {
     match block {
+        Block::Directive(d) => rsx! {
+            div { key: "b{i}", class: "directive",
+                Row { index: i, row: d.row.clone(), layout: d.layout.clone(), kind: d.kind }
+                div { class: "card", style: "height: {d.card}px; margin-top: {CARD_GAP}px",
+                    {host.draw_directive(&d.directive)}
+                }
+            }
+        },
         Block::Table(b) => rsx! { TableBlock { key: "b{i}", block: b.clone() } },
         Block::Media(b) => rsx! { MediaBlock { key: "b{i}", block: b.clone() } },
         Block::Picture(b) => rsx! { PictureBlock { key: "b{i}", block: b.clone() } },

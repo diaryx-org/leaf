@@ -45,6 +45,9 @@ pub enum Pointer {
     },
     /// It moved with the button held: a drag-select.
     Drag { at: Target, line: usize, x: f32 },
+    /// A finger went down and came up without panning — Blitz's `click`
+    /// for a touch, which sends no `mousedown` (`touch.rs`).
+    Tap { at: Target, line: usize, x: f32 },
 }
 
 impl Pointer {
@@ -65,6 +68,11 @@ impl Pointer {
                 mode,
             },
             Pointer::Drag { at, line, x } => Pointer::Drag {
+                at,
+                line,
+                x: x + dx,
+            },
+            Pointer::Tap { at, line, x } => Pointer::Tap {
                 at,
                 line,
                 x: x + dx,
@@ -171,7 +179,7 @@ pub fn Line(
     indent: f32,
     segs: Vec<Seg>,
 ) -> Element {
-    let drag = sink.clone();
+    let (drag, tap) = (sink.clone(), sink.clone());
     rsx! {
         // A wrapped list item's lines hang under its text by padding, not by
         // a spacer child: a child that is only sometimes there is a Dioxus
@@ -188,6 +196,10 @@ pub fn Line(
                     let x = (e.client_coordinates().x - origin) as f32;
                     (drag.0)(Pointer::Drag { at, line, x });
                 }
+            },
+            onclick: move |e: MouseEvent| {
+                let x = (e.client_coordinates().x - origin) as f32;
+                (tap.0)(Pointer::Tap { at, line, x });
             },
             for seg in segs {
                 {seg.render()}

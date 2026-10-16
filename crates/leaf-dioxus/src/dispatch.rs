@@ -9,7 +9,7 @@
 use dioxus::html::{Code, Key, Modifiers};
 use dioxus::prelude::*;
 use dioxus_native::winit::dpi::{LogicalPosition, LogicalSize};
-use dioxus_native::winit::event::{Ime, WindowEvent};
+use dioxus_native::winit::event::{ButtonSource, Ime, PointerSource, WindowEvent};
 use dioxus_native::winit::window::{
     ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData, ImeSurroundingText,
 };
@@ -131,6 +131,28 @@ impl Editor {
         match event {
             WindowEvent::Ime(ime) => self.ime(ime),
             WindowEvent::SurfaceResized(size) => self.resize(size.width, size.height),
+            // A finger: a tap, a scroll or a turn (`touch.rs`). Its release
+            // tells the input method where the caret is, as a click's does.
+            WindowEvent::PointerButton {
+                state,
+                button: ButtonSource::Touch { .. },
+                position,
+                ..
+            } => {
+                self.touch_button(state.is_pressed(), *position);
+                if !state.is_pressed() {
+                    self.ime_area();
+                }
+            }
+            WindowEvent::PointerMoved {
+                source: PointerSource::Touch { .. },
+                position,
+                ..
+            } => self.touch_moved(*position),
+            // A mouse or a pen, after a finger: the rows hear presses again.
+            WindowEvent::PointerButton { state, .. } if state.is_pressed() => {
+                self.st.touch_mode.set(false)
+            }
             // A click moved the caret: on the button's release, which winit
             // reports after Blitz has handled the press, tell the input method
             // where it went and what is around it now.
@@ -184,11 +206,16 @@ impl Editor {
         self.ime_area();
     }
 
-    /// Allow the input method on the window, once. Surrounding text needs
-    /// the patched winit-appkit to be heard on macOS (see
+    /// Allow the input method on the window, unless it is already allowed
+    /// — on iOS, raising the keyboard (winit-uikit's `becomeFirstResponder`)
+    /// — or the document is only to be read. Surrounding text needs the
+    /// patched winit-appkit to be heard on macOS (see
     /// `patches/winit-appkit/PATCH.md`); winit asks for some with the
     /// capability, so an empty line to start.
     pub(crate) fn enable_ime(&self) {
+        if self.st.window.ime_capabilities().is_some() || self.st.doc.borrow().read_only() {
+            return;
+        }
         let request = ImeEnableRequest::new(
             ImeCapabilities::new()
                 .with_cursor_area()
@@ -210,6 +237,14 @@ impl Editor {
         }
     }
 
+    /// Disallow the input method on the window, which lowers an on-screen
+    /// keyboard: the editor is leaving the page.
+    pub(crate) fn disable_ime(&self) {
+        if self.st.window.ime_capabilities().is_some() {
+            let _ = self.st.window.request_ime_update(ImeRequest::Disable);
+        }
+    }
+
     /// Tell the input method where the caret is, so its candidate window and
     /// the accent menu open beside it, and what text surrounds it, so
     /// press-and-hold can see the letter it offers accents for.
@@ -223,7 +258,8 @@ impl Editor {
         };
         let y = self.sig.layout.peek().top(row) - *self.sig.top.peek()
             + l.top as f64
-            + self.sig.bar.peek().height();
+            + self.sig.bar.peek().height()
+            + self.sig.origin.peek().1;
         let mut data = ImeRequestData::default().with_cursor_area(
             LogicalPosition::new(self.left() + x as f64, y).into(),
             LogicalSize::new(2.0, l.height as f64).into(),

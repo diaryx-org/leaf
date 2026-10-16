@@ -298,6 +298,7 @@ mod tests {
             ty: s.ty(1.0),
             measure: s.column.chars(),
             appearance: s.appearance,
+            ..Default::default()
         };
         assert_eq!(look, leaf_dioxus::Look::default());
     }

@@ -62,13 +62,14 @@ pub fn offset_at(doc: &Doc, row: usize, col: usize) -> usize {
 
 impl Editor {
     /// The source offset of the character at (`x`, `y`), in CSS pixels from
-    /// the editor's top-left — the inverse of [`ime_area`](Self::ime_area)'s
+    /// the window's top-left — the inverse of [`ime_area`](Self::ime_area)'s
     /// arithmetic, and the column a click there would place the caret at.
     /// `None` off the rows, and on a block (a table, a picture), whose
     /// geometry is its own.
     pub fn offset_at_point(&self, x: f64, y: f64) -> Option<usize> {
         let layout = self.sig.layout.peek();
-        let doc_y = y - self.sig.bar.peek().height() + *self.sig.top.peek();
+        let doc_y =
+            y - self.sig.origin.peek().1 - self.sig.bar.peek().height() + *self.sig.top.peek();
         let row =
             (0..layout.rows()).find(|&r| doc_y >= layout.top(r) && doc_y < layout.bottom(r))?;
         if self.in_block(row) {
@@ -87,7 +88,7 @@ impl Editor {
     }
 
     /// Where the source range `from`..`to` is drawn, as (x, y, width,
-    /// height) in CSS pixels from the editor's top-left: its first visual
+    /// height) in CSS pixels from the window's top-left: its first visual
     /// line's part of it, the line's full height. `None` on a block, or
     /// where no row is laid out.
     pub fn rect_of(&self, from: usize, to: usize) -> Option<(f64, f64, f64, f64)> {
@@ -109,7 +110,8 @@ impl Editor {
         let l = lay.lines.get(line)?;
         let y = self.sig.layout.peek().top(row) - *self.sig.top.peek()
             + l.top as f64
-            + self.sig.bar.peek().height();
+            + self.sig.bar.peek().height()
+            + self.sig.origin.peek().1;
         Some((
             self.left() + x0 as f64,
             y,
@@ -133,7 +135,7 @@ impl Editor {
             .blocks
             .peek()
             .iter()
-            .any(|b| b.rows().contains(&row))
+            .any(|b| !matches!(b, crate::blocks::Block::Directive(_)) && b.rows().contains(&row))
     }
 
     /// Where the caret is in the layout: its row, its visual line, its x.
@@ -214,16 +216,41 @@ impl Editor {
     }
 
     /// A click in the blank space under the last row: core opens a paragraph
-    /// there if the document ends in a block Return cannot leave.
-    pub fn past_end(&self) {
+    /// there if the document ends in a block Return cannot leave. `tap` says
+    /// whether it was a finger's tap or a mouse's press, of which the editor
+    /// hears only the one it is listening for (see [`pointer`](Self::pointer)).
+    pub fn past_end(&self, tap: bool) {
+        if tap != self.st.touch_mode.get() {
+            return;
+        }
+        if tap {
+            self.enable_ime();
+        }
         self.st.doc.borrow_mut().click_past_end();
         self.refresh();
     }
 
-    /// A pointer event on a line of a row or of a block.
+    /// A pointer event on a line of a row or of a block. A mouse is heard by
+    /// its press and drag, a finger by its tap (`touch.rs`), and each ignores
+    /// the other's; a tap also asks for the keyboard.
     pub fn pointer(&self, p: Pointer) {
-        let p = p.shifted((crate::row::PAD - self.left()) as f32);
         let st = &*self.st;
+        let p = match p {
+            Pointer::Tap { at, line, x } if st.touch_mode.get() => {
+                self.enable_ime();
+                Pointer::Press {
+                    at,
+                    line,
+                    x,
+                    extend: false,
+                    mode: PressMode::Place,
+                }
+            }
+            Pointer::Tap { .. } => return,
+            _ if st.touch_mode.get() => return,
+            p => p,
+        };
+        let p = p.shifted((crate::row::PAD - self.left()) as f32);
         st.goal.set(None);
         st.composer.borrow_mut().settle(&mut st.doc.borrow_mut());
         // A click in the document takes typing back from the find bar, and
@@ -238,7 +265,9 @@ impl Editor {
             self.sync_bar();
         }
         let (at, line, x) = match p {
-            Pointer::Press { at, line, x, .. } | Pointer::Drag { at, line, x } => (at, line, x),
+            Pointer::Press { at, line, x, .. }
+            | Pointer::Drag { at, line, x }
+            | Pointer::Tap { at, line, x } => (at, line, x),
         };
         let (row, key, spot) = match at {
             Target::Row(row) => {
@@ -261,7 +290,7 @@ impl Editor {
         };
         let mode = match p {
             Pointer::Press { mode, .. } => mode,
-            Pointer::Drag { .. } => PressMode::Place,
+            Pointer::Drag { .. } | Pointer::Tap { .. } => PressMode::Place,
         };
         if mode != PressMode::Place {
             st.last_press.set(Some(Press {
@@ -363,6 +392,8 @@ fn gesture(
                 _ => place(doc, extend),
             }
         }
+        // A tap is a press by the time it gets here.
+        Pointer::Tap { .. } => {}
         Pointer::Drag { .. } => {
             // A move that has not left the pressed spot is the hand settling,
             // not a drag — and would shrink a double-click's word back to the

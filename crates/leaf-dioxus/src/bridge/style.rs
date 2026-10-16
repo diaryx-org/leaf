@@ -189,7 +189,13 @@ pub const STYLESHEET: &str = r#"
 .leaf .marker { color: var(--leaf-secondary); }
 .leaf .gutter { color: var(--leaf-tertiary); }
 .leaf .rule { color: var(--leaf-secondary); }
-.leaf .mark { background: var(--leaf-mark); }
+.leaf .mark, .leaf .hl { background: var(--leaf-mark); }
+.leaf .hl.red { background: var(--leaf-mark-red); }
+.leaf .hl.orange { background: var(--leaf-mark-orange); }
+.leaf .hl.green { background: var(--leaf-mark-green); }
+.leaf .hl.blue { background: var(--leaf-mark-blue); }
+.leaf .hl.purple { background: var(--leaf-mark-purple); }
+.leaf .hl.brown { background: var(--leaf-mark-brown); }
 .leaf .mark.red { background: var(--leaf-mark-red); }
 .leaf .mark.orange { background: var(--leaf-mark-orange); }
 .leaf .mark.yellow { background: var(--leaf-mark); }

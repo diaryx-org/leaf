@@ -81,6 +81,7 @@ impl Shell {
             ty: s.ty(self.zoom.get()),
             measure: s.column.chars(),
             appearance: s.appearance,
+            ..Default::default()
         }
     }
 
