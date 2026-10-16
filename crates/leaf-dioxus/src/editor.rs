@@ -392,6 +392,7 @@ impl Editor {
         // heights, its first row holding its whole height.
         let blocks = blocks::build(
             &doc,
+            &*st.host,
             caret,
             composer.marked(),
             &mut fonts,

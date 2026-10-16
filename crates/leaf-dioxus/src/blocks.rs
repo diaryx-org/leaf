@@ -15,10 +15,12 @@
 
 use std::cell::RefCell;
 use std::ops::Range;
+use std::path::PathBuf;
 
 use dioxus::prelude::*;
 use leaf_core::{Doc, View};
 
+use crate::host::Host;
 use crate::media::{self, MediaBlock};
 use crate::row::{Pointer, TableBlock};
 use crate::table;
@@ -75,10 +77,18 @@ impl Block {
     }
 }
 
+/// Where a medium's source is on disk: the host's reading, else the editor's
+/// own (`media::resolve`) against the document's directory.
+pub fn locate(host: &dyn Host, doc: &Doc, dest: &str) -> Option<PathBuf> {
+    host.locate_media(doc, dest)
+        .or_else(|| media::resolve(dest, doc.path.parent()))
+}
+
 /// Every block in the document as it stands, reusing last frame's where
 /// nothing about one has changed.
 pub fn build(
     doc: &Doc,
+    host: &dyn Host,
     caret: usize,
     composing: Option<(usize, usize)>,
     fonts: &mut Fonts,
@@ -123,8 +133,9 @@ pub fn build(
 
     // Pictures, video and audio, in place of their placeholder rows. A box
     // is a few numbers, worked out each frame from the sizes `media.rs`
-    // caches by path; only its prefix's layout is kept from the last.
-    let dir = doc.path.parent();
+    // caches by path; only its prefix's layout is kept from the last. The
+    // host reads each source first; with no opinion, the editor's own rule.
+    let locate = |dest: &str| locate(host, doc, dest);
     for m in &doc.vmap.media {
         let reuse = |p: &_| {
             old.iter().find_map(|b| match b {
@@ -132,7 +143,7 @@ pub fn build(
                 _ => None,
             })
         };
-        if let Some(b) = media::block(m, &doc.vmap.rows, dir, caret, sel, fonts, width, reuse) {
+        if let Some(b) = media::block(m, &doc.vmap.rows, &locate, caret, sel, fonts, width, reuse) {
             out.push(Block::Media(b));
         }
     }

@@ -82,13 +82,18 @@ default, so an empty `impl Host for Mine {}` is a host.
 | `request` | a key the editor knows but leaves to the host: `Save` (⌘S), `SaveAs`, `Zoom` (⌘+ / ⌘− / ⌘0), `Settings` (⌘,) | ignored |
 | `write_clipboard` / `read_clipboard` | Copy, Cut, Paste, a link's Copy Link, ⌘V in the find bar | the system clipboard, with the `system-clipboard` feature (on by default) |
 | `character_palette` | ⌃⌘Space | nothing |
+| `locate_media` | a picture, video or audio block's source, asked first — leaf-swift's `onLocateMedia` | no opinion: the editor's own rule, an absolute path as it is and a relative one against the document's directory |
 | `open` | a link to a URL or a file beside the document | nothing |
 | `context_menu` | a right-click, with what it should offer (`Context`) | nothing |
 | `repainted` | after every repaint, with the document: a window title, a dirty dot | nothing |
 
-The editor never reads or writes a file: Save is a `Request`, so a host whose
-documents are not files can store them where it likes, and the crate depends
-on `leaf-core` without its `fs` feature. A host that opens files turns `fs`
+The editor never reads or writes a document: Save is a `Request`, so a host
+whose documents are not files can store them where it likes, and the crate
+depends on `leaf-core` without its `fs` feature. Nor does it touch the
+network: a picture's source is read from disk, and a remote one is the host's
+to fetch and answer `locate_media` with. (leaf-swift's asynchronous
+`onResolveMedia` — ask, fetch, redraw when the file lands — has no
+counterpart here yet.) A host that opens files turns `fs`
 on in its own dependency on `leaf-core`.
 
 ## The look

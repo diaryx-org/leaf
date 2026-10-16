@@ -5,8 +5,9 @@
 //! URL, a native context menu, the window's title, and what Save means — so
 //! it asks. Every method has a default, so `struct Mine; impl Host for Mine {}`
 //! is a host: the system clipboard (with `system-clipboard`, the default),
-//! links and context menus that go nowhere, and Save, Save As, the zoom and
-//! the settings ignored. `apps/leaf-dioxus` answers all of them.
+//! pictures read by the editor's own rule, links and context menus that go
+//! nowhere, and Save, Save As, the zoom and the settings ignored.
+//! `apps/leaf-dioxus` answers all of them but where pictures are.
 //!
 //! The clipboard gestures themselves — what Copy, Cut and Paste do to the
 //! document — are here, over the host's raw clipboard. Both flavors travel, as
@@ -15,6 +16,8 @@
 //! its formatting. A paste prefers the HTML and falls back to the text, which
 //! is [`Doc::paste_html`]'s own contract. A webview would need the `paste`
 //! event's `DataTransfer` for these; native has no such restriction.
+
+use std::path::PathBuf;
 
 use leaf_core::Doc;
 
@@ -85,6 +88,29 @@ pub trait Host {
     /// ([`Editor::key`]).
     fn context_menu(&self, cx: &Context) {
         let _ = cx;
+    }
+
+    /// The host's own reading of a picture, video or audio source in `doc`
+    /// — `dest` as written, `![alt](dest)` — answered on the spot: the file on
+    /// disk it names. leaf-swift's `onLocateMedia`.
+    ///
+    /// Asked first. `None` (the default) is no opinion, and the editor's own
+    /// reading stands: an absolute path or a `file:` URL as it is, a relative
+    /// one against the document's directory, and nothing for a web URL or a
+    /// `data:` URI. Answer for what a host spells its own way — a vault's
+    /// pages, whose relative paths are the vault's and whose documents may not
+    /// be files — or keeps somewhere else. A file that will not read draws as
+    /// a chip with the alt text.
+    ///
+    /// A path, not a URL, because the editor reads the file's header for the
+    /// box's size before Blitz decodes it (as a `file://` URL). Asked on every
+    /// repaint, for every block, while the document is borrowed; the editor
+    /// measures each path once, so an answer only has to be quick. Like
+    /// LeafUI, the editor never touches the network: a remote source is the
+    /// host's to fetch, and to answer here with the file it fetched to.
+    fn locate_media(&self, doc: &Doc, dest: &str) -> Option<PathBuf> {
+        let _ = (doc, dest);
+        None
     }
 
     /// The editor has just repainted `doc`: the moment to bring anything
@@ -238,6 +264,60 @@ mod tests {
         let mut d = doc("text");
         assert!(!run(&board, &mut d, Gesture::Copy));
         assert_eq!(board.read_clipboard(), Clipboard::default());
+    }
+
+    /// A vault: a leading `/` is its own root, and a document has no file.
+    struct Vault(PathBuf);
+
+    impl Host for Vault {
+        fn locate_media(&self, _doc: &Doc, dest: &str) -> Option<PathBuf> {
+            dest.strip_prefix('/').map(|rest| self.0.join(rest))
+        }
+    }
+
+    #[test]
+    fn the_hosts_reading_of_a_source_comes_first_and_none_leaves_the_editors() {
+        let vault = Vault(PathBuf::from("/vault"));
+        let mut d = doc("text");
+        d.path = PathBuf::from("/notes/page.md");
+        let locate = |dest| crate::blocks::locate(&vault, &d, dest);
+        assert_eq!(
+            locate("/pics/cat.png"),
+            Some(PathBuf::from("/vault/pics/cat.png"))
+        );
+        // No opinion: relative to the document, as with no host at all.
+        assert_eq!(locate("cat.png"), Some(PathBuf::from("/notes/cat.png")));
+        assert_eq!(
+            crate::blocks::locate(&Board::default(), &d, "/pics/cat.png"),
+            Some(PathBuf::from("/pics/cat.png"))
+        );
+    }
+
+    #[test]
+    fn a_picture_in_an_untitled_document_draws_from_where_the_host_says() {
+        let dir = std::env::temp_dir().join(format!("agent-leaf-locate-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("pics")).unwrap();
+        image::RgbImage::new(30, 20)
+            .save(dir.join("pics/cat.png"))
+            .unwrap();
+        let vault = Vault(dir.clone());
+        let mut d = Doc::from_source("![a cat](/pics/cat.png)\n".into(), Format::Markdown)
+            .expect("a document");
+        d.build_visual_unwrapped();
+        assert!(d.is_untitled());
+        let block = crate::media::block(
+            &d.vmap.media[0],
+            &d.vmap.rows,
+            &|dest| crate::blocks::locate(&vault, &d, dest),
+            0,
+            None,
+            &mut crate::text::Fonts::new(crate::text::Type::default()),
+            600.0,
+            |_| None,
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        let still = block.unwrap().still.expect("the picture loaded");
+        assert_eq!(still.size, (30.0, 20.0));
     }
 
     #[test]

@@ -277,14 +277,15 @@ fn prefix_of(glyphs: &[Glyph]) -> RowView {
 }
 
 /// Lay out one medium at `rows[info.rows_span.start]` in a column `width`
-/// pixels wide, its relative paths resolved against `doc_dir`. `reuse` hands
+/// pixels wide, its destination found on disk by `locate` (the host's
+/// `locate_media`, then the editor's own rule). `reuse` hands
 /// back last frame's layout of the same prefix, so a block nothing changed
 /// in compares equal and is not rendered again.
 #[allow(clippy::too_many_arguments)]
 pub fn block(
     info: &MediaInfo,
     rows: &[VRow],
-    doc_dir: Option<&Path>,
+    locate: &dyn Fn(&str) -> Option<PathBuf>,
     caret: usize,
     selection: Option<(usize, usize)>,
     fonts: &mut Fonts,
@@ -295,7 +296,7 @@ pub fn block(
     let (start, end) = stops(row)?;
     let still = info
         .still(ColorScheme::Light)
-        .and_then(|s| resolve(s, doc_dir))
+        .and_then(locate)
         .and_then(|p| still(&p));
     let prefix = prefix_of(&row.glyphs);
     let prefix_layout = reuse(&prefix).unwrap_or_else(|| {
@@ -444,7 +445,7 @@ mod tests {
 
     fn blocks_of(d: &Doc, caret: usize) -> Vec<Block> {
         let mut fonts = Fonts::new(crate::text::Type::default());
-        let dir = Some(Path::new("/nowhere"));
+        let locate = |dest: &str| resolve(dest, Some(Path::new("/nowhere")));
         d.vmap
             .media
             .iter()
@@ -452,7 +453,7 @@ mod tests {
                 block(
                     m,
                     &d.vmap.rows,
-                    dir,
+                    &locate,
                     caret,
                     d.selection(),
                     &mut fonts,
@@ -521,7 +522,7 @@ mod tests {
         let b = block(
             &d.vmap.media[0],
             &d.vmap.rows,
-            Some(&dir),
+            &|dest| resolve(dest, Some(&dir)),
             0,
             None,
             &mut Fonts::new(crate::text::Type::default()),
