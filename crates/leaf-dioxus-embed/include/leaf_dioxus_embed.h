@@ -153,6 +153,20 @@ void leaf_view_table(LeafView *view, uint32_t cmd, int32_t arg);
 void leaf_view_action(LeafView *view, uint32_t action);
 char *leaf_view_link_at_caret(LeafView *view);
 char *leaf_view_selected_text(LeafView *view);
+
+// The text the system indexes, in UTF-16 ranges: the visible text, or with
+// prose the same with all but prose blanked, for the spelling checker.
+char *leaf_view_text(LeafView *view, bool prose);
+void leaf_view_selected_range(LeafView *view, size_t *loc, size_t *len);
+void leaf_view_select_range(LeafView *view, size_t loc, size_t len);
+// Replace loc..loc+len, if its source bytes spell original; behind: as an
+// automatic substitution, the caret left where it was.
+bool leaf_view_replace_range(LeafView *view, size_t loc, size_t len, const char *original,
+                             const char *replacement, bool behind);
+void leaf_view_undo_group(LeafView *view, bool begin);
+// ranges: count (location, length) pairs, misspelled in the text at revision.
+void leaf_view_set_misspellings(LeafView *view, uint64_t revision, const size_t *ranges,
+                                size_t count);
 void leaf_view_insert_link(LeafView *view, const char *destination);
 void leaf_view_highlight(LeafView *view, int32_t color); // -1 the plain highlighter
 void leaf_view_set_preserve_breaks(LeafView *view, bool preserve);

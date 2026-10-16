@@ -113,6 +113,7 @@ pub const STYLESHEET: &str = r#"
   --leaf-secondary: #808080;
   --leaf-tertiary: #b3b3b3;
   --leaf-accent: #007aff;
+  --leaf-misspelled: #ff3b30;
   --leaf-link: #0068da;
   --leaf-selection: #b3d7ff;
   --leaf-code-bg: rgba(0, 0, 0, 0.05);
@@ -141,6 +142,7 @@ pub const STYLESHEET: &str = r#"
     --leaf-secondary: #8c8c8c;
     --leaf-tertiary: #595959;
     --leaf-accent: #0a84ff;
+    --leaf-misspelled: #ff453a;
     --leaf-link: #419cff;
     --leaf-selection: #3f638b;
     --leaf-code-bg: rgba(255, 255, 255, 0.07);

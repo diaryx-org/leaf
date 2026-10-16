@@ -29,6 +29,7 @@ mod guard;
 mod host;
 pub mod pdf;
 mod runtime;
+mod text;
 mod view;
 mod window;
 

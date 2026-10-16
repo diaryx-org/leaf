@@ -37,6 +37,10 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
     /// Where the last right-click was, for the context menu the editor asks
     /// for after it.
     private var menuPoint = NSPoint.zero
+    private(set) lazy var spelling = Spelling(view: self)
+    /// The text the system indexes, with the revision and view it was read
+    /// at: asked for by the input method around most keystrokes.
+    private var textCache: (revision: UInt64, source: Bool, prose: Bool, text: String)?
 
     init(model: EditorModel) {
         self.model = model
@@ -65,7 +69,11 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
         guard window != nil, handle == nil else { return }
         var callbacks = LeafHostCallbacks()
         callbacks.ctx = Unmanaged.passUnretained(self).toOpaque()
-        callbacks.changed = { ctx in LeafEditorNSView.from(ctx).model.refresh() }
+        callbacks.changed = { ctx in
+            let view = LeafEditorNSView.from(ctx)
+            view.model.refresh()
+            view.spelling.editorChanged()
+        }
         callbacks.request = { ctx, kind, arg in LeafEditorNSView.from(ctx).request(kind, arg) }
         callbacks.open = { _, what in
             guard let what, let s = String(validatingUTF8: what) else { return }
@@ -124,6 +132,11 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
         func add(_ title: String, _ action: @escaping () -> Void) {
             menu.addItem(ClosureMenuItem(title: title, action: action))
         }
+        // A right-click places the caret, so the word under it is the
+        // caret's.
+        if !has(LEAF_CONTEXT_SELECTION), let word = spelling.misspellingAtCaret() {
+            spelling.addItems(for: word, to: menu)
+        }
         if has(LEAF_CONTEXT_GO_TO_NOTE) {
             add("Go to Note") { [model] in model.action(LEAF_ACTION_FOLLOW_FOOTNOTE) }
         }
@@ -158,6 +171,9 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
     }
 
     // MARK: Edit menu
+
+    /// Edit ▸ Spelling and Grammar ▸ Check Document Now.
+    @objc func checkSpelling(_ sender: Any?) { spelling.checkDocumentNow() }
 
     @objc func cut(_ sender: Any?) { model.send(.cmd("x", "KeyX")) }
     @objc func copy(_ sender: Any?) { model.send(.cmd("c", "KeyC")) }
@@ -274,12 +290,16 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
 
     func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
-        if replacementRange.location != NSNotFound, replacementRange.length > 0 {
-            // Press-and-hold replaces the letter before the caret.
-            leaf_view_delete_surrounding(handle, replacementRange.length, 0)
+        let composing = !marked.isEmpty
+        let replacing = replacementRange.location != NSNotFound
+        if replacing, !composing {
+            // Press-and-hold replaces the letter before the caret, and
+            // dictation or a correction the range it measured.
+            leaf_view_select_range(handle, replacementRange.location, replacementRange.length)
         }
         marked = ""
         leaf_view_insert_text(handle, text)
+        if !composing, !replacing { spelling.afterTyping(text) }
     }
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
@@ -298,7 +318,12 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
         leaf_view_insert_text(handle, text)
     }
 
-    func selectedRange() -> NSRange { NSRange(location: 0, length: 0) }
+    // While an input method composes, its marked text is the whole of what
+    // it is told about, as before; otherwise it sees the document's text.
+    func selectedRange() -> NSRange {
+        guard marked.isEmpty, let range = selectedUTF16() else { return NSRange(location: 0, length: 0) }
+        return range
+    }
 
     func markedRange() -> NSRange {
         marked.isEmpty ? NSRange(location: NSNotFound, length: 0)
@@ -308,7 +333,46 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
     func hasMarkedText() -> Bool { !marked.isEmpty }
 
     func attributedSubstring(forProposedRange range: NSRange,
-                             actualRange: NSRangePointer?) -> NSAttributedString? { nil }
+                             actualRange: NSRangePointer?) -> NSAttributedString? {
+        guard marked.isEmpty, range.location != NSNotFound else { return nil }
+        let text = self.text(prose: false) as NSString
+        let actual = NSIntersectionRange(range, NSRange(location: 0, length: text.length))
+        guard actual.location == range.location else { return nil }
+        actualRange?.pointee = actual
+        return NSAttributedString(string: text.substring(with: actual))
+    }
+
+    // MARK: The text, as the system sees it
+
+    /// The editor's state now, not as of the model's last refresh.
+    func currentState() -> LeafState {
+        var s = LeafState()
+        leaf_view_state(handle, &s)
+        return s
+    }
+
+    /// The text the system indexes (`leaf_view_text`), or with `prose` the
+    /// same with all but prose blanked, for the spelling checker.
+    func text(prose: Bool) -> String {
+        let s = currentState()
+        if let c = textCache, c.revision == s.revision, c.source == s.source_view, c.prose == prose {
+            return c.text
+        }
+        guard let raw = leaf_view_text(handle, prose) else { return "" }
+        defer { leaf_string_free(raw) }
+        let text = String(cString: raw)
+        textCache = (s.revision, s.source_view, prose, text)
+        return text
+    }
+
+    /// The selection, or the caret alone, as a UTF-16 range of `text`.
+    func selectedUTF16() -> NSRange? {
+        guard handle != nil else { return nil }
+        var loc = 0
+        var len = 0
+        leaf_view_selected_range(handle, &loc, &len)
+        return NSRange(location: loc, length: len)
+    }
 
     func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
 

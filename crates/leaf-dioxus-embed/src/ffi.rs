@@ -17,6 +17,7 @@ use leaf_core::{Doc, Format, InlineKind, LineFlow, MarkColor, View};
 use leaf_dioxus::{Look, TableCommand};
 
 use crate::callbacks::Callbacks;
+use crate::text;
 use crate::view::{Hosted, dioxus_mods};
 
 /// The host's handle on one editor.
@@ -585,6 +586,183 @@ pub unsafe extern "C" fn leaf_view_selected_text(h: *mut LeafView) -> *mut c_cha
         .flatten()
         .and_then(|s| CString::new(s).ok())
         .map_or(std::ptr::null_mut(), CString::into_raw)
+}
+
+/// The text the system indexes (see `text.rs`): the visible text, or with
+/// `prose` the same with all but prose blanked, for the spelling checker.
+/// Free with `leaf_string_free`.
+///
+/// # Safety
+/// `h` is null or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_text(h: *mut LeafView, prose: bool) -> *mut c_char {
+    let text = unsafe { hosted(h) }
+        .and_then(|v| {
+            v.with_editor(|ed| {
+                let mut d = ed.doc();
+                if prose {
+                    text::prose(&mut d)
+                } else {
+                    text::visible(&mut d)
+                }
+            })
+        })
+        .unwrap_or_default();
+    CString::new(text.replace('\0', " "))
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// The selection as a UTF-16 range of `leaf_view_text`: the caret alone is
+/// an empty one.
+///
+/// # Safety
+/// `h` is null or a live handle; `loc` and `len` point at `size_t`s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_selected_range(
+    h: *mut LeafView,
+    loc: *mut usize,
+    len: *mut usize,
+) {
+    let (lo, hi) = unsafe { hosted(h) }
+        .and_then(|v| {
+            v.with_editor(|ed| {
+                let mut d = ed.doc();
+                let (a, b) = d.selection().unwrap_or((d.caret, d.caret));
+                (text::utf16_of(&mut d, a), text::utf16_of(&mut d, b))
+            })
+        })
+        .unwrap_or_default();
+    if let (Some(loc), Some(len)) = (unsafe { loc.as_mut() }, unsafe { len.as_mut() }) {
+        *loc = lo;
+        *len = hi.saturating_sub(lo);
+    }
+}
+
+/// Select the UTF-16 range `loc`..`loc + len` of `leaf_view_text`; an empty
+/// one places the caret.
+///
+/// # Safety
+/// `h` is null or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_select_range(h: *mut LeafView, loc: usize, len: usize) {
+    let Some(v) = (unsafe { hosted(h) }) else {
+        return;
+    };
+    v.with_editor(|ed| {
+        {
+            let mut d = ed.doc();
+            let (from, to) = text::bounds(&mut d, loc, len);
+            d.select_range(from, to);
+            if len == 0 {
+                d.anchor = None;
+            }
+        }
+        ed.refresh();
+    });
+}
+
+/// Replace the UTF-16 range `loc`..`loc + len` of `leaf_view_text` with
+/// `text`, if the source bytes it shows spell `original` — false, and
+/// nothing changed, if they do not. With `behind`, as an automatic
+/// substitution behind the caret: the caret stays where typing left it and
+/// the change is an undo step of its own. Otherwise as an edit, the caret
+/// after it.
+///
+/// # Safety
+/// `h` is null or a live handle; `original` and `text` C strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_replace_range(
+    h: *mut LeafView,
+    loc: usize,
+    len: usize,
+    original: *const c_char,
+    replacement: *const c_char,
+    behind: bool,
+) -> bool {
+    let (Some(v), Some(original), Some(replacement)) =
+        (unsafe { hosted(h) }, unsafe { str_of(original) }, unsafe {
+            str_of(replacement)
+        })
+    else {
+        return false;
+    };
+    v.with_editor(|ed| {
+        let done = {
+            let mut d = ed.doc();
+            match text::exact(&mut d, loc, len, original) {
+                Some((from, to)) if behind => d.substitute(from, to, replacement),
+                Some((from, to)) => {
+                    d.edit(from, to, replacement);
+                    true
+                }
+                None => false,
+            }
+        };
+        if done {
+            ed.refresh();
+        }
+        done
+    })
+    .unwrap_or(false)
+}
+
+/// Open (`begin`) or close an undo group: the edits between are one step.
+///
+/// # Safety
+/// `h` is null or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_undo_group(h: *mut LeafView, begin: bool) {
+    if let Some(v) = unsafe { hosted(h) } {
+        v.with_editor(|ed| {
+            let mut d = ed.doc();
+            if begin {
+                d.begin_undo_group()
+            } else {
+                d.end_undo_group()
+            }
+        });
+    }
+}
+
+/// The words the spelling checker found misspelled in the text at
+/// `revision`: `count` UTF-16 ranges of `leaf_view_text`, as `ranges[2i]`
+/// (location) and `ranges[2i + 1]` (length). Drawn underlined until the next
+/// edit; ignored if the text has moved on since.
+///
+/// # Safety
+/// `h` is null or a live handle; `ranges` is null or `2 * count` `size_t`s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_set_misspellings(
+    h: *mut LeafView,
+    revision: u64,
+    ranges: *const usize,
+    count: usize,
+) {
+    let Some(v) = (unsafe { hosted(h) }) else {
+        return;
+    };
+    let pairs = if ranges.is_null() || count == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(ranges, count * 2) }
+    };
+    v.with_editor(|ed| {
+        let found = {
+            let mut d = ed.doc();
+            if d.revision() != revision {
+                return;
+            }
+            pairs
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[loc, len]| text::bounds(&mut d, loc, len))
+                .filter(|(from, to)| from < to)
+                .collect()
+        };
+        ed.set_misspellings(revision, found);
+    });
 }
 
 /// The document `source` (UTF-8, `len` bytes) in `format`, at `path` for its

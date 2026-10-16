@@ -13,6 +13,7 @@ import SwiftUI
 
 struct LeafEditorCommands: Commands {
     @FocusedObject private var editor: EditorModel?
+    @ObservedObject private var spelling = SpellingSettings.shared
 
     var body: some Commands {
         CommandGroup(replacing: .undoRedo) {
@@ -34,6 +35,22 @@ struct LeafEditorCommands: Commands {
                 item("Find and Replace…", .cmd("ƒ", "KeyF", alt: true), "f", [.command, .option])
                 item("Find Next", .cmd("g", "KeyG"), "g", .command)
                 item("Find Previous", .cmd("g", "KeyG", shift: true), "g", [.command, .shift])
+            }
+            // What `.textEditing` holds in every other app, besides Find.
+            Menu("Spelling and Grammar") {
+                Button("Check Document Now") { editor?.view?.spelling.checkDocumentNow() }
+                    .keyboardShortcut(";", modifiers: .command)
+                    .disabled(editor == nil || editor?.state.source_view == true)
+                Divider()
+                Toggle("Check Spelling While Typing", isOn: $spelling.checkWhileTyping)
+                Toggle("Correct Spelling Automatically", isOn: $spelling.correctAutomatically)
+            }
+            Menu("Substitutions") {
+                Button("Show Substitutions") { NSSpellChecker.shared.substitutionsPanel.orderFront(nil) }
+                Divider()
+                Toggle("Smart Quotes", isOn: $spelling.smartQuotes)
+                Toggle("Smart Dashes", isOn: $spelling.smartDashes)
+                Toggle("Text Replacement", isOn: $spelling.textReplacement)
             }
         }
         CommandGroup(replacing: .textFormatting) {

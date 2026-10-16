@@ -16,12 +16,15 @@ pictures, find and replace, the source view, Export as PDF and Print came
 across. What the LeafUI app did that this one does not, each a piece of work
 of its own:
 
-- **System text services.** Spelling and grammar (red waves, guesses in the
-  context menu), autocorrect, smart quotes and dashes, text replacement,
-  Writing Tools, Look Up by force click, data detectors, Speech and Services.
-  All of them read the text through the text input client, whose
-  `attributedSubstring(forProposedRange:)` and `selectedRange()` answer
-  nothing yet; answering them from core's offsets is the first step for each.
+- **The rest of the system text services.** Spelling (underlines, guesses,
+  Ignore and Learn, Check Document Now), autocorrect, smart quotes and dashes,
+  and text replacement are done (`Spelling.swift`, over `leaf_view_text` and
+  its UTF-16 ranges). Still to do: grammar; the spelling panel (Show Spelling
+  and Grammar); the blue underline under an autocorrected word and the offer
+  to revert it; underlines inside a table's cells, which the checker reads but
+  the table block does not draw; `characterIndex(for:)` and `firstRect` for a
+  range rather than the caret, which Look Up by force click, dictation's
+  corrections and Writing Tools need; data detectors; Speech and Services.
 - **Peeks.** A footnote's note, and a link's target, in a popover on hover.
 - **Media playback.** Video plays inline and audio in its strip; here a
   video is its poster and audio a chip.

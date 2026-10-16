@@ -59,6 +59,7 @@ body {{ position: relative; }}
 .leaf .row.source .g {{ font-size: 1em; vertical-align: baseline; }}
 .leaf .row, .leaf .line {{ min-height: {leading}em; }}
 .leaf .ime {{ text-decoration: underline; text-decoration-color: var(--leaf-accent); }}
+.leaf .miss {{ text-decoration: underline wavy; text-decoration-color: var(--leaf-misspelled); }}
 .leaf .table {{ box-sizing: border-box; }}
 .leaf .trow {{ display: flex; box-sizing: border-box; }}
 .leaf .trow.head .tcell {{ background: var(--leaf-table-head); }}

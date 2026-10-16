@@ -169,6 +169,11 @@ pub struct State {
     pub goal: Cell<Option<f32>>,
     /// The column's measure in each view, for the type `fonts` sets.
     pub measures: Cell<Measures>,
+    /// The words the host's spelling checker found misspelled, as source
+    /// ranges in order, with the revision of the text it read. They are
+    /// drawn only while the text is still at that revision: after an edit
+    /// they stand where the words were, so they wait for the next check.
+    misspelled: RefCell<(u64, Vec<(usize, usize)>)>,
 }
 
 /// What the render reads. Each is a signal, so the page re-renders when an
@@ -307,6 +312,7 @@ impl Editor {
             last_press: Cell::new(None),
             goal: Cell::new(None),
             measures: Cell::new(measures),
+            misspelled: RefCell::default(),
         };
         Self {
             st: Rc::new(st),
@@ -348,7 +354,14 @@ impl Editor {
                 doc.set_inline_pictures(true);
                 doc.build_visual_unwrapped();
                 let shown = shown_caret(&doc, caret);
-                let marks = Marks::of(&doc.vmap, shown, doc.anchor).composing(composer.marked());
+                let misspelled = st.misspelled.borrow();
+                let current = match &*misspelled {
+                    (revision, ranges) if *revision == doc.revision() => ranges.as_slice(),
+                    _ => &[],
+                };
+                let marks = Marks::of(&doc.vmap, shown, doc.anchor)
+                    .composing(composer.marked())
+                    .misspelled(current);
                 let h = frame.update(&doc.vmap, &marks).to_vec();
                 // A table's picture is box-drawn in character cells, so its
                 // rows stay monospace, as code does.
@@ -505,6 +518,14 @@ impl Editor {
     pub fn row_bottoms(&self) -> Vec<f64> {
         let l = self.sig.layout.peek();
         (0..l.rows()).map(|r| l.bottom(r)).collect()
+    }
+
+    /// The words the host's spelling checker found misspelled in the text at
+    /// `revision`, as source ranges; drawn underlined until the next edit.
+    pub fn set_misspellings(&self, revision: u64, mut ranges: Vec<(usize, usize)>) {
+        ranges.sort_unstable();
+        *self.st.misspelled.borrow_mut() = (revision, ranges);
+        self.refresh();
     }
 
     /// Repaint, and follow the caret.

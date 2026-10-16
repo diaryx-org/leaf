@@ -92,7 +92,7 @@ pub struct Opts {
 
 /// Where the caret and the selection are, in the terms a row needs.
 #[derive(Clone, Copy, Default)]
-pub struct Marks {
+pub struct Marks<'a> {
     /// The caret's (row, column), from
     /// [`VisualMap::pos_of_offset`](leaf_core::VisualMap::pos_of_offset).
     pub caret: Option<(usize, usize)>,
@@ -102,15 +102,28 @@ pub struct Marks {
     /// offsets. Its glyphs carry `ime`, which the stylesheet underlines, as
     /// every text view marks a composition.
     pub composing: Option<(usize, usize)>,
+    /// The words the host's spelling checker found misspelled, as source
+    /// ranges in order. Their glyphs carry `miss`, which the stylesheet
+    /// underlines in red.
+    pub misspelled: &'a [(usize, usize)],
 }
 
-impl Marks {
+impl<'a> Marks<'a> {
     /// The marks for a document, read off its map once per frame.
     pub fn of(vmap: &VisualMap, caret: usize, anchor: Option<usize>) -> Self {
         Self {
             caret: Some(vmap.pos_of_offset(caret)),
             selection: anchor.map(|a| (a.min(caret), a.max(caret))),
             composing: None,
+            misspelled: &[],
+        }
+    }
+
+    /// The same marks, with `ranges` misspelled.
+    pub fn misspelled(self, ranges: &'a [(usize, usize)]) -> Self {
+        Self {
+            misspelled: ranges,
+            ..self
         }
     }
 
@@ -128,17 +141,18 @@ impl Marks {
 pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
     let mut runs: Vec<Run> = Vec::new();
     let mut class = String::new();
-    // The style, selection and composition state the open run was opened
-    // with. A glyph extends it when all three still match.
-    let mut open: Option<(leaf_core::Style, bool, bool)> = None;
+    // The style, selection, composition and spelling state the open run was
+    // opened with. A glyph extends it when all four still match.
+    let mut open: Option<(leaf_core::Style, bool, bool, bool)> = None;
 
     for g in &vrow.glyphs {
         let selected = within(g, marks.selection);
         let composing = within(g, marks.composing);
+        let miss = misspelled(g, marks.misspelled);
         // An inline formula's atom is a run of its own, with its offset,
         // which is how its picture is found (`picture.rs`).
         let math = g.style.role == leaf_core::Role::Math;
-        let extends = !math && open == Some((g.style, selected, composing));
+        let extends = !math && open == Some((g.style, selected, composing, miss));
         if !extends {
             class.clear();
             class_of(&g.style, &mut class);
@@ -147,13 +161,15 @@ pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
             }
             if composing {
                 class.push_str(" ime");
+            } else if miss {
+                class.push_str(" miss");
             }
             runs.push(Run {
                 text: String::new(),
                 class: class.clone(),
                 src: (opts.offsets || math).then_some(g.src),
             });
-            open = (!math).then_some((g.style, selected, composing));
+            open = (!math).then_some((g.style, selected, composing, miss));
         }
         // `drawn()` rather than `ch`: a list item's indent on a continuation
         // row is spelled with the marker's characters for its width and drawn
@@ -174,6 +190,12 @@ pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
 
 fn within(g: &Glyph, range: Option<(usize, usize)>) -> bool {
     range.is_some_and(|(lo, hi)| g.src >= lo && g.src < hi)
+}
+
+/// Whether `g` is in one of `ranges`, which are in order and apart.
+fn misspelled(g: &Glyph, ranges: &[(usize, usize)]) -> bool {
+    let i = ranges.partition_point(|&(_, hi)| hi <= g.src);
+    ranges.get(i).is_some_and(|&(lo, _)| lo <= g.src)
 }
 
 #[cfg(test)]
@@ -209,12 +231,26 @@ mod tests {
     }
 
     #[test]
+    fn a_misspelled_word_is_a_run_of_its_own() {
+        let d = doc("teh cat sat\n");
+        let marks = Marks::default().misspelled(&[(0, 3)]);
+        let v = row_view(&d.vmap.rows[0], 0, &marks, Opts::default());
+        let runs: Vec<_> = v
+            .runs
+            .iter()
+            .map(|r| (r.text.as_str(), r.class.as_str()))
+            .collect();
+        assert_eq!(runs, [("teh", "g miss"), (" cat sat", "g")]);
+    }
+
+    #[test]
     fn a_selection_splits_a_run_and_classes_it() {
         let d = doc("hello world\n");
         let marks = Marks {
             caret: None,
             selection: Some((0, 5)),
             composing: None,
+            misspelled: &[],
         };
         let v = row_view(&d.vmap.rows[0], 0, &marks, Opts::default());
         assert_eq!(v.runs[0].text, "hello");
