@@ -29,6 +29,23 @@ pub struct Callbacks {
     pub ime_area: Option<extern "C" fn(ctx: *mut c_void, x: f64, y: f64, w: f64, h: f64)>,
     /// The pointer's shape: 0 the arrow, 1 the I-beam, 2 the pointing hand.
     pub set_cursor: Option<extern "C" fn(ctx: *mut c_void, cursor: u32)>,
+    /// For a host that scrolls the editor: the editor moved its viewport
+    /// itself, or its content changed height. `top` is how far down the
+    /// content the viewport starts and `height` how tall the content is, in
+    /// points; `inset_top` and `inset_bottom` are what the find bar and the
+    /// status line cover of the viewport, for the scroller to keep clear of.
+    pub scrolled: Option<
+        extern "C" fn(ctx: *mut c_void, top: f64, height: f64, inset_top: f64, inset_bottom: f64),
+    >,
+}
+
+/// What [`Callbacks::scrolled`] reports.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct Scroll {
+    pub top: f64,
+    pub height: f64,
+    pub inset_top: f64,
+    pub inset_bottom: f64,
 }
 
 impl Callbacks {
@@ -42,6 +59,7 @@ impl Callbacks {
             context_menu: None,
             ime_area: None,
             set_cursor: None,
+            scrolled: None,
         }
     }
 
@@ -78,6 +96,12 @@ impl Callbacks {
     pub fn set_cursor(&self, cursor: u32) {
         if let Some(f) = self.set_cursor {
             f(self.ctx, cursor);
+        }
+    }
+
+    pub fn scrolled(&self, g: Scroll) {
+        if let Some(f) = self.scrolled {
+            f(self.ctx, g.top, g.height, g.inset_top, g.inset_bottom);
         }
     }
 }

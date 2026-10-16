@@ -544,11 +544,41 @@ impl Editor {
     /// positive delta moving toward the top. Down to where the last row sits
     /// mid-viewport, as a page with room under it.
     pub fn scroll(&self, dy: f64) {
-        let max = (self.sig.layout.peek().height() - *self.sig.height.peek() / 2.0).max(0.0);
-        let to = (*self.sig.top.peek() - dy).clamp(0.0, max);
-        if to != *self.sig.top.peek() {
-            set(self.sig.top, to);
+        let to = (*self.sig.top.peek() - dy).clamp(0.0, self.max_top());
+        self.scroll_to(to);
+    }
+
+    /// Where the viewport starts, in CSS pixels down the document.
+    pub fn top(&self) -> f64 {
+        *self.sig.top.peek()
+    }
+
+    /// Start the viewport `y` down the document, unclamped: a host that
+    /// scrolls the editor (an `NSScrollView`) takes it past either end and
+    /// back, as its elasticity does.
+    pub fn scroll_to(&self, y: f64) {
+        if y != *self.sig.top.peek() {
+            set(self.sig.top, y);
         }
+    }
+
+    /// The furthest down the viewport goes: to where the last row sits
+    /// mid-viewport.
+    fn max_top(&self) -> f64 {
+        (self.sig.layout.peek().height() - *self.sig.height.peek() / 2.0).max(0.0)
+    }
+
+    /// How tall the scrolled content is, for a host that scrolls the editor:
+    /// as tall as the whole surface at the furthest scroll, so that a
+    /// scroll view's range is the editor's own.
+    pub fn scroll_height(&self) -> f64 {
+        self.max_top() + *self.sig.height.peek() + STATUS
+    }
+
+    /// The find bar's height, open or not: what covers the top of the
+    /// viewport, as [`STATUS`] covers its bottom.
+    pub fn bar_height(&self) -> f64 {
+        self.sig.bar.peek().height()
     }
 
     /// The window changed size.

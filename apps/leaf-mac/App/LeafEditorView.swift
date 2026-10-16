@@ -2,10 +2,10 @@
 //
 //  The editor in an AppKit view. Blitz draws into this view's layer through
 //  wgpu; everything else about it is AppKit's: it is the window's first
-//  responder and the input method's text input client, takes the pointer and
-//  the wheel, answers the Edit menu's Cut, Copy and Paste, and pops up the
-//  context menu. Each event goes to the editor across
-//  `crates/leaf-dioxus-embed`'s C ABI, in points from the view's top-left.
+//  responder and the input method's text input client, takes the pointer,
+//  answers the Edit menu's Cut, Copy and Paste, and pops up the context menu.
+//  Each event goes to the editor across `crates/leaf-dioxus-embed`'s C ABI, in
+//  points from the view's top-left. The scroll is an `NSScrollView`'s.
 
 import AppKit
 import SwiftUI
@@ -14,15 +14,96 @@ import SwiftUI
 struct LeafEditorView: NSViewRepresentable {
     @ObservedObject var model: EditorModel
 
-    func makeNSView(context: Context) -> LeafEditorNSView {
-        LeafEditorNSView(model: model)
+    func makeNSView(context: Context) -> LeafScrollView {
+        LeafScrollView(model: model)
     }
 
-    func updateNSView(_ view: LeafEditorNSView, context: Context) {}
+    func updateNSView(_ view: LeafScrollView, context: Context) {}
 
-    static func dismantleNSView(_ view: LeafEditorNSView, coordinator: ()) {
-        view.close()
+    static func dismantleNSView(_ view: LeafScrollView, coordinator: ()) {
+        view.editor.close()
     }
+}
+
+/// The editor in a scroll view of AppKit's own, so that a scroll is the
+/// system's: its momentum, its give at either end, its scroller. The scroll
+/// view scrolls an empty document as tall as the editor's content, and the
+/// editor's view is kept over the part of it in view, drawing the content
+/// from wherever the scroll has got to. A view as tall as the content would
+/// be a surface wgpu cannot make, and every row drawn.
+final class LeafScrollView: NSScrollView {
+    let editor: LeafEditorNSView
+    /// Set while following a move the editor made itself, which it need not
+    /// be told of.
+    private var following = false
+
+    init(model: EditorModel) {
+        editor = LeafEditorNSView(model: model)
+        super.init(frame: NSRect(x: 0, y: 0, width: 700, height: 900))
+        hasVerticalScroller = true
+        autohidesScrollers = true
+        drawsBackground = false
+        horizontalScrollElasticity = .none
+        verticalScrollElasticity = .allowed
+        // The toolbar's inset would start the content under it; the editor
+        // keeps clear of it already.
+        automaticallyAdjustsContentInsets = false
+        contentInsets = NSEdgeInsetsZero
+        let document = ScrolledContent(frame: bounds)
+        documentView = document
+        document.addSubview(editor)
+        contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(clipMoved),
+                                               name: NSView.boundsDidChangeNotification,
+                                               object: contentView)
+        editor.scrolled = { [unowned self] in follow($0) }
+    }
+
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    override func tile() {
+        super.tile()
+        documentView?.setFrameSize(NSSize(width: contentView.bounds.width,
+                                          height: documentView?.frame.height ?? 0))
+        placeEditor()
+    }
+
+    @objc private func clipMoved() {
+        placeEditor()
+        if !following {
+            leaf_view_set_scroll(editor.handle, contentView.bounds.minY)
+        }
+    }
+
+    /// Over the part of the document in view — past either end of it too,
+    /// while the scroll gives there.
+    private func placeEditor() {
+        let visible = contentView.bounds
+        if editor.frame.size != visible.size {
+            editor.setFrameSize(visible.size)
+        }
+        editor.setFrameOrigin(visible.origin)
+    }
+
+    /// The editor scrolled itself (to the caret, to a match, to the top of a
+    /// document it was given) or its content changed height.
+    private func follow(_ s: LeafEditorNSView.Scroll) {
+        documentView?.setFrameSize(NSSize(width: contentView.bounds.width, height: s.height))
+        scrollerInsets = NSEdgeInsets(top: s.insetTop, left: 0, bottom: s.insetBottom, right: 0)
+        guard contentView.bounds.minY != s.top else { return }
+        following = true
+        contentView.scroll(to: NSPoint(x: 0, y: s.top))
+        reflectScrolledClipView(contentView)
+        following = false
+    }
+}
+
+/// What the scroll view scrolls: nothing to draw, only a height. Not
+/// scrolled off the main thread, as responsive scrolling would, since the
+/// editor's view is moved over it on the main thread.
+private final class ScrolledContent: NSView {
+    override var isFlipped: Bool { true }
+    override class var isCompatibleWithResponsiveScrolling: Bool { false }
 }
 
 final class LeafEditorNSView: NSView, NSTextInputClient {
@@ -43,6 +124,11 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
     /// The text the system indexes, with the revision and view it was read
     /// at: asked for by the input method around most keystrokes.
     private var textCache: (revision: UInt64, source: Bool, prose: Bool, text: String)?
+
+    /// The `scrolled` callback's report, in points.
+    struct Scroll { var top, height, insetTop, insetBottom: Double }
+    /// Where the editor scrolled itself, for the scroll view around it.
+    var scrolled: ((Scroll) -> Void)?
 
     init(model: EditorModel) {
         self.model = model
@@ -91,6 +177,10 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
             guard view.cursorKind != kind else { return }
             view.cursorKind = kind
             view.window?.invalidateCursorRects(for: view)
+        }
+        callbacks.scrolled = { ctx, top, height, insetTop, insetBottom in
+            LeafEditorNSView.from(ctx).scrolled?(Scroll(top: top, height: height,
+                                                        insetTop: insetTop, insetBottom: insetBottom))
         }
         let bytes = Array(model.sourceForNewView.utf8)
         handle = bytes.withUnsafeBufferPointer { buf in
@@ -282,11 +372,6 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
         send(1, event, button: 1)
     }
     override func rightMouseUp(with event: NSEvent) { send(2, event, button: 1) }
-
-    override func scrollWheel(with event: NSEvent) {
-        leaf_view_scroll(handle, event.scrollingDeltaX, event.scrollingDeltaY,
-                         event.hasPreciseScrollingDeltas)
-    }
 
     override func flagsChanged(with event: NSEvent) {
         leaf_view_modifiers(handle, event.modifierFlags.leaf)

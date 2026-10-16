@@ -71,7 +71,7 @@ mod trace;
 mod view;
 mod viewport;
 
-pub use editor::{Editor, Look, use_editor};
+pub use editor::{Editor, Look, STATUS, use_editor};
 pub use host::{Clipboard, Host, Request};
 pub use input::{TableCommand, ZoomCommand};
 pub use keys::pressed;

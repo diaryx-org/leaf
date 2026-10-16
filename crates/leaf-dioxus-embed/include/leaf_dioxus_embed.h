@@ -79,6 +79,10 @@ typedef struct {
     void (*context_menu)(void *ctx, uint32_t flags);
     void (*ime_area)(void *ctx, double x, double y, double w, double h);
     void (*set_cursor)(void *ctx, uint32_t cursor); // 0 arrow, 1 I-beam, 2 hand
+    // For a host that scrolls the editor: the editor moved its viewport or
+    // its content changed height. Points; the insets are what the find bar
+    // and the status line cover.
+    void (*scrolled)(void *ctx, double top, double height, double inset_top, double inset_bottom);
 } LeafHostCallbacks;
 
 typedef struct {
@@ -136,6 +140,9 @@ void leaf_view_modifiers(LeafView *view, uint32_t mods);
 void leaf_view_pointer(LeafView *view, uint32_t kind, double x, double y, uint32_t button,
                        uint32_t mods);
 void leaf_view_scroll(LeafView *view, double dx, double dy, bool precise);
+// For a host that scrolls the editor: start the viewport `top` points down the
+// content, unclamped. The editor reports its own moves through `scrolled`.
+void leaf_view_set_scroll(LeafView *view, double top);
 
 void leaf_view_key(LeafView *view, const char *key, const char *code, uint32_t mods);
 void leaf_view_insert_text(LeafView *view, const char *text);

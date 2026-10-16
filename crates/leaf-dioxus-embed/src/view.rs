@@ -33,7 +33,7 @@ use crate::renderer::Renderer;
 use leaf_core::Doc;
 use leaf_dioxus::{Editor, Host, Look, use_editor};
 
-use crate::callbacks::Callbacks;
+use crate::callbacks::{Callbacks, Scroll};
 use crate::guard::guard;
 use crate::host::SwiftHost;
 use crate::runtime;
@@ -81,6 +81,12 @@ pub struct Hosted {
     runtime: Rc<Runtime>,
     editor: Rc<RefCell<Option<Editor>>>,
     mods: Cell<ModifiersState>,
+    /// The scroll as the host last heard it, from the `scrolled` callback or
+    /// its own `set_scroll`: a change the editor makes is reported against
+    /// it, and a move of the host's never comes back to it.
+    scroll: Cell<Scroll>,
+    /// Whether a scroll report is already on its way.
+    scroll_queued: Cell<bool>,
 }
 
 /// Modifier bits as the ABI spells them (`LEAF_MOD_*`).
@@ -199,6 +205,8 @@ impl Hosted {
             runtime,
             editor,
             mods: Cell::new(ModifiersState::empty()),
+            scroll: Cell::default(),
+            scroll_queued: Cell::new(false),
         });
         runtime::insert(hosted.id(), hosted.clone());
         // On a Mac the renderer is ready at once and says so down the
@@ -241,6 +249,7 @@ impl Hosted {
         } else {
             self.wake();
         }
+        self.report_scroll();
     }
 
     /// Draw a frame; `false` if the view was busy.
@@ -248,10 +257,56 @@ impl Hosted {
         match self.view.try_borrow_mut() {
             Ok(mut v) => {
                 guard(|| v.redraw());
+                drop(v);
+                self.report_scroll();
                 true
             }
             Err(_) => false,
         }
+    }
+
+    /// The host scrolled the editor to `top`.
+    pub fn set_scroll(&self, top: f64) {
+        self.scroll.set(Scroll {
+            top,
+            ..self.scroll.get()
+        });
+        self.with_editor(|ed| ed.scroll_to(top));
+    }
+
+    /// The editor's scroll, read without the wake-up `with_editor` sends.
+    fn current_scroll(&self) -> Option<Scroll> {
+        let ed = self.editor.borrow().clone()?;
+        guard(|| {
+            self.runtime.in_scope(ScopeId::ROOT, || Scroll {
+                top: ed.top(),
+                height: ed.scroll_height(),
+                inset_top: ed.bar_height(),
+                inset_bottom: leaf_dioxus::STATUS,
+            })
+        })
+    }
+
+    /// Tell the host, on the next turn, if the editor's scroll is not what
+    /// it last heard: after a poll or a frame, which every change to the
+    /// viewport or the content's height goes through. Read again then, so a
+    /// move the host makes in between is not undone by a stale report.
+    fn report_scroll(&self) {
+        if self.scroll_queued.get() || self.current_scroll() == Some(self.scroll.get()) {
+            return;
+        }
+        self.scroll_queued.set(true);
+        let id = self.id();
+        runtime::later(move || {
+            let Some(h) = runtime::get(id) else { return };
+            h.scroll_queued.set(false);
+            if let Some(now) = h.current_scroll()
+                && now != h.scroll.get()
+            {
+                h.scroll.set(now);
+                h.callbacks().scrolled(now);
+            }
+        });
     }
 
     pub fn complete_resume(&self) {

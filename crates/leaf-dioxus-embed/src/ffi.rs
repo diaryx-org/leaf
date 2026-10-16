@@ -183,6 +183,19 @@ pub unsafe extern "C" fn leaf_view_scroll(h: *mut LeafView, dx: f64, dy: f64, pr
     }
 }
 
+/// For a host that scrolls the editor: start the viewport `top` points down
+/// the content, unclamped, so an elastic scroll shows past either end. The
+/// editor's own moves come back through the `scrolled` callback.
+///
+/// # Safety
+/// `h` is null or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_set_scroll(h: *mut LeafView, top: f64) {
+    if let Some(v) = unsafe { hosted(h) } {
+        v.set_scroll(top);
+    }
+}
+
 /// A key the host's view does not turn into text: a chord, an arrow, Return.
 /// `key` is a DOM key value (`"b"`, `"ArrowUp"`, `"Enter"`), `code` a DOM
 /// code (`"KeyB"`), `mods` the `LEAF_MOD_*` held. A menu item is its chord,

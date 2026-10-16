@@ -28,7 +28,7 @@ runtimes.
 | `LeafApp.swift` | the scenes: a `DocumentGroup` per format, Settings, File ▸ New, Export as PDF, Page Setup, Print, Help ▸ Open Sample Document |
 | `LeafDocument.swift` | the document classes, one per format, and the sample |
 | `EditorModel.swift` | one window's editor as the chrome sees it: its `LeafState`, and every command, mostly the key chord it stands for |
-| `LeafEditorView.swift` | the `NSView`: pointer, wheel, keys, the text input client, the Edit menu's actions, the context menu |
+| `LeafEditorView.swift` | the `NSView`, in an `NSScrollView` that does its scrolling: pointer, keys, the text input client, the Edit menu's actions, the context menu |
 | `EditorCommands.swift` | Edit, Format and View, aimed at the window in front |
 | `ContentView.swift` | the window: the editor and its toolbar |
 | `DisplayChoice.swift`, `SettingsView.swift` | the reader's display choices and Settings |
