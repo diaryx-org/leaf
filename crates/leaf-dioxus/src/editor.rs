@@ -45,6 +45,35 @@ pub const STATUS: f64 = 24.0;
 /// for the caret — which is how most markup is written.
 const SOURCE_CELLS: f32 = 82.0;
 
+/// Where the caret is drawn: at `caret`, unless core's map would carry it
+/// across a line break. An offset past a hidden closing delimiter at a line's
+/// end — after ⌘B wraps the line's last word, `**X**|` — has no stop on its
+/// row, and core snaps it forward to the next row's opening; but it is before
+/// the newline, so it is drawn at the end of its own line.
+pub fn shown_caret(doc: &Doc, caret: usize) -> usize {
+    let rows = &doc.vmap.rows;
+    let (r, _) = doc.vmap.pos_of_offset(caret);
+    let Some(row) = rows.get(r) else { return caret };
+    let open = row
+        .glyphs
+        .iter()
+        .find(|g| g.stop)
+        .map_or(row.end_src, |g| g.src);
+    let crossed = open > caret
+        && doc
+            .source
+            .get(caret..open)
+            .is_some_and(|between| between.contains('\n'));
+    if !crossed {
+        return caret;
+    }
+    rows[..r]
+        .iter()
+        .rev()
+        .find(|p| !p.decoration && p.end_src <= caret)
+        .map_or(caret, |p| p.end_src)
+}
+
 /// The editor's own height in CSS pixels: the window's surface, less the
 /// status line.
 pub fn viewport_height(physical: u32, scale: f64) -> f64 {
@@ -318,7 +347,8 @@ impl Editor {
                 // a no-op once set.
                 doc.set_inline_pictures(true);
                 doc.build_visual_unwrapped();
-                let marks = Marks::of(&doc.vmap, caret, doc.anchor).composing(composer.marked());
+                let shown = shown_caret(&doc, caret);
+                let marks = Marks::of(&doc.vmap, shown, doc.anchor).composing(composer.marked());
                 let h = frame.update(&doc.vmap, &marks).to_vec();
                 // A table's picture is box-drawn in character cells, so its
                 // rows stay monospace, as code does.
@@ -559,5 +589,31 @@ impl Editor {
         set(self.sig.words, None);
         self.refresh();
         self.sync_bar();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use leaf_core::{Doc, Format, InlineKind};
+
+    use super::shown_caret;
+
+    #[test]
+    fn a_caret_past_a_hidden_closing_delimiter_stays_on_its_line() {
+        let src = "Hello there! X\n\nhello\n";
+        let mut d = Doc::from_source(src.into(), Format::Markdown).expect("a document");
+        d.build_visual_unwrapped();
+        let x = src.find('X').unwrap();
+        d.select_range(x + 1, x);
+        d.toggle(InlineKind::Strong);
+        d.build_visual_unwrapped();
+        let shown = shown_caret(&d, d.caret);
+        assert_eq!(
+            d.vmap.pos_of_offset(shown).0,
+            0,
+            "the caret is drawn on the bolded line"
+        );
+        // And a caret already at a stop is drawn where it is.
+        assert_eq!(shown_caret(&d, 3), 3);
     }
 }
