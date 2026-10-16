@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage(DisplayChoice.columnWidthKey) private var columnWidth: ColumnWidth = .medium
     @AppStorage(DisplayChoice.textSizeKey) private var textSize: TextSize = .medium
     @AppStorage(DisplayChoice.flowKey) private var flowPreserved = false
+    @AppStorage(DisplayChoice.paperKey) private var paper: Paper = .usLetter
     private var typography = StoredTypography()
 
     var body: some View {
@@ -37,6 +38,11 @@ struct SettingsView: View {
                 }
                 Toggle("Preserve line breaks in new windows", isOn: $flowPreserved)
             }
+            Section("Page") {
+                Picker("Paper:", selection: $paper) {
+                    ForEach(Paper.allCases) { Text($0.label).tag($0) }
+                }
+            }
             HStack {
                 Spacer()
                 Button("Restore Defaults", action: restoreDefaults)
@@ -56,7 +62,8 @@ struct SettingsView: View {
     /// reaches a reader who never chose otherwise.
     private func restoreDefaults() {
         [DisplayChoice.columnWidthKey, DisplayChoice.textSizeKey, DisplayChoice.flowKey,
-         DisplayChoice.bodyFontKey, DisplayChoice.codeFontKey, DisplayChoice.lineSpacingKey]
+         DisplayChoice.bodyFontKey, DisplayChoice.codeFontKey, DisplayChoice.lineSpacingKey,
+         DisplayChoice.paperKey]
             .forEach(UserDefaults.standard.removeObject(forKey:))
     }
 }

@@ -39,17 +39,20 @@ use crate::window::HostedWindow;
 
 /// What the root component is made with, taken on its first render.
 #[derive(Clone)]
-struct Init {
-    doc: Rc<RefCell<Option<Doc>>>,
-    host: Rc<dyn Host>,
+pub(crate) struct Init {
+    pub doc: Rc<RefCell<Option<Doc>>>,
+    pub host: Rc<dyn Host>,
     /// Where the component leaves the editor it made, for the host's calls.
-    editor: Rc<RefCell<Option<Editor>>>,
+    pub editor: Rc<RefCell<Option<Editor>>>,
+    pub look: Look,
+    /// Laid out for paper (`pdf.rs`): no caret, no status line.
+    pub print: bool,
 }
 
 /// The page: the editor, and nothing else — the host draws its chrome
 /// natively around the view.
 #[allow(non_snake_case)]
-fn Root() -> Element {
+pub(crate) fn Root() -> Element {
     let init = use_context::<Init>();
     let ed = use_editor(
         || {
@@ -58,11 +61,16 @@ fn Root() -> Element {
                 .take()
                 .unwrap_or_else(|| Doc::blank().expect("a blank document"))
         },
-        Look::default,
+        || init.look.clone(),
         || init.host.clone(),
     );
     use_hook(|| *init.editor.borrow_mut() = Some(ed.clone()));
-    ed.render()
+    rsx! {
+        {ed.render()}
+        if init.print {
+            style { ".caret-in, .status {{ display: none; }}" }
+        }
+    }
 }
 
 pub struct Hosted {
@@ -120,6 +128,8 @@ impl Hosted {
             doc: Rc::new(RefCell::new(Some(doc))),
             host,
             editor: editor.clone(),
+            look: Look::default(),
+            print: false,
         }));
         let net = Arc::new(blitz_net::Provider::new(Some(Arc::new(proxy.clone()) as _)));
         vdom.provide_root_context(Arc::clone(&net));

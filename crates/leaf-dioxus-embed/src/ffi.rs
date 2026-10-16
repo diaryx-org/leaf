@@ -586,3 +586,85 @@ pub unsafe extern "C" fn leaf_view_selected_text(h: *mut LeafView) -> *mut c_cha
         .and_then(|s| CString::new(s).ok())
         .map_or(std::ptr::null_mut(), CString::into_raw)
 }
+
+/// The document `source` (UTF-8, `len` bytes) in `format`, at `path` for its
+/// pictures (null for none), set in the body and code faces at `size` with
+/// `leading`, on paper `paper_w` × `paper_h` points with a `margin`, as a
+/// PDF: the bytes, `*out_len` long, to free with `leaf_bytes_free`; null if
+/// it could not be made.
+///
+/// # Safety
+/// `source` is `len` readable bytes; `path`, `body` and `mono` are null or C
+/// strings; `out_len` points at a `size_t`.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn leaf_pdf(
+    source: *const u8,
+    len: usize,
+    format_code: u32,
+    path: *const c_char,
+    body: *const c_char,
+    mono: *const c_char,
+    size: f32,
+    leading: f32,
+    paper_w: f32,
+    paper_h: f32,
+    margin: f32,
+    out_len: *mut usize,
+) -> *mut u8 {
+    let Some(out_len) = (unsafe { out_len.as_mut() }) else {
+        return std::ptr::null_mut();
+    };
+    *out_len = 0;
+    let bytes = if source.is_null() {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(source, len) }
+    };
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    let mut look = Look::default();
+    if let Some(b) = unsafe { str_of(body) } {
+        look.ty.body = b.to_owned();
+    }
+    if let Some(m) = unsafe { str_of(mono) } {
+        look.ty.mono = m.to_owned();
+    }
+    if size > 0.0 {
+        look.ty.size = size;
+    }
+    if leading > 0.0 {
+        look.ty.leading = leading;
+    }
+    let path = unsafe { str_of(path) }.map(PathBuf::from);
+    let paper = crate::pdf::Paper {
+        width: paper_w,
+        height: paper_h,
+        margin,
+    };
+    crate::runtime::proxy();
+    let pdf =
+        crate::guard::guard(|| crate::pdf::render(&text, format(format_code), path, look, paper));
+    match pdf {
+        Some(Ok(pdf)) if !pdf.is_empty() => {
+            let mut pdf = pdf.into_boxed_slice();
+            *out_len = pdf.len();
+            let ptr = pdf.as_mut_ptr();
+            std::mem::forget(pdf);
+            ptr
+        }
+        Some(Err(e)) => {
+            eprintln!("leaf_pdf: {e}");
+            std::ptr::null_mut()
+        }
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// `ptr` and `len` are a pair from `leaf_pdf`, not used again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_bytes_free(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() {
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
+    }
+}

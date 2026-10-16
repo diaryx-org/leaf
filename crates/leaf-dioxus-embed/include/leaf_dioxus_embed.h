@@ -157,6 +157,13 @@ void leaf_view_insert_link(LeafView *view, const char *destination);
 void leaf_view_highlight(LeafView *view, int32_t color); // -1 the plain highlighter
 void leaf_view_set_preserve_breaks(LeafView *view, bool preserve);
 
+// The document as a PDF on paper paper_w x paper_h points: the bytes,
+// *out_len long, freed with leaf_bytes_free; null if it could not be made.
+uint8_t *leaf_pdf(const uint8_t *source, size_t len, uint32_t format, const char *path,
+                  const char *body, const char *mono, float size, float leading,
+                  float paper_w, float paper_h, float margin, size_t *out_len);
+void leaf_bytes_free(uint8_t *bytes, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

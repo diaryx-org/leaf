@@ -469,6 +469,14 @@ impl Editor {
         }
     }
 
+    /// Every row's bottom, in CSS pixels from the top of the first — where
+    /// a printed page may break. A row a block stands for ends where the
+    /// block does.
+    pub fn row_bottoms(&self) -> Vec<f64> {
+        let l = self.sig.layout.peek();
+        (0..l.rows()).map(|r| l.bottom(r)).collect()
+    }
+
     /// Repaint, and follow the caret.
     pub fn refresh(&self) {
         let row = self.repaint();

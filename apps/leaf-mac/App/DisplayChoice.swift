@@ -6,6 +6,7 @@
 //  window and every document window read the same values, so a change in one
 //  redraws them all.
 
+import AppKit
 import SwiftUI
 
 enum DisplayChoice {
@@ -15,6 +16,7 @@ enum DisplayChoice {
     static let bodyFontKey = "display.bodyFont"
     static let codeFontKey = "display.codeFont"
     static let lineSpacingKey = "display.lineSpacing"
+    static let paperKey = "display.paper"
 
     /// The theme's own names for its default faces, as the iOS app stores them.
     static let serifFontName = "IowanOldStyle-Roman"
@@ -132,6 +134,26 @@ enum TextSize: String, CaseIterable, Identifiable {
         case .small: return "Small"
         case .medium: return "Medium"
         case .large: return "Large"
+        }
+    }
+}
+
+/// The sheet Export as PDF lays the document onto, in points.
+enum Paper: String, CaseIterable, Identifiable {
+    case usLetter, a4
+    var id: String { rawValue }
+
+    var size: NSSize {
+        switch self {
+        case .usLetter: return NSSize(width: 612, height: 792)
+        case .a4: return NSSize(width: 595.28, height: 841.89)
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .usLetter: return "US Letter"
+        case .a4: return "A4"
         }
     }
 }

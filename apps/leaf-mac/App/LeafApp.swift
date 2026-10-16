@@ -7,6 +7,7 @@
 //  project.yml has declared the types. This file adds the chrome around it:
 //  the menus, the Settings window and the sample.
 
+import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -48,7 +49,23 @@ private extension View {
 
 /// The app's own menu items, beside the editor's.
 struct LeafAppCommands: Commands {
+    @FocusedObject private var editor: EditorModel?
+    @AppStorage(DisplayChoice.paperKey) private var paper: Paper = .usLetter
+
     var body: some Commands {
+        CommandGroup(after: .saveItem) {
+            Divider()
+            Button("Export as PDF…") { exportPDF() }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(editor == nil)
+        }
+        CommandGroup(replacing: .printItem) {
+            Button("Page Setup…") { NSApp.runPageLayout(nil) }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            Button("Print…") { printDocument() }
+                .keyboardShortcut("p", modifiers: .command)
+                .disabled(editor == nil)
+        }
         // SwiftUI folds three document groups into one "New Document"; this is
         // the submenu TextEdit-style apps show, one item per format.
         CommandGroup(replacing: .newItem) {
@@ -68,6 +85,40 @@ struct LeafAppCommands: Commands {
                 newDocument(.markdownDocument)
             }
         }
+    }
+
+    /// The document as a PDF, on the paper Settings names, in a save sheet on
+    /// its window as Save As is.
+    private func exportPDF() {
+        guard let editor, let window = NSApp.keyWindow else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = (window.title as NSString).deletingPathExtension + ".pdf"
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                guard let data = editor.pdfData(paper: paper.size) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                try data.write(to: url)
+            } catch {
+                NSAlert(error: error).beginSheetModal(for: window)
+            }
+        }
+    }
+
+    /// Print the document: its PDF on the printer's paper, through the
+    /// system's print panel.
+    private func printDocument() {
+        guard let editor, let window = NSApp.keyWindow else { return }
+        let info = NSPrintInfo.shared
+        guard let data = editor.pdfData(paper: info.paperSize, margin: max(info.topMargin, 36)),
+              let pdf = PDFDocument(data: data),
+              let op = pdf.printOperation(for: info, scalingMode: .pageScaleNone, autoRotate: false)
+        else { return }
+        op.jobTitle = window.title
+        op.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
     }
 
     /// An untitled document of one type, through the document controller so

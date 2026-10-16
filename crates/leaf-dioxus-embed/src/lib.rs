@@ -27,6 +27,7 @@ mod callbacks;
 mod ffi;
 mod guard;
 mod host;
+pub mod pdf;
 mod runtime;
 mod view;
 mod window;

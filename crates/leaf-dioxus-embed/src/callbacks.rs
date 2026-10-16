@@ -32,6 +32,19 @@ pub struct Callbacks {
 }
 
 impl Callbacks {
+    /// No host at all: what an offscreen editor answers to.
+    pub fn none() -> Self {
+        Self {
+            ctx: std::ptr::null_mut(),
+            changed: None,
+            request: None,
+            open: None,
+            context_menu: None,
+            ime_area: None,
+            set_cursor: None,
+        }
+    }
+
     pub fn changed(&self) {
         if let Some(f) = self.changed {
             f(self.ctx);

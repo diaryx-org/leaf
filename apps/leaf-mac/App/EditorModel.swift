@@ -204,6 +204,24 @@ final class EditorModel: ObservableObject {
                            Float(look.leading), Float(look.measure ?? 0), 0)
     }
 
+    // MARK: Paper
+
+    /// The document as a PDF on `paper` — the editor's own layout, paginated
+    /// between rows (`crates/leaf-dioxus-embed/src/pdf.rs`).
+    func pdfData(paper: NSSize, margin: CGFloat = 72) -> Data? {
+        let look = look ?? DisplayChoice.look(columnWidth: .medium, textSize: .medium, type: Typography())
+        let bytes = Array(source().utf8)
+        var len = 0
+        let ptr = bytes.withUnsafeBufferPointer { buf in
+            leaf_pdf(buf.baseAddress, buf.count, format.rawValue, fileURL?.path ?? pathForNewView,
+                     look.body, look.mono, Float(look.size), Float(look.leading),
+                     Float(paper.width), Float(paper.height), Float(margin), &len)
+        }
+        guard let ptr else { return nil }
+        defer { leaf_bytes_free(ptr, len) }
+        return Data(bytes: ptr, count: len)
+    }
+
     /// The text zoom's steps: a browser's, which a reader already knows.
     static let zooms: [Double] = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
