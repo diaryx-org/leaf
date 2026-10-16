@@ -91,7 +91,7 @@ fn lay_out(
     look: Look,
     paper: Paper,
 ) -> Result<(Scene, Vec<f64>, f64), String> {
-    let (document, ed, width) = offscreen(source, format, path, look, paper)?;
+    let (document, ed, width) = offscreen(source, format, path, look, paper, None)?;
     let runtime = document.vdom.runtime();
     let bottoms = runtime.in_scope(ScopeId::ROOT, || ed.row_bottoms());
     let height = bottoms.last().copied().unwrap_or(0.0);
@@ -112,13 +112,16 @@ fn lay_out(
 }
 
 /// The editor laid out offscreen at the paper's column, its pictures loaded:
-/// the document, the editor, and the page's width in CSS pixels.
+/// the document, the editor, and the page's width in CSS pixels. All of it
+/// at once, for paper; or, given a `screen` height, only the rows a window
+/// that tall shows, caret and status line drawn, as the app draws it.
 fn offscreen(
     source: &str,
     format: Format,
     path: Option<PathBuf>,
     look: Look,
     paper: Paper,
+    screen: Option<f64>,
 ) -> Result<(DioxusDocument, Editor, f64), String> {
     // A copy ending on a blank line, with the caret there: the caret's line
     // reveals its formulas' TeX and its fences' code, and this one has none.
@@ -133,7 +136,7 @@ fn offscreen(
     let window = Arc::new(HostedWindow::new(
         NonNull::dangling(),
         width,
-        TALL,
+        screen.unwrap_or(TALL),
         1.0,
         false,
         Callbacks::none(),
@@ -153,7 +156,7 @@ fn offscreen(
         host: Rc::new(Printer),
         editor: editor.clone(),
         look,
-        print: true,
+        print: screen.is_none(),
     }));
     let net = Arc::new(blitz_net::Provider::new(Some(Arc::new(proxy.clone()) as _)));
     vdom.provide_root_context(Arc::clone(&net));
@@ -581,6 +584,7 @@ mod tests {
             None,
             Look::default(),
             Paper::US_LETTER,
+            None,
         )
         .expect("an editor");
         document.vdom.runtime().in_scope(ScopeId::ROOT, || {
@@ -668,5 +672,43 @@ mod tests {
             breaks(&[700.0], 300.0),
             vec![(0.0, 300.0), (300.0, 600.0), (600.0, 700.0)]
         );
+    }
+
+    #[test]
+    fn moving_the_caret_in_and_out_of_blocks_while_scrolled_keeps_rendering() {
+        // Rows virtualised to a short window, scrolled, and the caret taken
+        // into each formula and table and back out: a row turning into the
+        // block that stands for it, and back. The Dioxus diff once panicked
+        // on that, and never rendered the page again.
+        let mut src = String::new();
+        for i in 0..6 {
+            src.push_str(&format!(
+                "Paragraph {i}, with $x^{i}$ in it.\n\n$$\n\\int_0^{i} x\\,dx\n$$\n\n| a | b |\n|---|---|\n| {i} | 2 |\n\n"
+            ));
+        }
+        let (mut document, ed, _) = offscreen(
+            &src,
+            Format::Markdown,
+            None,
+            Look::default(),
+            Paper::US_LETTER,
+            Some(500.0),
+        )
+        .expect("an editor");
+        let end = ed.doc().source.len();
+        let tops = [0.0, 150.0, 400.0, 700.0, 1000.0];
+        let mut step = 0;
+        for o in (0..end).filter(|&o| src.is_char_boundary(o)) {
+            for at in [o, end] {
+                step += 1;
+                document.vdom.in_scope(ScopeId::ROOT, || {
+                    ed.doc().select_range(at, at);
+                    ed.refresh();
+                    ed.scroll_to(tops[step % tops.len()]);
+                });
+                blitz_dom::Document::poll(&mut document, Some(Context::from_waker(Waker::noop())));
+                document.inner.borrow_mut().resolve(0.0);
+            }
+        }
     }
 }

@@ -7,7 +7,7 @@ use crate::bridge::style::STYLESHEET;
 use dioxus::html::geometry::WheelDelta;
 use dioxus::prelude::*;
 
-use crate::blocks;
+use crate::blocks::{self, Block};
 use crate::editor::Editor;
 use crate::findbar;
 use crate::row::{self, Row};
@@ -236,6 +236,15 @@ fn render(ed: &Editor) -> Element {
     let lays = sig.lays.read();
     let kinds = sig.kinds.read();
     let blocks = sig.blocks.read();
+    // What each drawn row is drawn as: itself, or the block it starts. A
+    // block's other rows are left out: the block stands for them.
+    let drawn: Vec<(usize, Option<&Block>)> = (first..last)
+        .filter_map(|i| match blocks.iter().find(|b| b.rows().contains(&i)) {
+            Some(b) if b.first() == i => Some((i, Some(b))),
+            Some(_) => None,
+            None => Some((i, None)),
+        })
+        .collect();
     let column = *sig.width.read() + 2.0 * row::PAD as f32;
     let status = sig.status.read().clone();
     let words = *sig.words.read();
@@ -262,12 +271,14 @@ fn render(ed: &Editor) -> Element {
             onmousedown: move |e: MouseEvent| e.prevent_default(),
             onclick: move |e: MouseEvent| e.prevent_default(),
             div { style: "height: 0; margin-top: {shift}px" }
-            for i in first..last {
-                match blocks.iter().find(|b| b.rows().contains(&i)) {
-                    Some(b) if b.first() == i => blocks::render(i, b),
-                    // A block's other rows: the block stands for them.
-                    Some(_) => rsx! {},
-                    None => rsx! { Row { key: "{i}", index: i, row: rows[i].clone(), layout: lays[i].clone(), kind: kinds[i] } },
+            // Every child keyed, and a row's key never a block's: the Dioxus
+            // alpha's keyed diff cannot place a child among unkeyed empty
+            // ones, nor swap a row for the block that takes its key, and
+            // panics — which leaves the page never rendering again.
+            for (i, block) in drawn {
+                match block {
+                    Some(b) => blocks::render(i, b),
+                    None => rsx! { Row { key: "r{i}", index: i, row: rows[i].clone(), layout: lays[i].clone(), kind: kinds[i] } },
                 }
             }
             // Room under the last row, as a page has, so there is somewhere

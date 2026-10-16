@@ -178,8 +178,8 @@ pub fn build(
 /// A block's markup, at row `i`.
 pub fn render(i: usize, block: &Block) -> Element {
     match block {
-        Block::Table(b) => rsx! { TableBlock { key: "{i}", block: b.clone() } },
-        Block::Media(b) => rsx! { MediaBlock { key: "{i}", block: b.clone() } },
-        Block::Picture(b) => rsx! { PictureBlock { key: "{i}", block: b.clone() } },
+        Block::Table(b) => rsx! { TableBlock { key: "b{i}", block: b.clone() } },
+        Block::Media(b) => rsx! { MediaBlock { key: "b{i}", block: b.clone() } },
+        Block::Picture(b) => rsx! { PictureBlock { key: "b{i}", block: b.clone() } },
     }
 }
