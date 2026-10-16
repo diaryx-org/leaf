@@ -41,7 +41,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // Re-wrap only when the geometry changed; a colour-only (or identical)
             // theme just repaints. Guarding this breaks the relayout⇄state-publish
             // loop that otherwise re-scrolled the view to the caret every frame.
-            guard theme.metricsDiffer(from: oldValue) else { placeSystemCaret(); needsDisplay = true; return }
+            guard theme.metricsDiffer(from: oldValue) else { needsDisplay = true; return }
             shapeCache.removeAll(keepingCapacity: true)   // shaping is theme-dependent
             relayoutForWidth(force: true)
         }
@@ -548,17 +548,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// Whether a Writing Tools session holds a core undo group open.
     var writingToolsGroupOpen: Bool { writingTools.groupOpen }
 
+    /// The caret is drawn by `draw` itself, as tall as the line it stands on,
+    /// and blinked by `blinkTimer` on the cadence the user set. Not the system's
+    /// `NSTextInsertionIndicator`, which over a heading stayed the height of
+    /// body text, and never blinked.
     private var caretVisible = true
     private var blinkTimer: Timer?
     private var isFocused = false
-    /// The system's caret, on macOS 14 and later: an `NSTextInsertionIndicator`
-    /// placed over the caret rect. It blinks on the cadence the user set, stops
-    /// under Reduce Motion, wears the accent colour, and dims with the window —
-    /// every one of which the hand-rolled timer below had to guess at. Held as
-    /// `NSView` because the deployment floor predates the class; `nil` there,
-    /// and the timer draws the caret as before.
-    private var insertionIndicator: NSView?
-    private var usesSystemCaret: Bool { insertionIndicator != nil }
     /// The caret offset the view last scrolled to reveal. Only a *move* re-scrolls,
     /// so passive reflows (width/theme relayout, state refreshes) leave the reader's
     /// scroll position alone instead of yanking it back to the caret.
@@ -670,13 +666,6 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         super.init(frame: .zero)
         regionSlot.owner = self
         regionSlot.listen()
-        if #available(macOS 14, *) {
-            let indicator = NSTextInsertionIndicator(frame: .zero)
-            indicator.displayMode = .hidden
-            indicator.color = theme.caretColor
-            addSubview(indicator)
-            insertionIndicator = indicator
-        }
         autoresizingMask = [.width]
         // A resolved source has a picture to draw, and may be the one the reader
         // tapped while it was still being fetched. Laid out again rather than
@@ -1105,7 +1094,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             BlockChrome.drawPlaceholder(placeholder, in: box, theme: theme, in: ctx)
         }
 
-        if active, caretVisible, !usesSystemCaret, let rect = shownCaretRect {
+        if active, caretVisible, let rect = shownCaretRect {
             ctx.setFillColor(theme.caretColor.cgColor)
             ctx.fill(rect)
         }
@@ -4336,40 +4325,48 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public override func resignFirstResponder() -> Bool {
         isFocused = false
         blinkTimer?.invalidate()
-        placeSystemCaret()
         needsDisplay = true
         return true
     }
 
+    /// Show the caret solid and start its blink over — after every frame, so
+    /// it holds still while the reader types or moves it, as `NSTextView`'s
+    /// does. Under Reduce Motion it stays solid; in a window that isn't key
+    /// `draw` hides it, so there is nothing to blink.
     private func resetBlink() {
         blinkTimer?.invalidate()
+        blinkTimer = nil
+        let wasVisible = caretVisible
         caretVisible = true
-        if usesSystemCaret { placeSystemCaret(); return }
-        guard isFocused else { return }
-        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
+        if !wasVisible, let r = shownCaretRect { setNeedsDisplay(viewRect(r)) }
+        guard isFocused, window?.isKeyWindow == true,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        scheduleBlink()
+    }
+
+    /// The next turn of the caret on or off, after the time the user's
+    /// `NSTextInsertionPointBlinkPeriodOn`/`Off` defaults give that phase —
+    /// AppKit's own (in milliseconds), a half-second each when unset.
+    private func scheduleBlink() {
+        let defaults = UserDefaults.standard
+        func period(_ key: String) -> TimeInterval {
+            let ms = defaults.double(forKey: key)
+            return ms > 0 ? ms / 1000 : 0.5
+        }
+        let wait = caretVisible ? period("NSTextInsertionPointBlinkPeriodOn")
+                                : period("NSTextInsertionPointBlinkPeriodOff")
+        let timer = Timer(timeInterval: wait, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.caretVisible.toggle()
             if let r = self.shownCaretRect {
-                self.setNeedsDisplay(self.viewRect(r))
+                // A little wider than the bar, so its antialiased edges go too.
+                self.setNeedsDisplay(self.viewRect(r).insetBy(dx: -1, dy: 0))
             }
+            self.scheduleBlink()
         }
-    }
-
-    /// Put the system caret where the caret is, or take it away: it shows only
-    /// while this view has the text focus and there is a caret (not a selection)
-    /// to show. Moving the frame is what restarts its blink, so this runs
-    /// wherever the timer used to be reset.
-    private func placeSystemCaret() {
-        guard #available(macOS 14, *), let indicator = insertionIndicator as? NSTextInsertionIndicator else { return }
-        indicator.color = theme.caretColor
-        // An open region leaf draws has its caret where its session says,
-        // over its picture; one with a view of its own has none of leaf's.
-        if selectionIsActive, let rect = shownCaretRect {
-            indicator.frame = viewRect(rect)
-            indicator.displayMode = .automatic
-        } else {
-            indicator.displayMode = .hidden
-        }
+        // `.common`, so it keeps blinking while a menu or a drag tracks.
+        RunLoop.main.add(timer, forMode: .common)
+        blinkTimer = timer
     }
 
     /// A formula's picture is set in the ink the layout resolved (see `render`),
