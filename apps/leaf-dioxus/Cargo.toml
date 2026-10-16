@@ -1,22 +1,33 @@
-# Leaf on Dioxus's native renderer (Blitz): the same document and rows as
-# every other frontend, drawn by an HTML/CSS engine on wgpu, with no webview.
+# Leaf on Dioxus's native renderer (Blitz): the `leaf-dioxus` editor widget
+# (crates/leaf-dioxus) in a Mac document app — its menu bar, file dialogs,
+# settings file and settings panel — as apps/leaf is the gpui one over
+# leaf-gpui.
 #
 # A workspace of its own, like apps/leaf: `dioxus-native` is published only
 # as 0.8.0-alpha.2, which pins a winit beta and a large wgpu tree that
 # nothing in leaf's root workspace should resolve, and its winit backend is
 # patched below — a [patch] applies only at the root of the workspace that
-# has it. Build it by manifest:
+# has it, which is also why the widget's workspace has none. Build it by
+# manifest:
 #
 #     cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- document.md
 [workspace]
 
 [package]
-name = "leaf-dioxus"
+# Not `leaf-dioxus`, which is the widget's name: one graph cannot hold two
+# packages by one name. The binary keeps it.
+name = "leaf-dioxus-app"
 version = "0.0.0"
 edition = "2024"
 publish = false
 
+[[bin]]
+name = "leaf-dioxus"
+path = "src/main.rs"
+
 [dependencies]
+# The editor: everything drawn in the window but the settings panel.
+leaf-dioxus = { path = "../../crates/leaf-dioxus" }
 dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
     "macro",
     "html",
@@ -24,40 +35,21 @@ dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
     "hooks",
 ] }
 # dioxus-native's defaults, but the classic `vello` renderer for
-# `vello-hybrid`: hybrid cannot draw a bitmap glyph — with glifo's `png` on,
-# vello_gpu panics ("pixmap image sources are not supported by Vello GPU"),
-# and without it every emoji (Apple Color Emoji is sbix PNGs) draws as
-# nothing. Classic vello draws them.
+# `vello-hybrid`, which the widget asks for (its Cargo.toml says why: emoji).
 dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features = [
     "accessibility", "net", "html", "svg", "system-fonts", "clipboard", "file-dialog",
     "woff", "text-transform-icu", "apple-font-embolden", "vello",
 ] }
-# `fs` on, unlike the parent's widget: this is an app with a file to open and
-# save, which is what `Doc::open` and `Doc::save` are.
+# `fs` on, unlike the widget's: this is an app with a file to open and save,
+# which is what `Doc::open` and `Doc::save` are.
 leaf-core = { path = "../../crates/leaf-core", default-features = false, features = [
     "fs",
     "syntax",
 ] }
-# The system clipboard. Already in the tree through Blitz's own `clipboard`
-# feature, so it costs no new crate.
-arboard = "3.7"
-# A timer for work that should wait for the typing to stop (the word count).
-# Already in the tree: dioxus-native builds and enters a tokio runtime with
-# timers enabled, which is what makes `tokio::time::sleep` work in a task.
+# The menu bar's poll. Already in the tree: dioxus-native builds and enters a
+# tokio runtime with timers enabled, which is what makes `tokio::time::sleep`
+# work in a task.
 tokio = { version = "1", default-features = false, features = ["time"] }
-# Text layout, for proportional rows (`text.rs`). The same parley Blitz shapes
-# with, at the version it pins, so both measure the same glyphs.
-parley = "=0.12.0"
-# Display columns — core's unit for a caret column — as core counts them.
-unicode-width = "0.2"
-# Grapheme clusters, the unit a column advances by, as core walks them.
-unicode-segmentation = "1.13"
-
-# Block pictures (`media.rs`): a picture's size off its header, an SVG's off
-# its canvas, so the block's height is known before Blitz has decoded it. Both
-# already in the tree through Blitz, at the formats it decodes.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
-usvg = { version = "0.48", default-features = false }
 
 # The menu bar (`menu.rs`): Tauri's, the native NSMenu on macOS.
 muda = "0.21"

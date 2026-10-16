@@ -2668,19 +2668,30 @@ dependencies = [
  "arboard",
  "dioxus",
  "dioxus-native",
- "dispatch2",
  "image",
  "leaf-core",
- "muda",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
  "parley",
- "raw-window-handle",
- "rfd",
  "tokio",
  "unicode-segmentation",
  "unicode-width",
  "usvg",
+]
+
+[[package]]
+name = "leaf-dioxus-app"
+version = "0.0.0"
+dependencies = [
+ "dioxus",
+ "dioxus-native",
+ "dispatch2",
+ "leaf-core",
+ "leaf-dioxus",
+ "muda",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "raw-window-handle",
+ "rfd",
+ "tokio",
 ]
 
 [[package]]

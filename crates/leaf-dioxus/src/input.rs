@@ -11,29 +11,34 @@
 //! because ⇧ changes their [`Key`] — ⇧⌘8 arrives as `*` — and the binding is
 //! to the key, not the character.
 //!
-//! This is a native app, so it knows its platform: ⌘ is Meta on Apple and
+//! This is a native widget, so it knows its platform: ⌘ is Meta on Apple and
 //! Control elsewhere, and ⌃ is a modifier of its own only on Apple, where the
 //! Swift editor's ⌃0–⌃6 and ⌃K live.
 
 use dioxus::html::{Code, Key, Modifiers};
 use leaf_core::{Alignment, BlockKind, Doc, InlineKind};
 
-pub use crate::prefs::ZoomCommand;
+use crate::host::Request;
 
-/// What a key did, for the host to act on what it does not own.
+/// What a key did, for the editor to act on what the document does not own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     /// The document changed, or the caret moved: repaint.
     Handled,
     /// Not ours — let Blitz have it.
     Ignored,
-    /// The host owns this one: the clipboard and the file.
-    Host(Host),
-    /// A page of motion: the host knows how many rows a page is.
+    /// The clipboard, which the host holds; see `host.rs`.
+    Gesture(Gesture),
+    /// A command the host carries out: Save, the zoom, the settings.
+    Request(Request),
+    /// ⌃⌘Space: the emoji and symbols picker, which AppKit hangs on an Edit
+    /// menu item, and so is the host's to open.
+    CharacterPalette,
+    /// A page of motion: the editor knows how many rows a page is.
     Page { down: bool, extend: bool },
     /// Up or down one *visual* line. Core's `move_up` moves by its own rows,
     /// which unwrapped are whole blocks; only the layout knows where a
-    /// wrapped line is, so the host moves by geometry, as Swift does.
+    /// wrapped line is, so the editor moves by geometry, as Swift does.
     Vertical { down: bool, extend: bool },
     /// To the start or end of the visual line — Home/End and ⌘←/→ — which
     /// again only the layout knows.
@@ -41,10 +46,6 @@ pub enum Action {
     /// The find bar: open it (⌘F, or ⌥⌘F with replace), or step through its
     /// matches (⌘G, ⇧⌘G).
     Find(FindCommand),
-    /// The text zoom: ⌘+ (or ⌘=), ⌘−, ⌘0.
-    Zoom(ZoomCommand),
-    /// ⌘, — the settings panel.
-    Settings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -54,18 +55,22 @@ pub enum FindCommand {
     Previous,
 }
 
-/// The gestures a document cannot complete by itself.
+/// The clipboard gestures, which a document cannot complete by itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Host {
+pub enum Gesture {
     Copy,
     Cut,
     Paste,
     /// ⇧⌘V and ⌥⇧⌘V: the clipboard's text, never its HTML.
     PastePlain,
-    Save,
-    /// ⌃⌘Space: the emoji and symbols picker, which AppKit hangs on an Edit
-    /// menu item this app has no menu bar to hold.
-    CharacterPalette,
+}
+
+/// ⌘+, ⌘− and ⌘0.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ZoomCommand {
+    In,
+    Out,
+    Reset,
 }
 
 /// The Table menu's items. The Swift editor gives none of them a shortcut,
@@ -143,7 +148,7 @@ pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Actio
     let ctrl = cfg!(target_os = "macos") && mods.contains(Modifiers::CONTROL);
 
     if cmd && ctrl && code == Code::Space {
-        return Action::Host(Host::CharacterPalette);
+        return Action::CharacterPalette;
     }
     if cmd {
         return command(doc, key, code, shift, alt);
@@ -237,10 +242,12 @@ fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Acti
         Code::BracketLeft if !shift => return done(doc.outdent()),
         // ⌘= and ⇧⌘= alike, as a Mac app takes ⌘+ on a layout where + is
         // shifted.
-        Code::Equal if !alt => return Action::Zoom(ZoomCommand::In),
-        Code::Minus if !alt && !shift => return Action::Zoom(ZoomCommand::Out),
-        Code::Digit0 if !alt && !shift => return Action::Zoom(ZoomCommand::Reset),
-        Code::Comma if !alt && !shift => return Action::Settings,
+        Code::Equal if !alt => return Action::Request(Request::Zoom(ZoomCommand::In)),
+        Code::Minus if !alt && !shift => return Action::Request(Request::Zoom(ZoomCommand::Out)),
+        Code::Digit0 if !alt && !shift => {
+            return Action::Request(Request::Zoom(ZoomCommand::Reset));
+        }
+        Code::Comma if !alt && !shift => return Action::Request(Request::Settings),
         _ => {}
     }
     match key {
@@ -283,11 +290,11 @@ fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Acti
         false => c.to_lowercase(),
     };
     match (letter.as_str(), shift, alt) {
-        ("c", false, false) => Action::Host(Host::Copy),
-        ("x", false, false) => Action::Host(Host::Cut),
-        ("v", false, false) => Action::Host(Host::Paste),
-        ("v", true, _) => Action::Host(Host::PastePlain),
-        ("s", false, false) => Action::Host(Host::Save),
+        ("c", false, false) => Action::Gesture(Gesture::Copy),
+        ("x", false, false) => Action::Gesture(Gesture::Cut),
+        ("v", false, false) => Action::Gesture(Gesture::Paste),
+        ("v", true, _) => Action::Gesture(Gesture::PastePlain),
+        ("s", false, false) => Action::Request(Request::Save),
         ("a", false, false) => done(doc.select_all()),
         // The source view and back. Core keeps the caret on the same text.
         ("e", false, false) => done(doc.toggle_view()),
@@ -431,15 +438,19 @@ mod tests {
     #[test]
     fn the_clipboard_is_the_hosts() {
         let mut d = doc("hello\n");
-        for (c, want) in [("c", Host::Copy), ("x", Host::Cut), ("v", Host::Paste)] {
+        for (c, want) in [
+            ("c", Gesture::Copy),
+            ("x", Gesture::Cut),
+            ("v", Gesture::Paste),
+        ] {
             assert_eq!(
                 apply_key(&mut d, &ch(c), Code::Unidentified, CMD),
-                Action::Host(want)
+                Action::Gesture(want)
             );
         }
         assert_eq!(
             apply_key(&mut d, &ch("v"), Code::KeyV, CMD | Modifiers::SHIFT),
-            Action::Host(Host::PastePlain)
+            Action::Gesture(Gesture::PastePlain)
         );
     }
 
@@ -603,7 +614,7 @@ mod tests {
     fn the_zoom_and_settings_chords_are_the_hosts_and_type_nothing() {
         let mut d = doc("hello\n");
         let before = d.source.clone();
-        let z = |a| Action::Zoom(a);
+        let z = |a| Action::Request(Request::Zoom(a));
         assert_eq!(press(&mut d, ch("="), Code::Equal, CMD), z(ZoomCommand::In));
         assert_eq!(
             press(&mut d, ch("+"), Code::Equal, CMD | Modifiers::SHIFT),
@@ -617,7 +628,10 @@ mod tests {
             press(&mut d, ch("0"), Code::Digit0, CMD),
             z(ZoomCommand::Reset)
         );
-        assert_eq!(press(&mut d, ch(","), Code::Comma, CMD), Action::Settings);
+        assert_eq!(
+            press(&mut d, ch(","), Code::Comma, CMD),
+            Action::Request(Request::Settings)
+        );
         assert_eq!(d.source, before);
     }
 }

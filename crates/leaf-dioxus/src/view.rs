@@ -1,5 +1,7 @@
 //! The page: the stylesheet, and the markup of the rows in view, the blocks
-//! among them, the find bar, the settings panel and the status line.
+//! among them, the find bar and the status line.
+
+use std::collections::BTreeSet;
 
 use crate::bridge::style::STYLESHEET;
 use dioxus::html::geometry::WheelDelta;
@@ -8,18 +10,25 @@ use dioxus::prelude::*;
 use crate::blocks;
 use crate::editor::Editor;
 use crate::findbar;
-use crate::prefs;
 use crate::row::{self, Row};
-use crate::settings::Appearance;
 use crate::table::{PAD_X, PAD_Y};
 use crate::text::Type;
 use crate::trace::trace;
 
-/// What this binary adds to the bridge's stylesheet: proportional body text
+/// Light or dark: the system's, or one of the two whatever the system says.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// What the widget adds to the bridge's stylesheet: proportional body text
 /// with code and tables in cells, in the type `text.rs` measures with;
 /// `.leaf` as a viewport the editor scrolls itself; a known left edge for
-/// [`row::PAD`]; the inline caret `row.rs` draws; tables; the find bar, the
-/// settings panel and the status line.
+/// [`row::PAD`]; the inline caret `row.rs` draws; tables; the find bar and
+/// the status line.
 ///
 /// A function of the [`Type`] because the faces, the size and the leading
 /// are `text.rs`'s, and the two must never disagree: a face Blitz draws in
@@ -68,9 +77,13 @@ body {{ position: relative; }}
     css
 }
 
-/// The window chrome's colours — the status line, the find bar, the settings
-/// panel — beside the document's in the bridge's stylesheet, and like them
-/// set once per appearance.
+/// Every rule the editor's page is drawn with, for `ty`: the bridge's and
+/// [`css`]'s. What [`Palette::of`] reads to check a host's own chrome
+/// against the custom properties the editor sets.
+pub fn stylesheet(ty: &Type) -> String {
+    format!("{STYLESHEET}{}", css(ty))
+}
+
 /// The stylesheet for an appearance. `System` leaves the dark palette to
 /// `prefers-color-scheme`, which Blitz answers from winit's theme. A forced
 /// one cannot go that way: winit sends no `ThemeChanged` for the app's own
@@ -86,14 +99,15 @@ pub fn themed(css: &str, appearance: Appearance) -> String {
     }
 }
 
+/// The window chrome's colours — the status line, the find bar, and a
+/// host's own panels if it likes — beside the document's in the bridge's
+/// stylesheet, and like them set once per appearance.
 const CHROME: &str = "
 :root {
   --chrome-bg: #f5f5f5;
   --chrome-text: #262626;
   --field-bg: #ffffff;
   --field-border: #c8c8c8;
-  --chip-on: #007aff;
-  --chip-on-text: #ffffff;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -101,8 +115,6 @@ const CHROME: &str = "
     --chrome-text: #dfdfdf;
     --field-bg: #1e1e1e;
     --field-border: #4d4d4d;
-    --chip-on: #0a84ff;
-    --chip-on-text: #ffffff;
   }
 }
 ";
@@ -125,27 +137,85 @@ const REST: &str = "
                background: var(--field-bg); border: 1px solid var(--field-border); border-radius: 5px; overflow: hidden; }
 .find .field.focused { border-color: var(--leaf-accent); }
 .find .count { min-width: 72px; color: var(--leaf-secondary); text-align: right; }
-.find .btn, .prefs .btn { height: 22px; line-height: 22px; padding: 0 9px; background: var(--field-bg);
+.find .btn { height: 22px; line-height: 22px; padding: 0 9px; background: var(--field-bg);
              border: 1px solid var(--field-border); border-radius: 5px; }
 .find .caret-in { display: inline-block; width: 0; height: 16px; vertical-align: text-bottom;
-                  border-left: 2px solid var(--leaf-accent); margin-right: -2px; }
-.prefs { position: absolute; top: 12px; right: 12px; width: 400px; z-index: 2; box-sizing: border-box;
-         padding: 10px 14px 12px; background: var(--chrome-bg); color: var(--chrome-text);
-         border: 1px solid var(--field-border); border-radius: 10px;
-         font: 13px system-ui, sans-serif; line-height: 1.3; white-space: normal; }
-.prefs .title { font-weight: 700; margin-bottom: 4px; }
-.prefs .section { margin-top: 10px; color: var(--leaf-secondary); font-size: 11px; }
-.prefs .prow { display: flex; gap: 8px; margin-top: 6px; }
-.prefs .plabel { flex: none; width: 92px; text-align: right; padding-top: 3px; }
-.prefs .chips { flex: 1; display: flex; flex-wrap: wrap; gap: 4px; }
-.prefs .chip { padding: 2px 7px; border-radius: 5px; background: var(--field-bg);
-               border: 1px solid var(--field-border); white-space: nowrap; }
-.prefs .chip.on { background: var(--chip-on); color: var(--chip-on-text); border-color: var(--chip-on); }
-.prefs .foot { display: flex; gap: 8px; margin-top: 12px; }
-.prefs .foot .grow { flex: 1; }";
+                  border-left: 2px solid var(--leaf-accent); margin-right: -2px; }";
+
+/// The custom properties a stylesheet uses, and those it sets for each
+/// appearance — so a host with chrome of its own, drawn in the editor's
+/// `var(--…)`s and its own, can check that every one is set for both.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Palette {
+    pub used: BTreeSet<String>,
+    pub light: BTreeSet<String>,
+    pub dark: BTreeSet<String>,
+}
+
+impl Palette {
+    /// Read off `css`, laid out as the editor's is: a light `:root { … }`,
+    /// and a dark one first inside each `@media (prefers-color-scheme:
+    /// dark)`.
+    pub fn of(css: &str) -> Self {
+        let names = |s: &str, after: &str| -> BTreeSet<String> {
+            s.split(after)
+                .skip(1)
+                .map(|t| {
+                    t.split(|c: char| !(c.is_alphanumeric() || c == '-'))
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .collect()
+        };
+        let used = names(css, "var(--");
+        let (mut light, mut dark) = (BTreeSet::new(), BTreeSet::new());
+        // After each dark media query, the first `:root` block is dark;
+        // every other is light.
+        for (k, part) in css.split("@media (prefers-color-scheme: dark)").enumerate() {
+            for (n, block) in part.split(":root {").skip(1).enumerate() {
+                let body = block.split('}').next().unwrap_or("");
+                let defined = body
+                    .lines()
+                    .filter_map(|l| l.trim().strip_prefix("--"))
+                    .filter_map(|l| l.split(':').next())
+                    .map(str::to_string);
+                if k > 0 && n == 0 {
+                    &mut dark
+                } else {
+                    &mut light
+                }
+                .extend(defined);
+            }
+        }
+        Self { used, light, dark }
+    }
+
+    /// That both appearances set the same properties, and every property
+    /// used is set.
+    pub fn check(&self) -> Result<(), String> {
+        if self.light != self.dark {
+            let only: Vec<_> = self.light.symmetric_difference(&self.dark).collect();
+            return Err(format!("set for one appearance only: {only:?}"));
+        }
+        let missing: Vec<_> = self.used.difference(&self.light).collect();
+        if !missing.is_empty() {
+            return Err(format!("used but never set: {missing:?}"));
+        }
+        Ok(())
+    }
+}
+
+impl Editor {
+    /// The editor's part of the page: its stylesheet, the rows in view, the
+    /// find bar and the status line. A host draws its own beside it.
+    pub fn render(&self) -> Element {
+        render(self)
+    }
+}
 
 /// The page, for the rows in view.
-pub fn render(ed: &Editor) -> Element {
+fn render(ed: &Editor) -> Element {
     let sig = ed.sig;
     let bar = sig.bar.read().clone();
     let bar_h = bar.height();
@@ -168,13 +238,12 @@ pub fn render(ed: &Editor) -> Element {
     let column = *sig.width.read() + 2.0 * row::PAD as f32;
     let status = sig.status.read().clone();
     let words = *sig.words.read();
-    let ty = sig.ty.read().clone();
-    let prefs = sig.prefs.read().clone();
+    let look = sig.look.read().clone();
     let (wheel, past_end) = (ed.clone(), ed.clone());
 
     rsx! {
-        style { {themed(STYLESHEET, prefs.settings.appearance)} }
-        style { {themed(&css(&ty), prefs.settings.appearance)} }
+        style { {themed(STYLESHEET, look.appearance)} }
+        style { {themed(&css(&look.ty), look.appearance)} }
         // The mouse's default actions are cancelled: they are Blitz's own
         // text selection, drawn over leaf's, and the focus changes that made
         // `onkeydown` unreliable (see `keys.rs`). Not `onpointerdown`:
@@ -207,7 +276,6 @@ pub fn render(ed: &Editor) -> Element {
             }
         }
         {findbar::render(ed, &bar)}
-        {prefs::render(ed, &prefs)}
         div { class: "status",
             "{status}"
             span { class: "grow" }
@@ -221,59 +289,14 @@ pub fn render(ed: &Editor) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use super::*;
-
-    /// The custom properties a stylesheet uses, and those it defines before
-    /// its dark block and inside it.
-    fn properties(css: &str) -> (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>) {
-        let names = |s: &str, after: &str| -> BTreeSet<String> {
-            s.split(after)
-                .skip(1)
-                .map(|t| {
-                    t.split(|c: char| !(c.is_alphanumeric() || c == '-'))
-                        .next()
-                        .unwrap_or("")
-                        .to_string()
-                })
-                .collect()
-        };
-        let used = names(css, "var(--");
-        let (mut light, mut dark) = (BTreeSet::new(), BTreeSet::new());
-        // After each dark media query, the first `:root` block is dark;
-        // every other is light.
-        for (k, part) in css.split("@media (prefers-color-scheme: dark)").enumerate() {
-            for (n, block) in part.split(":root {").skip(1).enumerate() {
-                let body = block.split('}').next().unwrap_or("");
-                let defined = body
-                    .lines()
-                    .filter_map(|l| l.trim().strip_prefix("--"))
-                    .filter_map(|l| l.split(':').next())
-                    .map(str::to_string);
-                if k > 0 && n == 0 {
-                    &mut dark
-                } else {
-                    &mut light
-                }
-                .extend(defined);
-            }
-        }
-        (used, light, dark)
-    }
 
     #[test]
     fn every_colour_is_set_for_both_appearances() {
-        let all = format!(
-            "{}{}",
-            crate::bridge::style::STYLESHEET,
-            css(&Type::default())
-        );
-        let (used, light, dark) = properties(&all);
-        assert!(used.len() > 20, "{used:?}");
-        assert_eq!(light, dark, "light and dark set different properties");
-        let missing: Vec<_> = used.difference(&light).collect();
-        assert!(missing.is_empty(), "used but never set: {missing:?}");
+        let all = stylesheet(&Type::default());
+        let palette = Palette::of(&all);
+        assert!(palette.used.len() > 20, "{:?}", palette.used);
+        palette.check().expect("a whole palette");
         // And no colour is spelled outside the two palettes, but the
         // outline instrument's.
         let rules: String = all
@@ -290,6 +313,23 @@ mod tests {
         assert!(
             !rules.contains('#'),
             "a literal colour outside the palettes"
+        );
+    }
+
+    #[test]
+    fn a_palette_set_for_one_appearance_only_is_caught() {
+        let css = ":root {\n  --a: #fff;\n  --b: #000;\n}\n\
+                   @media (prefers-color-scheme: dark) {\n  :root {\n    --a: #000;\n  }\n}\n\
+                   .x { color: var(--a); background: var(--c); }";
+        let p = Palette::of(css);
+        assert!(p.check().is_err_and(|e| e.contains("one appearance")));
+        let p = Palette {
+            dark: p.light.clone(),
+            ..p
+        };
+        assert!(
+            p.check()
+                .is_err_and(|e| e.contains("--c") || e.contains("\"c\""))
         );
     }
 

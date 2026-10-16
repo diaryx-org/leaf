@@ -1,6 +1,7 @@
 //! Following what the caret stands on: a link (⌘-click, *Open Link*) or a
 //! footnote (⌘-click, *Go to Note* / *Back to Reference*), as the Swift
-//! editor's `LeafTextView` does — and the right-click menu that offers them.
+//! editor's `LeafTextView` does — and what a right-click menu offers, which
+//! the host shows ([`crate::Host::context_menu`]).
 //!
 //! The questions are core's (`link_destination_at`, `locate`, `footnote_at`,
 //! `footnote_definition_at`); what is here is Swift's `LinkTarget.swift`,
@@ -13,8 +14,19 @@ use std::path::Path;
 use leaf_core::Doc;
 
 use crate::editor::Editor;
-use crate::menu::{self, Context};
 use crate::trace::trace;
+
+/// What a right-click offers, read off the caret after the click placed it:
+/// Swift's `menu(for:)` asks the same three things.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Context {
+    /// There is a selection, so Cut and Copy.
+    pub selection: bool,
+    /// The caret is in a link, so Open Link and Copy Link.
+    pub link: bool,
+    /// The caret is on a footnote, and which way it goes.
+    pub footnote: Option<Footnote>,
+}
 
 /// Which way a footnote goes from where the caret is. There is never more
 /// than one: the caret stands on a reference, in a note, or in neither.
@@ -143,7 +155,7 @@ impl Editor {
         trace(|| format!("open link -> {target:?}"));
         match target {
             Some(Target::Here(at)) => self.st.doc.borrow_mut().place_caret(at, false),
-            Some(Target::Away(what)) => open_with_system(&what),
+            Some(Target::Away(what)) => self.st.host.open(&what),
             None => {}
         }
         self.refresh();
@@ -155,14 +167,12 @@ impl Editor {
         let Some(dest) = self.st.doc.borrow_mut().link_destination_at_caret() else {
             return;
         };
-        if let Ok(mut board) = arboard::Clipboard::new() {
-            let _ = board.set_text(dest);
-        }
+        let _ = self.st.host.write_clipboard(&dest, None);
     }
 
-    /// A right-click, after it placed the caret: pop up the context menu
-    /// for what the caret is on.
-    pub fn context_menu(&self) {
+    /// A right-click, after it placed the caret: have the host pop up the
+    /// context menu for what the caret is on.
+    pub(crate) fn context_menu(&self) {
         let cx = {
             let mut doc = self.st.doc.borrow_mut();
             let at = doc.caret;
@@ -172,18 +182,8 @@ impl Editor {
                 footnote: footnote_jump(&mut doc, at).map(|(f, _)| f),
             }
         };
-        menu::show_context(&*self.st.window, &cx);
+        self.st.host.context_menu(&cx);
     }
-}
-
-/// Hand a URL or a file to the default app for it.
-fn open_with_system(what: &str) {
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("/usr/bin/open")
-        .arg(what)
-        .spawn();
-    #[cfg(not(target_os = "macos"))]
-    let _ = what;
 }
 
 #[cfg(test)]

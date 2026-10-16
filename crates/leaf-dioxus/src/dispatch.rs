@@ -1,38 +1,38 @@
-//! Where input arrives: keys, the input method, and the menu bar's commands.
+//! Where input arrives: keys, the input method, and the window's other events.
 //!
 //! The keys and the input method come from winit, not from Blitz — see
-//! `keys.rs` and `ime.rs` for why — and the menu bar's items are key chords
-//! replayed (`menu.rs`), so a command is a key binding in `input.rs` however
-//! it is chosen. This file routes each to the find bar, the composer, the
-//! document, or a file dialog.
+//! `keys.rs` and `ime.rs` for why — and a host's menu items are key chords
+//! replayed (as `apps/leaf-dioxus`'s `menu.rs` does), so a command is a key
+//! binding in `input.rs` however it is chosen. This file routes each to the
+//! find bar, the composer, the document, or the host.
 
 use dioxus::html::{Code, Key, Modifiers};
 use dioxus::prelude::*;
 use dioxus_native::winit::dpi::{LogicalPosition, LogicalSize};
-use dioxus_native::winit::event::Ime;
+use dioxus_native::winit::event::{Ime, WindowEvent};
 use dioxus_native::winit::window::{
     ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData, ImeSurroundingText,
 };
 
 use crate::editor::Editor;
-use crate::file::FileAction;
 use crate::find::{Focus, Outcome};
-use crate::input::{Action, FindCommand, Host, apply_key, apply_table};
-use crate::menu::Command;
+use crate::input::{Action, FindCommand, TableCommand, apply_key, apply_table};
 use crate::trace::trace;
 use crate::viewport::LINE;
 use crate::{host, ime};
 
 impl Editor {
-    /// A key, from the window or replayed by the menu bar.
+    /// A key, from the window ([`crate::pressed`] makes these from winit's)
+    /// or replayed by a menu item; then the input method told where the caret
+    /// went.
     pub fn key(&self, key: Key, code: Code, mods: Modifiers) {
+        self.press(key, code, mods);
+        self.ime_area();
+    }
+
+    fn press(&self, key: Key, code: Code, mods: Modifiers) {
         let st = &*self.st;
         st.composer.borrow_mut().settle(&mut st.doc.borrow_mut());
-        // Escape closes the settings panel before anything else has it.
-        if key == Key::Escape && mods.is_empty() && self.prefs_open() {
-            self.show_prefs(false);
-            return;
-        }
         // Typing goes to the find bar while it has focus; a key it does not
         // take (⌘G, ⌘Z, ⌘S…) falls through to the document's.
         let in_bar = st.find.borrow().open && st.find.borrow().focus != Focus::Doc;
@@ -55,13 +55,16 @@ impl Editor {
         let changed = match action {
             Action::Ignored => return,
             Action::Handled => true,
-            // ⌘S on a document with no file yet is a Save As, and only the
-            // editor has a dialog to ask with.
-            Action::Host(Host::Save) if st.doc.borrow().is_untitled() => {
-                self.file(FileAction::SaveAs);
+            Action::Gesture(g) => host::run(&*st.host, &mut st.doc.borrow_mut(), g),
+            // The host repaints, if what it did calls for it.
+            Action::Request(r) => {
+                st.host.request(self, r);
                 return;
             }
-            Action::Host(h) => host::run(&mut st.doc.borrow_mut(), h),
+            Action::CharacterPalette => {
+                st.host.character_palette();
+                return;
+            }
             Action::Vertical { down, extend } => {
                 self.vertical(down, extend);
                 true
@@ -76,14 +79,6 @@ impl Editor {
             }
             Action::Find(cmd) => {
                 self.find_command(cmd);
-                return;
-            }
-            Action::Zoom(z) => {
-                self.zoom(z);
-                return;
-            }
-            Action::Settings => {
-                self.toggle_prefs();
                 return;
             }
         };
@@ -112,44 +107,52 @@ impl Editor {
         self.run_find(o);
     }
 
-    /// A menu bar item.
-    pub fn command(&self, c: Command) {
-        trace(|| format!("menu {c:?}"));
-        match c {
-            Command::Chord(key, code, mods) => {
-                self.key(key, code, mods);
-                self.ime_area();
+    /// A Table menu item; see [`TableCommand`].
+    pub fn table(&self, cmd: TableCommand) {
+        // A composition in progress is the document's before a table is
+        // re-spelled around it, as before a key.
+        self.st
+            .composer
+            .borrow_mut()
+            .settle(&mut self.st.doc.borrow_mut());
+        let action = apply_table(&mut self.st.doc.borrow_mut(), cmd);
+        trace(|| format!("table {cmd:?} -> {action:?}"));
+        if action == Action::Handled {
+            self.refresh();
+            self.ime_area();
+        }
+    }
+
+    /// The window's events the editor reads, but for its keys: the input
+    /// method, the surface's size, a click's release, and the theme. A host
+    /// hands it every event, and the keys separately ([`crate::pressed`],
+    /// [`Self::key`]), so that it decides which keys are the editor's.
+    pub fn window_event(&self, event: &WindowEvent) {
+        match event {
+            WindowEvent::Ime(ime) => self.ime(ime),
+            WindowEvent::SurfaceResized(size) => self.resize(size.width, size.height),
+            // A click moved the caret: on the button's release, which winit
+            // reports after Blitz has handled the press, tell the input method
+            // where it went and what is around it now.
+            WindowEvent::PointerButton { state, .. } if !state.is_pressed() => self.ime_area(),
+            // Blitz paints nothing while the window is covered, so a capture
+            // of a covered window is its last frame — which looks exactly like
+            // a hung editor. Said here so the trace tells them apart.
+            WindowEvent::Occluded(o) => trace(|| format!("occluded {o}")),
+            // Light or dark. Blitz turns the theme into the stylesheet's
+            // `prefers-color-scheme` and restyles, but asks for no frame, so
+            // the window would wait for the next event to show it.
+            WindowEvent::ThemeChanged(theme) => {
+                trace(|| format!("theme {theme:?}"));
+                self.st.window.request_redraw();
             }
-            Command::New => self.file(FileAction::New),
-            Command::Open => self.file(FileAction::Open),
-            Command::SaveAs => self.file(FileAction::SaveAs),
-            Command::Table(cmd) => {
-                // A composition in progress is the document's before a
-                // table is re-spelled around it, as before a key.
-                self.st
-                    .composer
-                    .borrow_mut()
-                    .settle(&mut self.st.doc.borrow_mut());
-                let action = apply_table(&mut self.st.doc.borrow_mut(), cmd);
-                trace(|| format!("table {cmd:?} -> {action:?}"));
-                if action == Action::Handled {
-                    self.refresh();
-                    self.ime_area();
-                }
-            }
-            Command::OpenLink => {
-                self.open_link();
-            }
-            Command::CopyLink => self.copy_link(),
-            Command::FollowFootnote => {
-                self.follow_footnote();
-            }
+            _ => {}
         }
     }
 
     /// The input method: a composition's steps, its commit, or text around
     /// the caret to delete first (press-and-hold). See `ime.rs`.
-    pub fn ime(&self, ime: &Ime) {
+    fn ime(&self, ime: &Ime) {
         let st = &*self.st;
         trace(|| format!("ime {ime:?}"));
         // An accent or an emoji committed while the find bar has focus is the
@@ -183,7 +186,7 @@ impl Editor {
     /// the patched winit-appkit to be heard on macOS (see
     /// `patches/winit-appkit/PATCH.md`); winit asks for some with the
     /// capability, so an empty line to start.
-    pub fn enable_ime(&self) {
+    pub(crate) fn enable_ime(&self) {
         let request = ImeEnableRequest::new(
             ImeCapabilities::new()
                 .with_cursor_area()

@@ -2,10 +2,10 @@
 //!
 //! An [`Editor`] is a cheap handle — shared state behind an `Rc`, and the
 //! signals the render reads, which are `Copy` — so every event source (the
-//! window's keys and IME, the menu bar, the pointer, a file dialog's task)
-//! holds one and calls a method on it. The methods live beside what they are
-//! about: motion and the pointer in `motion.rs`, input in `dispatch.rs`, the
-//! find bar in `findbar.rs`, files in `file.rs`.
+//! window's keys and IME, the pointer, and whatever the host has: a menu bar,
+//! a file dialog's task) holds one and calls a method on it. The methods live
+//! beside what they are about: motion and the pointer in `motion.rs`, input
+//! in `dispatch.rs`, the find bar in `findbar.rs`, links in `link.rs`.
 //!
 //! A feature usually needs three things from here: state (a field of
 //! [`State`]), something the render reads (a field of [`Signals`]), and a
@@ -13,7 +13,7 @@
 //! whatever comes next — go through `blocks.rs` instead, so they need none of
 //! the three.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -27,15 +27,15 @@ use leaf_core::{Doc, View};
 
 use crate::blocks::{self, Block};
 use crate::find::{BarView, Find};
+use crate::host::Host;
 use crate::ime::Composer;
 use crate::motion::Press;
-use crate::prefs::PrefsView;
-use crate::row::LayoutHandle;
-use crate::settings::Settings;
+use crate::row::{LayoutHandle, PointerSink};
 use crate::source::SourceRows;
 use crate::status;
 use crate::text::{Fonts, Kind, Type};
 use crate::trace::trace;
+use crate::view::Appearance;
 use crate::viewport::{LINE, Layout};
 
 /// The status line's height, in CSS pixels — `.status` in the stylesheet.
@@ -65,6 +65,32 @@ pub fn column_width(window: f32, measure: Option<f32>, size: f32) -> f32 {
     measure.map_or(room, |m| room.min(m)).max(size * 10.0)
 }
 
+/// What the editor draws with: the host's display choices, whatever they
+/// are made from — a settings file, a zoom, a theme of the host's own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Look {
+    /// The faces, the size and the leading, which `text.rs` measures with and
+    /// the stylesheet sets.
+    pub ty: Type,
+    /// How wide the column runs, in characters of the body face — so it
+    /// follows the face, the size and a zoom; `None` fills the window.
+    pub measure: Option<f32>,
+    /// Light or dark: the system's, or one of the two.
+    pub appearance: Appearance,
+}
+
+impl Default for Look {
+    /// The Swift editor's: Iowan Old Style and Menlo at 16px, a leading of
+    /// 1.5, a 68-character column, and the system's appearance.
+    fn default() -> Self {
+        Self {
+            ty: Type::default(),
+            measure: Some(68.0),
+            appearance: Appearance::System,
+        }
+    }
+}
+
 /// The measure in pixels, for each view.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Measures {
@@ -73,10 +99,10 @@ pub struct Measures {
 }
 
 impl Measures {
-    /// From the column-width choice and the faces as `fonts` sets them.
-    pub fn of(settings: &Settings, fonts: &mut Fonts) -> Self {
+    /// From the measure in characters and the faces as `fonts` sets them.
+    pub fn of(measure: Option<f32>, fonts: &mut Fonts) -> Self {
         Self {
-            wysiwyg: settings.column.chars().map(|c| c * fonts.char_width()),
+            wysiwyg: measure.map(|c| c * fonts.char_width()),
             source: SOURCE_CELLS * fonts.cell_width(),
         }
     }
@@ -93,6 +119,8 @@ impl Measures {
 pub struct State {
     pub doc: RefCell<Doc>,
     pub window: Arc<dyn Window>,
+    /// Whoever embeds the editor; see `host.rs`.
+    pub host: Rc<dyn Host>,
     /// The rendered view's rows, diffed against last frame's.
     frame: RefCell<Frame>,
     /// The source view's rows, reused by content.
@@ -105,16 +133,11 @@ pub struct State {
     pub block_cache: RefCell<Vec<Block>>,
     pub composer: RefCell<Composer>,
     pub find: RefCell<Find>,
-    /// The window title last set, so it is only set when it changes.
-    title: RefCell<String>,
     /// The last press, for counting a double- and triple-click.
     pub last_press: Cell<Option<Press>>,
     /// The x a run of ↑/↓ aims for, kept across the lines it passes through
     /// so a short line does not pull the caret left for good.
     pub goal: Cell<Option<f32>>,
-    /// The display choices (`settings.rs`), and the text zoom over them.
-    pub settings: RefCell<Settings>,
-    pub zoom: Cell<f32>,
     /// The column's measure in each view, for the type `fonts` sets.
     pub measures: Cell<Measures>,
 }
@@ -148,10 +171,8 @@ pub struct Signals {
     pub win_w: Signal<f32>,
     /// The column the rows were last laid out for; set by `repaint`.
     pub width: Signal<f32>,
-    /// The type the rows are set in, which the stylesheet writes out.
-    pub ty: Signal<Type>,
-    /// What the settings panel draws.
-    pub prefs: Signal<PrefsView>,
+    /// What the rows are drawn with, which the stylesheet writes out.
+    pub look: Signal<Look>,
 }
 
 impl Signals {
@@ -172,8 +193,7 @@ impl Signals {
             height: use_signal(|| viewport_height(size.height, scale)),
             win_w: use_signal(|| window_width(size.width, scale)),
             width: use_signal(|| 0.0),
-            ty: use_signal(Type::default),
-            prefs: use_signal(PrefsView::default),
+            look: use_signal(Look::default),
         }
     }
 }
@@ -200,21 +220,53 @@ struct Layouts {
     by_row: HashMap<*const RowView, (RowHandle, Kind, LayoutHandle)>,
 }
 
-/// The editor, as every event source holds it.
+/// The editor, as every event source holds it: a cheap handle, cloned into
+/// each one.
 #[derive(Clone)]
 pub struct Editor {
-    pub st: Rc<State>,
-    pub sig: Signals,
+    pub(crate) st: Rc<State>,
+    pub(crate) sig: Signals,
+}
+
+/// The editor, made as hooks of the calling component, in the window the
+/// component is in: on the document `doc` makes, drawn with the [`Look`]
+/// `look` makes, asking `host` for what it cannot do itself. Each is called
+/// once, on the first render; [`Editor::set_look`] and [`Editor::install`]
+/// change the look and the document after.
+///
+/// The host puts [`Editor::render`] in its page and hands the editor the
+/// window's events: keys through [`crate::pressed`] to [`Editor::key`], and
+/// the rest to [`Editor::window_event`].
+pub fn use_editor(
+    doc: impl FnOnce() -> Doc,
+    look: impl FnOnce() -> Look,
+    host: impl FnOnce() -> Rc<dyn Host>,
+) -> Editor {
+    let window = dioxus_native::use_window();
+    let sig = Signals::new(&window);
+    let ed = use_hook(|| {
+        let ed = Editor::new(doc(), window.clone(), sig, host());
+        // The first paint, and the input method allowed on the window.
+        ed.set_look(look());
+        ed.enable_ime();
+        ed
+    });
+    // The pointer, from every line of every row and block.
+    use_context_provider({
+        let ed = ed.clone();
+        move || PointerSink(Rc::new(move |p| ed.pointer(p)))
+    });
+    ed
 }
 
 impl Editor {
-    pub fn new(doc: Doc, window: Arc<dyn Window>, sig: Signals) -> Self {
-        let settings = Settings::load();
-        let mut fonts = Fonts::new(settings.ty(1.0));
-        let measures = Measures::of(&settings, &mut fonts);
+    fn new(doc: Doc, window: Arc<dyn Window>, sig: Signals, host: Rc<dyn Host>) -> Self {
+        let mut fonts = Fonts::new(Type::default());
+        let measures = Measures::of(Look::default().measure, &mut fonts);
         let st = State {
             doc: RefCell::new(doc),
             window,
+            host,
             frame: RefCell::default(),
             srows: RefCell::default(),
             shown: Cell::new(None),
@@ -223,11 +275,8 @@ impl Editor {
             block_cache: RefCell::default(),
             composer: RefCell::default(),
             find: RefCell::default(),
-            title: RefCell::default(),
             last_press: Cell::new(None),
             goal: Cell::new(None),
-            settings: RefCell::new(settings),
-            zoom: Cell::new(1.0),
             measures: Cell::new(measures),
         };
         Self {
@@ -366,16 +415,7 @@ impl Editor {
         set(self.sig.lays, row_lays);
         set(self.sig.kinds, kinds);
         set(self.sig.status, status::line(&doc));
-        // The file's name, and "Edited" while it has unsaved changes, as a
-        // Mac document window says it.
-        let now = match doc.dirty {
-            true => format!("{} — Edited", doc.file_name()),
-            false => doc.file_name(),
-        };
-        if *st.title.borrow() != now {
-            st.window.set_title(&now);
-            *st.title.borrow_mut() = now;
-        }
+        st.host.repainted(&doc);
         if self
             .sig
             .words
@@ -449,6 +489,36 @@ impl Editor {
     pub fn sync_bar(&self) {
         let bar = BarView::of(&mut self.st.find.borrow_mut(), &self.st.doc.borrow());
         set(self.sig.bar, bar);
+    }
+
+    /// The document, to read or change. A change is drawn on the next
+    /// [`repaint`](Self::repaint) or [`refresh`](Self::refresh).
+    pub fn doc(&self) -> RefMut<'_, Doc> {
+        self.st.doc.borrow_mut()
+    }
+
+    /// Draw with `look` from now on: the stylesheet and every row's layout
+    /// made again for it in one repaint, so the rows are laid out for exactly
+    /// the faces, size and leading Blitz then draws them in — which is what
+    /// keeps a click on the glyph under it.
+    pub fn set_look(&self, look: Look) {
+        let st = &*self.st;
+        {
+            let mut fonts = st.fonts.borrow_mut();
+            fonts.set_ty(look.ty.clone());
+            st.measures.set(Measures::of(look.measure, &mut fonts));
+        }
+        // Tables keep their layouts by width alone; a new type is new ones.
+        st.block_cache.borrow_mut().clear();
+        trace(|| format!("look {look:?}, measures {:?}", st.measures.get()));
+        set(self.sig.look, look);
+        self.refresh();
+    }
+
+    /// Whether this machine has a font family by `name` — for a host's font
+    /// menu to offer only those installed.
+    pub fn has_family(&self, name: &str) -> bool {
+        self.st.fonts.borrow_mut().has_family(name)
     }
 
     /// Put a different document in the editor — New, Open — and start every

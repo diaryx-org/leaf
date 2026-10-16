@@ -2,11 +2,11 @@
 //! Swift editor's `EditorCommands.swift` lays them out — through muda, which
 //! builds the native `NSMenu` on macOS.
 //!
-//! Every editor item *is* one of `input.rs`'s key bindings. It is given as the
-//! chord it stands for; the menu shows the chord as its shortcut, and choosing
-//! the item — with the mouse or by pressing the shortcut, which macOS hands to
-//! the menu before the view ever sees it — replays the chord through the same
-//! key handler. So a command is defined once, the menu cannot disagree with
+//! Every editor item *is* one of the editor's key bindings (leaf-dioxus's
+//! `input.rs`). It is given as the chord it stands for; the menu shows the
+//! chord as its shortcut, and choosing the item — with the mouse or by
+//! pressing the shortcut, which macOS hands to the menu before the view ever
+//! sees it — replays the chord through the same key handler. So a command is defined once, the menu cannot disagree with
 //! the keyboard, and the find bar's fields still get ⌘V while they have focus.
 //! Only what no key binding does — New, Open, Save As, the Table menu, the
 //! context menu's link and footnote items — is an action of its own.
@@ -22,8 +22,7 @@ use leaf_core::Alignment;
 use muda::accelerator::Accelerator;
 use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
-use crate::input::TableCommand;
-use crate::link::Footnote;
+use leaf_dioxus::{Context, Footnote, TableCommand};
 
 /// What choosing a menu item does.
 #[derive(Clone, Debug, PartialEq)]
@@ -288,13 +287,6 @@ fn table_menu(b: &mut Builder) -> Submenu {
     grid(b, &table, "Move Column Left", MoveColumn { right: false });
     grid(b, &table, "Move Column Right", MoveColumn { right: true });
     table
-}
-
-/// What a right-click offers, read off the caret after the click placed it.
-pub struct Context {
-    pub selection: bool,
-    pub link: bool,
-    pub footnote: Option<Footnote>,
 }
 
 /// The context menu's items. Their ids are fixed, so [`AppMenu::next`] knows

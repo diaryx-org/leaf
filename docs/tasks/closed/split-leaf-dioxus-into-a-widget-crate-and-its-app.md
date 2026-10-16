@@ -1,12 +1,25 @@
 ---
 title: Split leaf-dioxus into a widget crate and its app
-part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
+status: done
 created: 2026-10-15
-updated: 2026-10-15
+updated: 2026-10-16
 ---
 
 # Split leaf-dioxus into a widget crate and its app
+
+**Status.** Done, in the leaf commit `feat(dioxus): split leaf-dioxus into a
+widget crate and its app`. `crates/leaf-dioxus` is the widget, in its own
+workspace with no `[patch]`; `apps/leaf-dioxus` is the app over it (package
+`leaf-dioxus-app`, binary `leaf-dioxus`). The seam came out as the task drew
+it; the status line, which it did not place, stayed with the editor. It asks
+a `Host` for the clipboard, the character palette, a link's system handler,
+the context menu and the window title (`repainted`), and sends it `Request`s
+for what it recognises but cannot carry out — Save, Save As, the zoom and
+⌘, — so it builds without leaf-core's `fs`. The settings it draws with are a
+`Look`. Drawn without the second host the task asked for: Diaryx's port can
+redraw it, and placing the editor in part of a window is its own task,
+"Place the Dioxus editor in part of a window".
 
 **Where.** `apps/leaf-dioxus/src`.
 

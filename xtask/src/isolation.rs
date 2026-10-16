@@ -32,7 +32,10 @@ use anyhow::bail;
 /// `crates/leaf-gpui`, `apps/leaf`, and `apps/leaf-ios` are `exclude`d, each
 /// with its own lockfile, and nothing in this file reaches them. That is
 /// deliberate — see the `exclude` note in the root Cargo.toml — and it means the
-/// gpui side is checked by building it, not by CI.
+/// gpui side is checked by building it, not by CI. The Dioxus widget,
+/// `crates/leaf-dioxus`, is `exclude`d the same way, and its app,
+/// `apps/leaf-dioxus`, was never under a members glob; CI does check those two,
+/// in `.config/ship.figl`'s `dioxus` job.
 ///
 /// A new workspace member belongs in this list; the test below is what says so.
 const ISOLATED: &[&[&str]] = &[
@@ -92,8 +95,8 @@ pub fn run_task() -> Result<()> {
 /// rather than left to the glob: `crates/*` is a directory listing, so
 /// `crates/leaf-gpui` is still on disk and would otherwise be demanded of
 /// `ISOLATED` — for a crate `cargo check -p` in this workspace can no longer
-/// reach. The three excluded are the gpui side, each a standalone workspace with
-/// its own lockfile.
+/// reach. The excluded are the gpui side and the Dioxus widget, each a
+/// standalone workspace with its own lockfile.
 #[cfg(test)]
 fn member_names() -> Result<Vec<String>> {
     let manifest = read("Cargo.toml")?;

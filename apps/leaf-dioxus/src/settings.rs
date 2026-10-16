@@ -6,7 +6,7 @@
 //!
 //! Everything here is pure: the choices, what [`Type`] they resolve to, and
 //! their file. `prefs.rs` draws the panel and carries a change out — a new
-//! type for `text.rs` and the stylesheet together, then a relayout.
+//! [`leaf_dioxus::Look`] for the editor, which relays its rows out for it.
 //!
 //! The choices persist as a few lines of TOML in the user's config directory
 //! (`LEAF_SETTINGS` names another file); the zoom does not, as a browser's
@@ -14,7 +14,7 @@
 
 use std::path::PathBuf;
 
-use crate::text::Type;
+use leaf_dioxus::{Appearance, Type};
 
 /// The body faces offered, as (name, CSS family list). The Swift editor
 /// offers every installed family; a panel of buttons cannot hold a few
@@ -66,6 +66,10 @@ macro_rules! choice {
         $(#[$m])*
         #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
         pub enum $name { $($v),* }
+        choice!(impl $name { $($v = $key, $label;)* });
+    };
+    // A choice over an enum defined elsewhere: the editor's `Appearance`.
+    (impl $name:ident { $($v:ident = $key:literal, $label:literal;)* }) => {
         impl Choice for $name {
             const ALL: &'static [Self] = &[$(Self::$v),*];
             fn key(self) -> &'static str { match self { $(Self::$v => $key),* } }
@@ -90,12 +94,10 @@ choice!(
     /// `ColumnWidth`.
     ColumnWidth { Narrow = "narrow", "Narrow"; Medium = "medium", "Medium"; Wide = "wide", "Wide"; Full = "full", "Full width"; }
 );
-choice!(
-    /// Light or dark: the system's, or one of them for this app. Not a
-    /// choice the Swift editor offers — it follows the system — but the only
-    /// way to see the dark stylesheet without changing the whole Mac's.
-    Appearance { System = "system", "System"; Light = "light", "Light"; Dark = "dark", "Dark"; }
-);
+// Light or dark: the system's, or one of them for this app. Not a choice the
+// Swift editor offers — it follows the system — but the only way to see the
+// dark stylesheet without changing the whole Mac's.
+choice!(impl Appearance { System = "system", "System"; Light = "light", "Light"; Dark = "dark", "Dark"; });
 
 impl TextSize {
     /// In CSS pixels, which the Swift editor's points are on a Mac.
@@ -287,6 +289,17 @@ mod tests {
         let t = Settings::default().ty(1.0);
         assert_eq!(t, Type::default());
         assert_eq!(Settings::default().column.chars(), Some(68.0));
+    }
+
+    #[test]
+    fn a_first_launch_looks_as_the_editor_does_by_default() {
+        let s = Settings::default();
+        let look = leaf_dioxus::Look {
+            ty: s.ty(1.0),
+            measure: s.column.chars(),
+            appearance: s.appearance,
+        };
+        assert_eq!(look, leaf_dioxus::Look::default());
     }
 
     #[test]

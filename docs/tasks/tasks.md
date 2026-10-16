@@ -17,7 +17,7 @@ contents:
 - '[Handoff of an open document between the Mac and iOS apps](handoff.md)'
 - '[A force click on a date shows no Calendar card](date-event-popover.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
-- '[Split leaf-dioxus into a widget crate and its app](/docs/tasks/split-leaf-dioxus-into-a-widget-crate-and-its-app.md)'
+- '[Place the Dioxus editor in part of a window](/docs/tasks/place-the-dioxus-editor-in-part-of-a-window.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks

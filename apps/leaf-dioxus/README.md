@@ -8,23 +8,36 @@ is where it has been run.
 
 It began as the native half of the virtual-DOM spike (`spikes/dioxus-widget`),
 whose README holds the measurements that made the case for it: what a
-keystroke costs through a virtual DOM, and the webview against Blitz. Its
-`src/bridge/` — leaf's rows as runs, their classes, the frame delta — came
-from there.
+keystroke costs through a virtual DOM, and the webview against Blitz. The
+editor's `bridge/` — leaf's rows as runs, their classes, the frame delta —
+came from there.
 
 ```sh
 cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- document.md
 cargo test --manifest-path apps/leaf-dioxus/Cargo.toml
+cargo test --manifest-path crates/leaf-dioxus/Cargo.toml   # the editor
 ```
 
-A workspace of its own, like `apps/leaf`: `dioxus-native` is published only as
-an alpha, and its macOS winit backend is vendored and patched in
-`patches/winit-appkit` (`PATCH.md` says what and why; `upstream/` is the
-change prepared for winit). That `[patch]` is an exception to the org's rule,
-granted for this workspace; the proposal "A shared, patched winit for the
-Dioxus work" in `docs/proposals/` is the plan for it and for Diaryx's iOS one.
-The package is not yet an embeddable widget: see the task "Split leaf-dioxus
-into a widget crate and its app" in `docs/tasks/`.
+**Two crates, as gpui's are.** The editor is a widget,
+[`crates/leaf-dioxus`](../../crates/leaf-dioxus): the rows, keys, input
+method, find bar, source view, tables, pictures, links and the status line —
+everything in the window but the settings panel — over a `Host` it asks for
+what it does not own and a `Look` it draws with. Its README is how to host it.
+This app (package `leaf-dioxus-app`, binary `leaf-dioxus`) is one host: the
+menu bar, the file dialogs, the settings file and panel, and the window
+title, in `src/main.rs`, `shell.rs`, `menu.rs`, `file.rs`, `settings.rs` and
+`prefs.rs`. A module named below that is not one of those is the widget's,
+under `crates/leaf-dioxus/src/`.
+
+Both are workspaces of their own, like `apps/leaf`: `dioxus-native` is
+published only as an alpha, and its macOS winit backend is vendored and
+patched in `patches/winit-appkit` (`PATCH.md` says what and why; `upstream/`
+is the change prepared for winit). That `[patch]` is an exception to the
+org's rule, granted for this workspace, and only this one has it — a
+`[patch]` reaches no build but its own workspace's, so another host of the
+widget patches winit itself. The proposal "A shared, patched winit for the
+Dioxus work" in `docs/proposals/` is the plan for it and for Diaryx's iOS
+one.
 
 ## What it does (2026-10-15)
 
@@ -71,7 +84,7 @@ now logs `occluded true/false` so the two can be told apart.
 
 The spike's "What it would take" item 4 is done the way the Swift editor does it. Core
 builds one *unwrapped* row per block (`build_visual_unwrapped`), and
-`src/text.rs` lays each out with **parley** — the engine Blitz
+`text.rs` lays each out with **parley** — the engine Blitz
 shapes with, over the same system font collection, in the same CSS family
 lists (Iowan Old Style for body, Menlo for code and tables) — breaking it at
 the column's pixel width. Each visual line renders as its own
@@ -92,7 +105,7 @@ row's handle.
 
 ## IME and dead keys
 
-`src/ime.rs`. Native needs none of what the spike's item 3 asks of
+`ime.rs`. Native needs none of what the spike's item 3 asks of
 `dioxus-html`: winit reports the input method itself — `Ime::Preedit` with
 the marked text and a cursor inside it, then `Ime::Commit` — and on macOS that
 covers every input method *and* dead keys (⌥E opens a composition of `´`; the
@@ -144,7 +157,7 @@ which draws them. Checked on macOS: press-and-hold accents and emoji.
 
 **⌘E** shows the markup, one row per source line, from core's `SourceMap` —
 styled byte ranges off the same parse the caret rides, so delimiters are
-dimmed and a fence keeps its syntax colours (`src/source.rs`).
+dimmed and a fence keeps its syntax colours (`source.rs`).
 Core already works in source rows and columns for `click`, motion and the
 caret, so the rest of the editor does not know which view it draws: rows are
 `RowView`s either way, set in Menlo, wrapped, every run at body size. With no
@@ -153,7 +166,7 @@ out the line it split, not every line below. The column widens to 82 cells,
 since markup is usually wrapped near 80.
 
 **⌘F / ⌥⌘F / ⌘G / ⇧⌘G**: a find bar with a replace row
-(`src/find.rs`) — incremental, case-insensitive (ASCII folding,
+(`find.rs`) — incremental, case-insensitive (ASCII folding,
 so offsets never move), wrapping, "2 of 5", the match shown as the selection
 in either view. Replace replaces the selected match and steps on; Replace All
 (⌥↩ in the replace field) is one undo step. Its fields are the editor's own,
@@ -188,7 +201,7 @@ asking.
 
 ## Tables as a grid
 
-`src/table.rs` draws a table from core's `TableInfo` — each
+`table.rs` draws a table from core's `TableInfo` — each
 cell's glyphs with their source offsets and styles, its range and alignment,
 which rows are the head — instead of the map's box-drawn monospace picture.
 Columns are as wide as their widest cell and squeezed only when the grid will
@@ -208,7 +221,7 @@ the cell below, and the source saved as expected.
 
 ## Images
 
-`src/media.rs` draws a block-level image, video or audio from
+`media.rs` draws a block-level image, video or audio from
 core's `MediaInfo` in place of the one-row `🖼 alt` placeholder, as
 `Block::Media` in `blocks.rs`. Blitz draws the picture itself: an `img` whose
 `src` is the file's `file://` URL, which its `net` provider reads and decodes
@@ -242,7 +255,7 @@ text moves, and a no-op there regardless.
 its note and a note back to its reference (`footnote_at`,
 `footnote_definition_at`), else a link — a `#fragment` to the place `locate`
 finds, a URL or an existing file beside the document to `open`
-(`src/link.rs`). **Right-click** (or ⌃-click) places the caret
+(`link.rs`). **Right-click** (or ⌃-click) places the caret
 unless it lands inside the selection, then pops up Go to Note / Back to
 Reference, Open Link and Copy Link when they apply, Cut and Copy with a
 selection, then Paste, Paste and Match Style and Select All — the clipboard
@@ -270,7 +283,7 @@ following back is a ⌘-click on the note's text.
 **Dark mode needs no Rust.** Blitz turns winit's theme into the stylesheet's
 `prefers-color-scheme` and recascades on `ThemeChanged` (blitz-dom's
 `DeviceChanges::COLOR_SCHEME`), and Stylo has CSS custom properties. So every
-colour — the bridge's `STYLESHEET` and `src/view.rs`'s chrome —
+colour — the bridge's `STYLESHEET` and `view.rs`'s chrome —
 is a `var(--…)`, set once in a light `:root` and once under
 `@media (prefers-color-scheme: dark)`, with the Swift editor's values
 (`Palette` in `LeafUI/Platform.swift`: AppKit's semantic colours as each
@@ -329,13 +342,17 @@ is above), which needs System Settings changed.
 
 ## Working on the native editor
 
-`src/main.rs` is only the app's wiring: every event source —
-the window's keys and IME, the menu bar, the pointer, a file dialog's task —
-holds an `Editor` (`editor.rs`) and calls a method on it. Where a change goes:
+The editor is `crates/leaf-dioxus`; this app is its wiring. Every event
+source — the window's keys and IME, the menu bar, the pointer, a file
+dialog's task — holds an `Editor` (the widget's `editor.rs`) and calls a
+method on it; what the editor cannot do itself it asks of the app's `Shell`
+(`shell.rs`), the widget's `Host`. Where a change goes:
 
-- **A command**: a key binding in `input.rs`, and a menu item in `menu.rs`
-  given as that chord. Nothing else; the menu replays the chord. One with no
-  shortcut is a `menu::Command` variant, run in `dispatch.rs`.
+- **A command**: a key binding in the widget's `input.rs`, and a menu item in
+  `menu.rs` given as that chord. Nothing else; the menu replays the chord.
+  One with no shortcut is a `menu::Command` variant, run in
+  `Shell::command`. One the editor recognises but the app carries out (Save,
+  the zoom, ⌘,) is a `Request`, answered in `Shell::request`.
 - **Something drawn in place of rows** (media, a formula, a diagram): a
   variant in `blocks.rs` — its builder step, render arm and hit-test — and a
   module of its own for what it draws, as `table.rs` is for tables. Repaint,
@@ -344,8 +361,10 @@ holds an `Editor` (`editor.rs`) and calls a method on it. Where a change goes:
   `motion.rs`; the page's markup and stylesheet: `view.rs`.
 - **State or something the render reads**: a field of `editor::State` or
   `editor::Signals`, and a step in `Editor::repaint`.
+- **A display choice**: `settings.rs` and the panel in `prefs.rs`, handed to
+  the editor as a `Look` (`Shell::look`).
 
-Pure logic is unit-tested beside it (`cargo test` here);
+Pure logic is unit-tested beside it (`cargo test` in each crate);
 `LEAF_TRACE=1` and `LEAF_OUTLINE=1` are the instruments for the rest. A window
 covered by others does not paint — see `occluded` in the trace.
 

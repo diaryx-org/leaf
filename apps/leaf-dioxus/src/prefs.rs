@@ -2,10 +2,9 @@
 //! change out, and the panel's markup. The choices themselves are
 //! `settings.rs`.
 //!
-//! A change is one new [`crate::text::Type`], handed to `text.rs` and the
-//! stylesheet in the same repaint, so the rows are laid out for exactly the
-//! faces, size and leading Blitz then draws them in — which is what keeps a
-//! click on the glyph under it.
+//! A change is one new [`Look`] handed to the editor, which lays its rows out
+//! for exactly the faces, size and leading Blitz then draws them in — which
+//! is what keeps a click on the glyph under it.
 //!
 //! The Swift editor's Settings is a window of its own. This is a panel in the
 //! editor's window, over its top-right corner and not modal — the text under
@@ -13,15 +12,16 @@
 //! dioxus-native 0.8's `launch` opens one window and its Blitz document
 //! cannot be shared with a second.
 
+use std::rc::Rc;
+
 use dioxus::prelude::*;
 use dioxus_native::winit::window::Theme;
+use leaf_dioxus::{Appearance, Editor, Look, ZoomCommand, trace};
 
-use crate::editor::{Editor, Measures, set};
 use crate::settings::{
-    Appearance, BODY_FACES, Choice, ColumnWidth, LineSpacing, MONO_FACES, Settings, TextSize,
-    zoom_step,
+    BODY_FACES, Choice, ColumnWidth, LineSpacing, MONO_FACES, Settings, TextSize, zoom_step,
 };
-use crate::trace::trace;
+use crate::shell::Shell;
 
 /// What the panel draws.
 #[derive(Clone, PartialEq, Default)]
@@ -46,22 +46,12 @@ pub enum Pick {
     Done,
 }
 
-/// ⌘+, ⌘− and ⌘0.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ZoomCommand {
-    In,
-    Out,
-    Reset,
-}
-
-impl Appearance {
-    /// The window's appearance: the system's, or one of its two.
-    fn theme(self) -> Option<Theme> {
-        match self {
-            Appearance::System => None,
-            Appearance::Light => Some(Theme::Light),
-            Appearance::Dark => Some(Theme::Dark),
-        }
+/// The window's appearance: the system's, or one of its two.
+fn theme(appearance: Appearance) -> Option<Theme> {
+    match appearance {
+        Appearance::System => None,
+        Appearance::Light => Some(Theme::Light),
+        Appearance::Dark => Some(Theme::Dark),
     }
 }
 
@@ -83,119 +73,141 @@ impl Settings {
     }
 }
 
-impl Editor {
-    /// The settings as loaded, put into effect: the first paint's.
-    pub fn apply_settings(&self) {
-        let appearance = self.st.settings.borrow().appearance;
-        self.st.window.set_theme(appearance.theme());
-        self.retype();
-        self.sync_prefs();
+impl Shell {
+    /// What the editor draws with: the settings, at the zoom.
+    pub fn look(&self) -> Look {
+        let s = self.settings.borrow();
+        Look {
+            ty: s.ty(self.zoom.get()),
+            measure: s.column.chars(),
+            appearance: s.appearance,
+        }
+    }
+
+    /// The settings as loaded, put into effect on the window and the panel —
+    /// the editor's first paint already has them, through [`Shell::look`].
+    pub fn apply_settings(&self, ed: &Editor) {
+        let appearance = self.settings.borrow().appearance;
+        self.window.set_theme(theme(appearance));
+        self.sync_prefs(ed);
     }
 
     /// ⌘, — open the panel, or close it.
     pub fn toggle_prefs(&self) {
-        let open = !self.sig.prefs.peek().open;
+        let open = !self.prefs.peek().open;
         self.show_prefs(open);
     }
 
     pub fn prefs_open(&self) -> bool {
-        self.sig.prefs.peek().open
+        self.prefs.peek().open
     }
 
     pub fn show_prefs(&self, open: bool) {
-        let mut v = self.sig.prefs.peek().clone();
+        let mut v = self.prefs.peek().clone();
         v.open = open;
-        set(self.sig.prefs, v);
+        let mut prefs = self.prefs;
+        prefs.set(v);
     }
 
     /// A click on the panel.
-    pub fn pick(&self, pick: Pick) {
+    pub fn pick(&self, ed: &Editor, pick: Pick) {
         trace(|| format!("settings {pick:?}"));
         if pick == Pick::Done {
             return self.show_prefs(false);
         }
-        let now = self.st.settings.borrow().clone().with(&pick);
-        if now == *self.st.settings.borrow() {
+        let now = self.settings.borrow().clone().with(&pick);
+        if now == *self.settings.borrow() {
             return;
         }
-        let theme_changed = now.appearance != self.st.settings.borrow().appearance;
+        let theme_changed = now.appearance != self.settings.borrow().appearance;
         if let Err(e) = now.save() {
             eprintln!("settings: {e}");
         }
-        *self.st.settings.borrow_mut() = now;
+        *self.settings.borrow_mut() = now;
         if theme_changed {
-            self.st
-                .window
-                .set_theme(self.st.settings.borrow().appearance.theme());
+            self.window
+                .set_theme(theme(self.settings.borrow().appearance));
         }
-        self.retype();
-        self.sync_prefs();
+        ed.set_look(self.look());
+        self.sync_prefs(ed);
     }
 
     /// ⌘+, ⌘−, ⌘0: the text set larger or smaller, and the column with it,
     /// since its measure is counted in characters.
-    pub fn zoom(&self, z: ZoomCommand) {
-        let was = self.st.zoom.get();
+    pub fn zoom(&self, ed: &Editor, z: ZoomCommand) {
+        let was = self.zoom.get();
         let now = match z {
             ZoomCommand::In => zoom_step(was, true),
             ZoomCommand::Out => zoom_step(was, false),
             ZoomCommand::Reset => 1.0,
         };
-        self.st.doc.borrow_mut().status = Some(format!("Zoom {:.0}%", now * 100.0));
+        ed.doc().status = Some(format!("Zoom {:.0}%", now * 100.0));
         if now != was {
-            self.st.zoom.set(now);
-            self.retype();
+            self.zoom.set(now);
+            ed.set_look(self.look());
         } else {
-            self.refresh();
+            ed.refresh();
         }
-    }
-
-    /// Set the text in the type the settings and the zoom make, and lay
-    /// every row out again for it.
-    fn retype(&self) {
-        let st = &*self.st;
-        let ty = st.settings.borrow().ty(st.zoom.get());
-        {
-            let mut fonts = st.fonts.borrow_mut();
-            fonts.set_ty(ty.clone());
-            st.measures
-                .set(Measures::of(&st.settings.borrow(), &mut fonts));
-        }
-        // Tables keep their layouts by width alone; a new type is new ones.
-        st.block_cache.borrow_mut().clear();
-        trace(|| format!("type {ty:?}, measures {:?}", st.measures.get()));
-        set(self.sig.ty, ty);
-        self.refresh();
     }
 
     /// Refresh what the panel draws.
-    fn sync_prefs(&self) {
-        let mut fonts = self.st.fonts.borrow_mut();
-        let mut installed = |faces: &[(&str, &str)]| -> Vec<(String, String)> {
+    fn sync_prefs(&self, ed: &Editor) {
+        let installed = |faces: &[(&str, &str)]| -> Vec<(String, String)> {
             faces
                 .iter()
-                .filter(|(name, _)| *name == "System" || fonts.has_family(name))
+                .filter(|(name, _)| *name == "System" || ed.has_family(name))
                 .map(|(n, css)| (n.to_string(), css.to_string()))
                 .collect()
         };
         let v = PrefsView {
-            open: self.sig.prefs.peek().open,
-            settings: self.st.settings.borrow().clone(),
+            open: self.prefs.peek().open,
+            settings: self.settings.borrow().clone(),
             bodies: installed(BODY_FACES),
             monos: installed(MONO_FACES),
         };
-        set(self.sig.prefs, v);
+        let mut prefs = self.prefs;
+        prefs.set(v);
     }
 }
+
+/// The panel's look: the editor's chrome colours, and the chips' own,
+/// written into the page beside the editor's stylesheet.
+pub const CSS: &str = "
+:root {
+  --chip-on: #007aff;
+  --chip-on-text: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --chip-on: #0a84ff;
+    --chip-on-text: #ffffff;
+  }
+}
+.prefs { position: absolute; top: 12px; right: 12px; width: 400px; z-index: 2; box-sizing: border-box;
+         padding: 10px 14px 12px; background: var(--chrome-bg); color: var(--chrome-text);
+         border: 1px solid var(--field-border); border-radius: 10px;
+         font: 13px system-ui, sans-serif; line-height: 1.3; white-space: normal; }
+.prefs .title { font-weight: 700; margin-bottom: 4px; }
+.prefs .section { margin-top: 10px; color: var(--leaf-secondary); font-size: 11px; }
+.prefs .prow { display: flex; gap: 8px; margin-top: 6px; }
+.prefs .plabel { flex: none; width: 92px; text-align: right; padding-top: 3px; }
+.prefs .chips { flex: 1; display: flex; flex-wrap: wrap; gap: 4px; }
+.prefs .chip { padding: 2px 7px; border-radius: 5px; background: var(--field-bg);
+               border: 1px solid var(--field-border); white-space: nowrap; }
+.prefs .chip.on { background: var(--chip-on); color: var(--chip-on-text); border-color: var(--chip-on); }
+.prefs .btn { height: 22px; line-height: 22px; padding: 0 9px; background: var(--field-bg);
+              border: 1px solid var(--field-border); border-radius: 5px; }
+.prefs .foot { display: flex; gap: 8px; margin-top: 12px; }
+.prefs .foot .grow { flex: 1; }";
 
 /// The panel's markup. Always present, shown or hidden, for the find bar's
 /// reason: Blitz does not lay out an absolutely positioned element inserted
 /// after the first frame.
-pub fn render(ed: &Editor, v: &PrefsView) -> Element {
+pub fn render(ed: &Editor, shell: &Rc<Shell>, v: &PrefsView) -> Element {
     let s = &v.settings;
     let display = if v.open { "block" } else { "none" };
     let chip = |label: String, on: bool, font: Option<String>, pick: Pick| {
-        let ed = ed.clone();
+        let (ed, shell) = (ed.clone(), shell.clone());
         let class = if on { "chip on" } else { "chip" };
         let style = font
             .map(|f| format!("font-family: {f}"))
@@ -204,7 +216,7 @@ pub fn render(ed: &Editor, v: &PrefsView) -> Element {
             span { class, style,
                 onmousedown: move |e: MouseEvent| {
                     e.prevent_default();
-                    ed.pick(pick.clone());
+                    shell.pick(&ed, pick.clone());
                 },
                 "{label}"
             }
@@ -243,12 +255,12 @@ pub fn render(ed: &Editor, v: &PrefsView) -> Element {
         }
     };
     let foot = |label: &str, pick: Pick| {
-        let ed = ed.clone();
+        let (ed, shell) = (ed.clone(), shell.clone());
         rsx! {
             span { class: "btn",
                 onmousedown: move |e: MouseEvent| {
                     e.prevent_default();
-                    ed.pick(pick.clone());
+                    shell.pick(&ed, pick.clone());
                 },
                 "{label}"
             }
@@ -288,5 +300,17 @@ mod tests {
         assert_eq!(s.body, "Georgia");
         assert_eq!(s.spacing, Settings::default().spacing);
         assert_eq!(s.with(&Pick::Restore), Settings::default());
+    }
+
+    #[test]
+    fn the_panel_is_drawn_in_colours_set_for_both_appearances() {
+        let all = format!(
+            "{}{CSS}",
+            leaf_dioxus::stylesheet(&leaf_dioxus::Type::default())
+        );
+        leaf_dioxus::Palette::of(&all)
+            .check()
+            .expect("a whole palette");
+        assert!(CSS.contains("var(--chip-on)") && CSS.contains("var(--chrome-bg)"));
     }
 }

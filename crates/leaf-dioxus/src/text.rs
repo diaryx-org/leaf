@@ -34,8 +34,8 @@ use unicode_width::UnicodeWidthStr;
 /// How the text is set: the faces, the size and the leading. One value, held
 /// by [`Fonts`] and written into the stylesheet (`view.rs`), so parley
 /// measures exactly what Blitz draws — the two must never disagree, or every
-/// click lands a few glyphs off. The settings and the zoom (`settings.rs`)
-/// make one; changing it is a relayout of every row.
+/// click lands a few glyphs off. The host makes one, as part of its
+/// [`Look`](crate::Look); changing it is a relayout of every row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Type {
     /// Body text, as a CSS family list: the face, then fallbacks.

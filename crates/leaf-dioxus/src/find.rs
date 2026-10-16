@@ -62,6 +62,9 @@ pub enum Outcome {
     Close,
     /// Handled within the bar, nothing for the document to do.
     Edited,
+    /// ⌘V in a field: the clipboard's text, which the host holds, wanted in
+    /// the focused field (through [`Find::commit`]).
+    Paste,
     /// Not the bar's key.
     Ignored,
 }
@@ -144,6 +147,7 @@ impl Find {
         match field.key(key, mods) {
             FieldEdit::Changed if query => Outcome::Searched,
             FieldEdit::Changed | FieldEdit::Moved => Outcome::Edited,
+            FieldEdit::Paste => Outcome::Paste,
             FieldEdit::Ignored => Outcome::Ignored,
         }
     }
@@ -280,6 +284,7 @@ pub struct Field {
 enum FieldEdit {
     Changed,
     Moved,
+    Paste,
     Ignored,
 }
 
@@ -315,15 +320,7 @@ impl Field {
     fn key(&mut self, key: &Key, mods: Modifiers) -> FieldEdit {
         let cmd = mods.contains(Modifiers::SUPER) || mods.contains(Modifiers::META);
         match key {
-            Key::Character(c) if cmd && c == "v" => {
-                match arboard::Clipboard::new().and_then(|mut b| b.get_text()) {
-                    Ok(t) => {
-                        self.insert(&t.replace('\n', " "));
-                        FieldEdit::Changed
-                    }
-                    Err(_) => FieldEdit::Ignored,
-                }
-            }
+            Key::Character(c) if cmd && c == "v" => FieldEdit::Paste,
             // ⌘A in a field clears it on the next keystroke in a Mac text
             // field; with no selection to draw, it clears now.
             Key::Character(c) if cmd && c == "a" => {
@@ -479,5 +476,22 @@ mod tests {
             Outcome::Step { forward: false }
         );
         assert_eq!(f.key(&Key::Escape, Modifiers::empty()), Outcome::Close);
+    }
+
+    #[test]
+    fn a_paste_into_a_field_asks_for_the_clipboard_and_commits_it() {
+        let mut f = Find {
+            open: true,
+            focus: Focus::Replacement,
+            ..Find::default()
+        };
+        // ⌘V leaves the field as it was: the clipboard is the host's.
+        assert_eq!(
+            f.key(&Key::Character("v".into()), Modifiers::SUPER),
+            Outcome::Paste
+        );
+        assert_eq!(f.replacement.text, "");
+        assert_eq!(f.commit("new"), Outcome::Edited);
+        assert_eq!(f.replacement.text, "new");
     }
 }

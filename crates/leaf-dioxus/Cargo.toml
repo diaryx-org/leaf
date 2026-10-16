@@ -1,0 +1,83 @@
+# leaf-dioxus — the embeddable editor widget for Dioxus's native renderer
+# (Blitz): leaf's document and rows, drawn by an HTML/CSS engine on wgpu, with
+# no webview. `apps/leaf-dioxus` is one host for it, as `apps/leaf` is for
+# `leaf-gpui`; Diaryx's Dioxus port is to be another.
+#
+# A workspace of its own, `exclude`d from leaf's root one: `dioxus-native` is
+# published only as 0.8.0-alpha.2, which pins a winit beta and a large wgpu tree
+# that nothing in leaf's root workspace should resolve. Unlike the app's, this
+# workspace has no [patch]: a [patch] applies only at the root of the
+# workspace that has it, so it would do nothing for a consumer anyway. A host
+# that wants the macOS text input fixes patches winit-appkit itself, as
+# `apps/leaf-dioxus` does (see its `patches/winit-appkit/PATCH.md`).
+#
+#     cargo test --manifest-path crates/leaf-dioxus/Cargo.toml
+[workspace]
+
+[package]
+name = "leaf-dioxus"
+version = "0.0.0"
+edition = "2024"
+description = "Embeddable Dioxus-native rich-text editor widget for leaf: the editor, its rows, input and rendering, over leaf-core."
+publish = false
+
+[features]
+default = ["system-clipboard"]
+# The default `Host`'s clipboard: the system's, through arboard. Off for a host
+# that brings its own, and for one where arboard does not build — its cfg
+# cascade sends every unix that is not macOS to X11/Wayland, iOS included,
+# which is the same reason leaf-gpui gates it.
+system-clipboard = ["dep:arboard"]
+
+[dependencies]
+dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+] }
+# What the editor needs Blitz to do to draw it correctly, and no more; the rest
+# of dioxus-native's features (accessibility, Blitz's own clipboard and file
+# inputs, woff, …) are the host's to choose.
+#
+# - `vello`, the classic renderer, not the default `vello-hybrid`: hybrid
+#   cannot draw a bitmap glyph — with glifo's `png` on, vello_gpu panics
+#   ("pixmap image sources are not supported by Vello GPU"), and without it
+#   every emoji (Apple Color Emoji is sbix PNGs) draws as nothing. Classic
+#   vello draws them, and wins when a host turns both on.
+# - `system-fonts`: `text.rs` measures with parley over the system's font
+#   collection, and Blitz must draw from the same one.
+# - `net`: block pictures are `file://` URLs Blitz's net provider reads, and
+#   it is what makes dioxus-native build and enter the tokio runtime the word
+#   count's timer runs on.
+# - `svg`: SVG pictures.
+dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features = [
+    "net", "svg", "system-fonts", "vello",
+] }
+# `fs` off: the widget never touches a path to read or write a document — Save
+# and Save As are the host's (`Request`) — so a host whose documents are not
+# files, or that has no file system to give, can take it. A host that opens
+# files turns `fs` on in its own dependency on leaf-core.
+leaf-core = { path = "../leaf-core", default-features = false, features = [
+    "syntax",
+] }
+# The system clipboard, for the default `Host`. Already in the tree through
+# Blitz's own `clipboard` feature when a host has that on.
+arboard = { version = "3.7", optional = true }
+# A timer for work that should wait for the typing to stop (the word count).
+# Already in the tree: dioxus-native builds and enters a tokio runtime with
+# timers enabled, which is what makes `tokio::time::sleep` work in a task.
+tokio = { version = "1", default-features = false, features = ["time"] }
+# Text layout, for proportional rows (`text.rs`). The same parley Blitz shapes
+# with, at the version it pins, so both measure the same glyphs.
+parley = "=0.12.0"
+# Display columns — core's unit for a caret column — as core counts them.
+unicode-width = "0.2"
+# Grapheme clusters, the unit a column advances by, as core walks them.
+unicode-segmentation = "1.13"
+
+# Block pictures (`media.rs`): a picture's size off its header, an SVG's off
+# its canvas, so the block's height is known before Blitz has decoded it. Both
+# already in the tree through Blitz, at the formats it decodes.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
+usvg = { version = "0.48", default-features = false }

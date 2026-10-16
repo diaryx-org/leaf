@@ -22,6 +22,15 @@ pub enum BarClick {
 impl Editor {
     /// Carry out what the find bar asked for: select a match, replace, close.
     pub fn run_find(&self, o: Outcome) {
+        // A field's ⌘V, from the host's clipboard: one line of its text.
+        if o == Outcome::Paste {
+            let text = self.st.host.read_clipboard().text;
+            let o = match text {
+                Some(t) => self.st.find.borrow_mut().commit(&t.replace('\n', " ")),
+                None => Outcome::Edited,
+            };
+            return self.run_find(o);
+        }
         {
             let mut f = self.st.find.borrow_mut();
             let mut d = self.st.doc.borrow_mut();
@@ -50,7 +59,7 @@ impl Editor {
                     d.status = Some(format!("{n} replaced"));
                 }
                 Outcome::Close => f.close(),
-                Outcome::Edited | Outcome::Ignored => {}
+                Outcome::Edited | Outcome::Paste | Outcome::Ignored => {}
             }
         }
         self.refresh();
