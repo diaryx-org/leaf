@@ -12,9 +12,12 @@ use dioxus::prelude::*;
 use crate::table::{AlignKind, BORDER, Block};
 use crate::text::{Kind, RowLayout, byte_of_col};
 
-/// The document's left edge in the window, in CSS pixels: `body` has no
-/// margin and `.leaf` this much side padding (see `LAYOUT` in `main.rs`), so a
-/// click's client x less this is its x within a row.
+/// The column's side padding, in CSS pixels: the document's left edge in a
+/// window just wide enough for it. A line reports a click's client x less
+/// this, as if the column stood at the window's left; the editor takes off
+/// the margin that centres it in a wider one ([`Editor::left`]).
+///
+/// [`Editor::left`]: crate::Editor::left
 pub const PAD: f64 = 16.0;
 
 /// What a line belongs to: a row, a cell of the table whose first row is
@@ -42,6 +45,32 @@ pub enum Pointer {
     },
     /// It moved with the button held: a drag-select.
     Drag { at: Target, line: usize, x: f32 },
+}
+
+impl Pointer {
+    /// The same event, `dx` CSS pixels further along its line.
+    pub fn shifted(self, dx: f32) -> Self {
+        match self {
+            Pointer::Press {
+                at,
+                line,
+                x,
+                extend,
+                mode,
+            } => Pointer::Press {
+                at,
+                line,
+                x: x + dx,
+                extend,
+                mode,
+            },
+            Pointer::Drag { at, line, x } => Pointer::Drag {
+                at,
+                line,
+                x: x + dx,
+            },
+        }
+    }
 }
 
 /// What a press is for, beyond placing the caret.

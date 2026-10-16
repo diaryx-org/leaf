@@ -225,7 +225,7 @@ impl Editor {
             + l.top as f64
             + self.sig.bar.peek().height();
         let mut data = ImeRequestData::default().with_cursor_area(
-            LogicalPosition::new(crate::row::PAD + x as f64, y).into(),
+            LogicalPosition::new(self.left() + x as f64, y).into(),
             LogicalSize::new(2.0, l.height as f64).into(),
         );
         let around = ime::surrounding(&self.st.doc.borrow(), &self.st.composer.borrow());

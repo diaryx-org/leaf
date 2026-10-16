@@ -575,6 +575,14 @@ impl Editor {
         self.max_top() + *self.sig.height.peek() + STATUS
     }
 
+    /// Where the text starts in the window, in CSS pixels: past the side
+    /// padding, and past half of whatever room the column leaves, as it is
+    /// centred.
+    pub fn left(&self) -> f64 {
+        let column = *self.sig.width.peek() + 2.0 * crate::row::PAD as f32;
+        crate::row::PAD + ((*self.sig.win_w.peek() - column) / 2.0).max(0.0) as f64
+    }
+
     /// The find bar's height, open or not: what covers the top of the
     /// viewport, as [`STATUS`] covers its bottom.
     pub fn bar_height(&self) -> f64 {

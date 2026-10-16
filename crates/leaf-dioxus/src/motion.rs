@@ -82,7 +82,7 @@ impl Editor {
             .iter()
             .position(|l| within < l.top + l.height)
             .unwrap_or(lay.lines.len().saturating_sub(1));
-        let col = lay.col_at(line, (x - crate::row::PAD) as f32);
+        let col = lay.col_at(line, (x - self.left()) as f32);
         Some(offset_at(&self.st.doc.borrow(), row, col))
     }
 
@@ -111,7 +111,7 @@ impl Editor {
             + l.top as f64
             + self.sig.bar.peek().height();
         Some((
-            crate::row::PAD + x0 as f64,
+            self.left() + x0 as f64,
             y,
             (x1 - x0).max(0.0) as f64,
             l.height as f64,
@@ -222,6 +222,7 @@ impl Editor {
 
     /// A pointer event on a line of a row or of a block.
     pub fn pointer(&self, p: Pointer) {
+        let p = p.shifted((crate::row::PAD - self.left()) as f32);
         let st = &*self.st;
         st.goal.set(None);
         st.composer.borrow_mut().settle(&mut st.doc.borrow_mut());

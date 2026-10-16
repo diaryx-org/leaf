@@ -258,7 +258,7 @@ fn render(ed: &Editor) -> Element {
         // text selection, drawn over leaf's, and the focus changes that made
         // `onkeydown` unreliable (see `keys.rs`). Not `onpointerdown`:
         // cancelling the pointer event stops Blitz dispatching `mousedown`.
-        div { class: "leaf", style: "width: {column}px",
+        div { class: "leaf", style: "width: {column}px; margin: 0 auto",
             // The wheel and the trackpad, in CSS pixels: a line is 20.
             onwheel: move |e: WheelEvent| {
                 e.prevent_default();

@@ -113,15 +113,16 @@ fn lay_out(
 
 /// The editor laid out offscreen at the paper's column, its pictures loaded:
 /// the document, the editor, and the page's width in CSS pixels. All of it
-/// at once, for paper; or, given a `screen` height, only the rows a window
-/// that tall shows, caret and status line drawn, as the app draws it.
+/// at once, for paper; or, given a `screen` (width, height), in a window that
+/// size, at the look's own measure, caret and status line drawn, only the
+/// rows it shows: as the app draws it.
 fn offscreen(
     source: &str,
     format: Format,
     path: Option<PathBuf>,
     look: Look,
     paper: Paper,
-    screen: Option<f64>,
+    screen: Option<(f64, f64)>,
 ) -> Result<(DioxusDocument, Editor, f64), String> {
     // A copy ending on a blank line, with the caret there: the caret's line
     // reveals its formulas' TeX and its fences' code, and this one has none.
@@ -132,11 +133,11 @@ fn offscreen(
     doc.move_doc_end(false);
 
     let column = ((paper.width - 2.0 * paper.margin) / SCALE) as f64;
-    let width = column + 2.0 * leaf_dioxus::PAD;
+    let (width, height) = screen.unwrap_or((column + 2.0 * leaf_dioxus::PAD, TALL));
     let window = Arc::new(HostedWindow::new(
         NonNull::dangling(),
         width,
-        screen.unwrap_or(TALL),
+        height,
         1.0,
         false,
         Callbacks::none(),
@@ -145,7 +146,7 @@ fn offscreen(
     let proxy = runtime::proxy();
     let editor = Rc::new(RefCell::new(None));
     let look = Look {
-        measure: None,
+        measure: if screen.is_some() { look.measure } else { None },
         appearance: Appearance::Light,
         ..look
     };
@@ -692,7 +693,7 @@ mod tests {
             None,
             Look::default(),
             Paper::US_LETTER,
-            Some(500.0),
+            Some((600.0, 500.0)),
         )
         .expect("an editor");
         let end = ed.doc().source.len();
@@ -710,5 +711,49 @@ mod tests {
                 document.inner.borrow_mut().resolve(0.0);
             }
         }
+    }
+
+    #[test]
+    fn the_column_is_centred_in_a_wide_window_and_clicks_land_on_its_text() {
+        let src = "The quick brown fox jumps over the lazy dog.\n";
+        let (document, ed, _) = offscreen(
+            src,
+            Format::Markdown,
+            None,
+            Look::default(),
+            Paper::US_LETTER,
+            Some((1600.0, 500.0)),
+        )
+        .expect("an editor");
+        let inner = document.inner.borrow();
+        let column = inner
+            .query_selector(".leaf")
+            .ok()
+            .flatten()
+            .map(|id| *inner.get_node(id).unwrap().final_layout())
+            .expect("the column");
+        document.vdom.runtime().in_scope(ScopeId::ROOT, || {
+            let left = ed.left();
+            let room = 1600.0 - column.size.width as f64;
+            assert!(room > 200.0, "a column narrower than the window");
+            assert!(
+                (column.location.x as f64 - room / 2.0).abs() < 1.0,
+                "drawn at {}, of {room} to spare",
+                column.location.x
+            );
+            assert!((left - (column.location.x as f64 + leaf_dioxus::PAD)).abs() < 1.0);
+            // A press where `rect_of` says "fox" is, reported as a line
+            // reports it, puts the caret before it.
+            let fox = src.find("fox").unwrap();
+            let (x, ..) = ed.rect_of(fox, fox + 1).unwrap();
+            ed.pointer(leaf_dioxus::Pointer::Press {
+                at: leaf_dioxus::Target::Row(0),
+                line: 0,
+                x: (x + 1.0 - leaf_dioxus::PAD) as f32,
+                extend: false,
+                mode: leaf_dioxus::PressMode::Place,
+            });
+            assert_eq!(ed.doc().caret, fox);
+        });
     }
 }
