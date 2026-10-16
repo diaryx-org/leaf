@@ -164,6 +164,10 @@ void leaf_view_select_range(LeafView *view, size_t loc, size_t len);
 bool leaf_view_replace_range(LeafView *view, size_t loc, size_t len, const char *original,
                              const char *replacement, bool behind);
 void leaf_view_undo_group(LeafView *view, bool begin);
+// The UTF-16 index of the character at a point of the view, -1 off the text;
+// and where a range is drawn (its first line), as x, y, width, height.
+int64_t leaf_view_index_at_point(LeafView *view, double x, double y);
+bool leaf_view_range_rect(LeafView *view, size_t loc, size_t len, double out[4]);
 // ranges: count (location, length) pairs, misspelled in the text at revision.
 void leaf_view_set_misspellings(LeafView *view, uint64_t revision, const size_t *ranges,
                                 size_t count);

@@ -160,14 +160,19 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
         if has(LEAF_CONTEXT_SELECTION) {
             menu.addItem(.separator())
             add("Look Up") { [weak self] in self?.lookUpSelection() }
+        } else if let caret = selectedUTF16(), let word = word(at: caret.location) {
+            // The right-click put the caret in the word.
+            let title = (text(prose: false) as NSString).substring(with: word)
+            menu.addItem(.separator())
+            add("Look Up “\(title)”") { [weak self] in self?.showDefinition(of: word) }
         }
         menu.popUp(positioning: nil, at: menuPoint, in: self)
     }
 
     private func lookUpSelection() {
-        // The Dictionary's panel, for the selected text.
-        guard let text = model.selectedText(), !text.isEmpty else { return }
-        showDefinition(for: NSAttributedString(string: text), at: NSPoint(x: caretRect.minX, y: caretRect.maxY))
+        // The Dictionary's panel, for the selected text, over it.
+        guard let range = selectedUTF16(), range.length > 0 else { return }
+        showDefinition(of: range)
     }
 
     // MARK: Edit menu
@@ -376,11 +381,71 @@ final class LeafEditorNSView: NSView, NSTextInputClient {
 
     func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
 
-    func characterIndex(for point: NSPoint) -> Int { NSNotFound }
+    /// The character at a point on the screen, for the system's own lookups.
+    func characterIndex(for point: NSPoint) -> Int {
+        guard marked.isEmpty, let window else { return NSNotFound }
+        let p = convert(window.convertPoint(fromScreen: point), from: nil)
+        let index = leaf_view_index_at_point(handle, p.x, p.y)
+        return index < 0 ? NSNotFound : Int(index)
+    }
 
+    /// Where a range is drawn on the screen: an input method's candidates go
+    /// beside it, and Look Up's highlight over it. The caret, while composing.
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
         guard let window else { return .zero }
-        return window.convertToScreen(convert(caretRect, to: nil))
+        let rect = marked.isEmpty ? self.rect(of: range) ?? caretRect : caretRect
+        return window.convertToScreen(convert(rect, to: nil))
+    }
+
+    /// Where a UTF-16 range of the text is drawn (its first line), in this
+    /// view's points.
+    func rect(of range: NSRange) -> NSRect? {
+        var r = [Double](repeating: 0, count: 4)
+        guard range.location != NSNotFound,
+              leaf_view_range_rect(handle, range.location, range.length, &r) else { return nil }
+        return NSRect(x: r[0], y: r[1], width: r[2], height: r[3])
+    }
+
+    // MARK: Look Up
+
+    /// A force click, or a three-finger tap: the word under the pointer in
+    /// the Dictionary's popover, drawn over the word where it stands — what
+    /// any text view does.
+    override func quickLook(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let index = leaf_view_index_at_point(handle, p.x, p.y)
+        guard marked.isEmpty, index >= 0, let word = word(at: Int(index)) else {
+            return super.quickLook(with: event)
+        }
+        showDefinition(of: word)
+    }
+
+    /// The word around UTF-16 `index` of the text, if the index is in one.
+    private func word(at index: Int) -> NSRange? {
+        let text = self.text(prose: false) as NSString
+        guard index < text.length else { return nil }
+        let paragraph = text.paragraphRange(for: NSRange(location: index, length: 0))
+        var found: NSRange?
+        text.enumerateSubstrings(in: paragraph, options: [.byWords, .substringNotRequired]) { _, range, _, stop in
+            if NSLocationInRange(index, range) {
+                found = range
+                stop.pointee = true
+            } else if range.location > index {
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
+    /// The Dictionary's popover for a range of the text, set on its baseline.
+    private func showDefinition(of range: NSRange) {
+        let text = self.text(prose: false) as NSString
+        guard NSMaxRange(range) <= text.length, let rect = rect(of: range) else { return }
+        let font = model.bodyFont
+        // The line box centres the face's ascent and descent.
+        let baseline = rect.minY + (rect.height + font.ascender + font.descender) / 2
+        let word = NSAttributedString(string: text.substring(with: range), attributes: [.font: font])
+        showDefinition(for: word, at: NSPoint(x: rect.minX, y: baseline))
     }
 }
 

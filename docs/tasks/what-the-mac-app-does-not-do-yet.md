@@ -22,9 +22,12 @@ of its own:
   its UTF-16 ranges). Still to do: grammar; the spelling panel (Show Spelling
   and Grammar); the blue underline under an autocorrected word and the offer
   to revert it; underlines inside a table's cells, which the checker reads but
-  the table block does not draw; `characterIndex(for:)` and `firstRect` for a
-  range rather than the caret, which Look Up by force click, dictation's
-  corrections and Writing Tools need; data detectors; Speech and Services.
+  the table block does not draw; Writing Tools; data detectors (a force click
+  on a date or an address); Speech and Services. Look Up — by force click, a
+  three-finger tap, or the context menu — is done, over the editor's own
+  hit-testing (`Editor::offset_at_point`, `Editor::rect_of`), and so are
+  `characterIndex(for:)` and `firstRect` for a range, though neither yet
+  answers on a table or another block, whose geometry is its own.
 - **Peeks.** A footnote's note, and a link's target, in a popover on hover.
 - **Media playback.** Video plays inline and audio in its strip; here a
   video is its poster and audio a chip.

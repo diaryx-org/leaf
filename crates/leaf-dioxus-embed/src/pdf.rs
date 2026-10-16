@@ -91,6 +91,35 @@ fn lay_out(
     look: Look,
     paper: Paper,
 ) -> Result<(Scene, Vec<f64>, f64), String> {
+    let (document, ed, width) = offscreen(source, format, path, look, paper)?;
+    let runtime = document.vdom.runtime();
+    let bottoms = runtime.in_scope(ScopeId::ROOT, || ed.row_bottoms());
+    let height = bottoms.last().copied().unwrap_or(0.0);
+    let mut scene = Scene::new();
+    {
+        let mut inner = document.inner.borrow_mut();
+        blitz_paint::paint_scene(
+            &mut scene,
+            &mut inner,
+            1.0,
+            width.ceil() as u32,
+            height.ceil() as u32 + 1,
+            0,
+            0,
+        );
+    }
+    Ok((scene, bottoms, width))
+}
+
+/// The editor laid out offscreen at the paper's column, its pictures loaded:
+/// the document, the editor, and the page's width in CSS pixels.
+fn offscreen(
+    source: &str,
+    format: Format,
+    path: Option<PathBuf>,
+    look: Look,
+    paper: Paper,
+) -> Result<(DioxusDocument, Editor, f64), String> {
     // A copy ending on a blank line, with the caret there: the caret's line
     // reveals its formulas' TeX and its fences' code, and this one has none.
     let mut doc = Doc::from_source(format!("{source}\n\n"), format).map_err(|e| e.to_string())?;
@@ -178,23 +207,7 @@ fn lay_out(
     }
 
     let ed: Editor = editor.borrow().clone().ok_or("the editor did not start")?;
-    let runtime = document.vdom.runtime();
-    let bottoms = runtime.in_scope(ScopeId::ROOT, || ed.row_bottoms());
-    let height = bottoms.last().copied().unwrap_or(0.0);
-    let mut scene = Scene::new();
-    {
-        let mut inner = document.inner.borrow_mut();
-        blitz_paint::paint_scene(
-            &mut scene,
-            &mut inner,
-            1.0,
-            width.ceil() as u32,
-            height.ceil() as u32 + 1,
-            0,
-            0,
-        );
-    }
-    Ok((scene, bottoms, width))
+    Ok((document, ed, width))
 }
 
 /// The offscreen editor's host: it asks for nothing.
@@ -557,6 +570,45 @@ fn path(b: &BezPath) -> Option<Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_words_rect_and_a_point_in_it_find_each_other() {
+        let src = "# Title\n\nThe quick brown fox jumps over the lazy dog, and then it \
+                   jumps over the lazy dog again, until the line wraps onto another.\n";
+        let (document, ed, _) = offscreen(
+            src,
+            Format::Markdown,
+            None,
+            Look::default(),
+            Paper::US_LETTER,
+        )
+        .expect("an editor");
+        document.vdom.runtime().in_scope(ScopeId::ROOT, || {
+            for word in ["Title", "brown", "again", "another"] {
+                let from = src.find(word).unwrap();
+                let to = from + word.len();
+                let (x, y, w, h) = ed.rect_of(from, to).expect("a rect");
+                assert!(w > 10.0 && h > 10.0, "{word}: {w} x {h}");
+                // Each letter's middle finds that letter.
+                for (i, _) in word.char_indices() {
+                    let (cx, ..) = ed.rect_of(from + i, from + i + 1).unwrap();
+                    let (nx, ..) = ed.rect_of(from + i + 1, from + i + 1).unwrap();
+                    let at = ed.offset_at_point((cx + nx) / 2.0 - 0.5, y + h / 2.0);
+                    assert!(
+                        at == Some(from + i) || at == Some(from + i + 1),
+                        "{word}[{i}] at {at:?}, rect {x},{y} {w}x{h}"
+                    );
+                }
+                assert_eq!(
+                    ed.offset_at_point(x + 1.0, y + h / 2.0),
+                    Some(from),
+                    "{word}"
+                );
+            }
+            // Off the rows, nothing.
+            assert_eq!(ed.offset_at_point(10.0, 1.0e6), None);
+        });
+    }
 
     #[test]
     fn pages_break_between_rows() {

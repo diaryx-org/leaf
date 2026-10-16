@@ -204,6 +204,15 @@ final class EditorModel: ObservableObject {
                            Float(look.leading), Float(look.measure ?? 0), 0)
     }
 
+    /// The body face at the size the editor sets it: what Look Up draws a
+    /// word in, over the word on the page.
+    var bodyFont: NSFont {
+        let name = UserDefaults.standard.string(forKey: DisplayChoice.bodyFontKey) ?? DisplayChoice.serifFontName
+        let size = (look?.size ?? TextSize.medium.points) * zoom
+        return NSFont(name: name, size: size) ?? NSFont(name: DisplayChoice.serifFontName, size: size)
+            ?? .systemFont(ofSize: size)
+    }
+
     // MARK: Paper
 
     /// The document as a PDF on `paper` — the editor's own layout, paginated

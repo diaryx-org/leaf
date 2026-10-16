@@ -707,6 +707,57 @@ pub unsafe extern "C" fn leaf_view_replace_range(
     .unwrap_or(false)
 }
 
+/// The UTF-16 index in `leaf_view_text` of the character at (`x`, `y`), in
+/// points from the view's top-left; -1 off the text.
+///
+/// # Safety
+/// `h` is null or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_index_at_point(h: *mut LeafView, x: f64, y: f64) -> i64 {
+    unsafe { hosted(h) }
+        .and_then(|v| {
+            v.with_editor(|ed| {
+                let off = ed.offset_at_point(x, y)?;
+                Some(text::utf16_of(&mut ed.doc(), off) as i64)
+            })
+        })
+        .flatten()
+        .unwrap_or(-1)
+}
+
+/// Where the UTF-16 range `loc`..`loc + len` of `leaf_view_text` is drawn:
+/// its first line's part of it, in points from the view's top-left, written
+/// to `out` as x, y, width, height. False, and `out` untouched, where it is
+/// not on a row of text.
+///
+/// # Safety
+/// `h` is null or a live handle; `out` points at four doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_range_rect(
+    h: *mut LeafView,
+    loc: usize,
+    len: usize,
+    out: *mut f64,
+) -> bool {
+    let Some(rect) = unsafe { hosted(h) }
+        .and_then(|v| {
+            v.with_editor(|ed| {
+                let (from, to) = text::bounds(&mut ed.doc(), loc, len);
+                ed.rect_of(from, to)
+            })
+        })
+        .flatten()
+    else {
+        return false;
+    };
+    if out.is_null() {
+        return false;
+    }
+    let out = unsafe { std::slice::from_raw_parts_mut(out, 4) };
+    out.copy_from_slice(&[rect.0, rect.1, rect.2, rect.3]);
+    true
+}
+
 /// Open (`begin`) or close an undo group: the edits between are one step.
 ///
 /// # Safety

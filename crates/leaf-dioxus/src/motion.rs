@@ -61,6 +61,71 @@ pub fn offset_at(doc: &Doc, row: usize, col: usize) -> usize {
 }
 
 impl Editor {
+    /// The source offset of the character at (`x`, `y`), in CSS pixels from
+    /// the editor's top-left — the inverse of [`ime_area`](Self::ime_area)'s
+    /// arithmetic, and the column a click there would place the caret at.
+    /// `None` off the rows, and on a block (a table, a picture), whose
+    /// geometry is its own.
+    pub fn offset_at_point(&self, x: f64, y: f64) -> Option<usize> {
+        let layout = self.sig.layout.peek();
+        let doc_y = y - self.sig.bar.peek().height() + *self.sig.top.peek();
+        let row =
+            (0..layout.rows()).find(|&r| doc_y >= layout.top(r) && doc_y < layout.bottom(r))?;
+        if self.in_block(row) {
+            return None;
+        }
+        let lays = self.sig.lays.peek();
+        let lay = &lays.get(row)?.0;
+        let within = (doc_y - layout.top(row)) as f32;
+        let line = lay
+            .lines
+            .iter()
+            .position(|l| within < l.top + l.height)
+            .unwrap_or(lay.lines.len().saturating_sub(1));
+        let col = lay.col_at(line, (x - crate::row::PAD) as f32);
+        Some(offset_at(&self.st.doc.borrow(), row, col))
+    }
+
+    /// Where the source range `from`..`to` is drawn, as (x, y, width,
+    /// height) in CSS pixels from the editor's top-left: its first visual
+    /// line's part of it, the line's full height. `None` on a block, or
+    /// where no row is laid out.
+    pub fn rect_of(&self, from: usize, to: usize) -> Option<(f64, f64, f64, f64)> {
+        let ((row, c0), (row_end, c1)) = {
+            let doc = self.st.doc.borrow();
+            (pos_of(&doc, from), pos_of(&doc, to))
+        };
+        if self.in_block(row) {
+            return None;
+        }
+        let lays = self.sig.lays.peek();
+        let lay = &lays.get(row)?.0;
+        let (line, x0) = lay.caret(c0);
+        let x1 = match (row_end == row).then(|| lay.caret(c1)) {
+            Some((l, x)) if l == line => x,
+            // Past the line: to the column's edge.
+            _ => *self.sig.width.peek(),
+        };
+        let l = lay.lines.get(line)?;
+        let y = self.sig.layout.peek().top(row) - *self.sig.top.peek()
+            + l.top as f64
+            + self.sig.bar.peek().height();
+        Some((
+            crate::row::PAD + x0 as f64,
+            y,
+            (x1 - x0).max(0.0) as f64,
+            l.height as f64,
+        ))
+    }
+
+    fn in_block(&self, row: usize) -> bool {
+        self.sig
+            .blocks
+            .peek()
+            .iter()
+            .any(|b| b.rows().contains(&row))
+    }
+
     /// Where the caret is in the layout: its row, its visual line, its x.
     pub fn caret_at(&self) -> Option<(usize, usize, f32)> {
         let doc = self.st.doc.borrow();
