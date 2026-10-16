@@ -25,6 +25,7 @@
 
 mod callbacks;
 mod ffi;
+mod guard;
 mod host;
 mod runtime;
 mod view;

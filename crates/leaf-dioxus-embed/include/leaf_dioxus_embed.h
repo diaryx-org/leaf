@@ -89,7 +89,39 @@ typedef struct {
     bool has_selection;
     bool can_undo;
     bool can_redo;
+    uint32_t heading;   // 0 in a paragraph
+    bool code_block;
+    bool verse;
+    bool blockquote;
+    int32_t task;       // -1 none, 0 open, 1 done
+    uint32_t marks;     // LEAF_MARK_* bits
+    bool link;
+    int32_t mark_color; // -1 none, else LEAF_COLOR_*
+    bool preserve_breaks;
 } LeafState;
+
+// Inline marks, as LeafState.marks bits.
+enum {
+    LEAF_MARK_STRONG = 1,
+    LEAF_MARK_EMPH = 2,
+    LEAF_MARK_CODE = 4,
+    LEAF_MARK_HIGHLIGHT = 8,
+    LEAF_MARK_SUPERSCRIPT = 16,
+    LEAF_MARK_SUBSCRIPT = 32,
+    LEAF_MARK_UNDERLINE = 64,
+    LEAF_MARK_STRIKE = 128,
+};
+
+// Highlight colours, in menu order.
+enum {
+    LEAF_COLOR_RED = 0,
+    LEAF_COLOR_ORANGE = 1,
+    LEAF_COLOR_YELLOW = 2,
+    LEAF_COLOR_GREEN = 3,
+    LEAF_COLOR_BLUE = 4,
+    LEAF_COLOR_PURPLE = 5,
+    LEAF_COLOR_BROWN = 6,
+};
 
 LeafView *leaf_view_new(void *ns_view, double width, double height, double scale, bool dark,
                         const uint8_t *source, size_t len, uint32_t format, const char *path,
@@ -119,6 +151,11 @@ void leaf_view_set_look(LeafView *view, const char *body, const char *mono, floa
                         float leading, float measure, uint32_t appearance);
 void leaf_view_table(LeafView *view, uint32_t cmd, int32_t arg);
 void leaf_view_action(LeafView *view, uint32_t action);
+char *leaf_view_link_at_caret(LeafView *view);
+char *leaf_view_selected_text(LeafView *view);
+void leaf_view_insert_link(LeafView *view, const char *destination);
+void leaf_view_highlight(LeafView *view, int32_t color); // -1 the plain highlighter
+void leaf_view_set_preserve_breaks(LeafView *view, bool preserve);
 
 #ifdef __cplusplus
 }

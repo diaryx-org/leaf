@@ -81,6 +81,7 @@ pub fn later(f: impl FnOnce() + 'static) {
 pub fn proxy() -> BlitzShellProxy {
     RUNTIME.with(|r| {
         r.get_or_init(|| {
+            crate::guard::install_hook();
             // Blitz's net provider and the editor's timers need a tokio
             // context wherever they are made or polled, which here is
             // anywhere on the main thread: enter it for good.

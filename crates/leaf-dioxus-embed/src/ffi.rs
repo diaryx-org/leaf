@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 
 use dioxus::html::{Code, Key};
-use leaf_core::{Doc, Format, View};
+use leaf_core::{Doc, Format, InlineKind, LineFlow, MarkColor, View};
 use leaf_dioxus::{Look, TableCommand};
 
 use crate::callbacks::Callbacks;
@@ -321,7 +321,47 @@ pub struct LeafState {
     pub has_selection: bool,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// The caret's heading level, 0 in a paragraph.
+    pub heading: u32,
+    pub code_block: bool,
+    pub verse: bool,
+    pub blockquote: bool,
+    /// The caret's task: -1 none, 0 open, 1 done.
+    pub task: i32,
+    /// The inline marks in force, `LEAF_MARK_*` bits.
+    pub marks: u32,
+    /// The caret is in a link (`leaf_view_link_at_caret` names it).
+    pub link: bool,
+    /// The highlight colour at the caret: -1 none, else `LEAF_COLOR_*`.
+    pub mark_color: i32,
+    /// Soft breaks drawn where they were written, rather than reflowed.
+    pub preserve_breaks: bool,
 }
+
+/// `LEAF_MARK_*`, one bit per inline kind.
+fn mark_bit(k: InlineKind) -> u32 {
+    match k {
+        InlineKind::Strong => 1,
+        InlineKind::Emph => 2,
+        InlineKind::Verbatim => 4,
+        InlineKind::Mark => 8,
+        InlineKind::Superscript => 16,
+        InlineKind::Subscript => 32,
+        InlineKind::Insert => 64,
+        InlineKind::Delete => 128,
+    }
+}
+
+/// `LEAF_COLOR_*`, in the order the menus list them.
+const COLORS: [MarkColor; 7] = [
+    MarkColor::Red,
+    MarkColor::Orange,
+    MarkColor::Yellow,
+    MarkColor::Green,
+    MarkColor::Blue,
+    MarkColor::Purple,
+    MarkColor::Brown,
+];
 
 /// # Safety
 /// `h` is null or a live handle; `out` points at a `LeafState`.
@@ -342,10 +382,91 @@ pub unsafe extern "C" fn leaf_view_state(h: *mut LeafView, out: *mut LeafState) 
                     has_selection: d.selection().is_some(),
                     can_undo: d.can_undo(),
                     can_redo: d.can_redo(),
+                    heading: d.current_heading_level().unwrap_or(0),
+                    code_block: d.caret_in_code_block(),
+                    verse: d.caret_in_verse(),
+                    blockquote: d.caret_in_blockquote(),
+                    task: d.task_checked_at_caret().map_or(-1, i32::from),
+                    marks: d.active_inline_marks().iter().map(mark_bit).sum(),
+                    link: d.link_destination_at_caret().is_some(),
+                    mark_color: d
+                        .mark_color_at_caret()
+                        .and_then(|c| COLORS.iter().position(|&k| k == c))
+                        .map_or(-1, |i| i as i32),
+                    preserve_breaks: d.line_flow() == LineFlow::Preserve,
                 }
             })
         })
         .unwrap_or_default();
+}
+
+/// The destination of the link at the caret, or null. Free with
+/// `leaf_string_free`.
+///
+/// # Safety
+/// `h` is null or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_link_at_caret(h: *mut LeafView) -> *mut c_char {
+    unsafe { hosted(h) }
+        .and_then(|v| v.with_editor(|ed| ed.doc().link_destination_at_caret()))
+        .flatten()
+        .and_then(|s| CString::new(s).ok())
+        .map_or(std::ptr::null_mut(), CString::into_raw)
+}
+
+/// Make the selection a link to `destination`, or change the link at the
+/// caret's destination — Format ▸ Link….
+///
+/// # Safety
+/// `h` is null or a live handle; `destination` a C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_insert_link(h: *mut LeafView, destination: *const c_char) {
+    let (Some(v), Some(dest)) = (unsafe { hosted(h) }, unsafe { str_of(destination) }) else {
+        return;
+    };
+    let dest = dest.to_owned();
+    v.with_editor(|ed| {
+        ed.doc().insert_link(&dest);
+        ed.refresh();
+    });
+}
+
+/// Highlight the selection, or recolour the highlight at the caret: a
+/// `LEAF_COLOR_*`, or -1 for the plain highlighter.
+///
+/// # Safety
+/// `h` is null or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_highlight(h: *mut LeafView, color: i32) {
+    let Some(v) = (unsafe { hosted(h) }) else {
+        return;
+    };
+    let color = usize::try_from(color)
+        .ok()
+        .and_then(|i| COLORS.get(i).copied());
+    v.with_editor(|ed| {
+        ed.doc().highlight(color);
+        ed.refresh();
+    });
+}
+
+/// Draw soft breaks where they were written (`true`) or reflow them.
+///
+/// # Safety
+/// `h` is null or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_set_preserve_breaks(h: *mut LeafView, preserve: bool) {
+    let Some(v) = (unsafe { hosted(h) }) else {
+        return;
+    };
+    v.with_editor(|ed| {
+        ed.doc().set_line_flow(if preserve {
+            LineFlow::Preserve
+        } else {
+            LineFlow::Fold
+        });
+        ed.refresh();
+    });
 }
 
 /// Draw with these choices: the body and code faces as CSS family lists, the
@@ -450,4 +571,18 @@ pub unsafe extern "C" fn leaf_view_action(h: *mut LeafView, action: u32) {
 fn edit(ed: &leaf_dioxus::Editor, f: fn(&mut Doc)) {
     f(&mut ed.doc());
     ed.refresh();
+}
+
+/// The selected text, or null with nothing selected. Free with
+/// `leaf_string_free`.
+///
+/// # Safety
+/// `h` is null or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn leaf_view_selected_text(h: *mut LeafView) -> *mut c_char {
+    unsafe { hosted(h) }
+        .and_then(|v| v.with_editor(|ed| ed.doc().selected_text().map(str::to_owned)))
+        .flatten()
+        .and_then(|s| CString::new(s).ok())
+        .map_or(std::ptr::null_mut(), CString::into_raw)
 }

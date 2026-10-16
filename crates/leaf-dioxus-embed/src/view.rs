@@ -32,6 +32,7 @@ use leaf_core::Doc;
 use leaf_dioxus::{Editor, Host, Look, use_editor};
 
 use crate::callbacks::Callbacks;
+use crate::guard::guard;
 use crate::host::SwiftHost;
 use crate::runtime;
 use crate::window::HostedWindow;
@@ -210,9 +211,9 @@ impl Hosted {
     /// can be written and tasks spawned — then let the page catch up.
     pub fn with_editor<R>(&self, f: impl FnOnce(&Editor) -> R) -> Option<R> {
         let ed = self.editor.borrow().clone()?;
-        let r = self.runtime.in_scope(ScopeId::ROOT, || f(&ed));
+        let r = guard(|| self.runtime.in_scope(ScopeId::ROOT, || f(&ed)));
         self.wake();
-        Some(r)
+        r
     }
 
     /// Ask for a poll of the page on the next turn.
@@ -224,7 +225,7 @@ impl Hosted {
 
     pub fn poll(&self) {
         if let Ok(mut v) = self.view.try_borrow_mut() {
-            v.poll();
+            guard(|| v.poll());
         } else {
             self.wake();
         }
@@ -234,7 +235,7 @@ impl Hosted {
     pub fn redraw(&self) -> bool {
         match self.view.try_borrow_mut() {
             Ok(mut v) => {
-                v.redraw();
+                guard(|| v.redraw());
                 true
             }
             Err(_) => false,
@@ -243,7 +244,7 @@ impl Hosted {
 
     pub fn complete_resume(&self) {
         if let Ok(mut v) = self.view.try_borrow_mut() {
-            v.complete_resume();
+            guard(|| v.complete_resume());
         }
     }
 
@@ -251,7 +252,7 @@ impl Hosted {
     /// same ones (its size, the input method, a click's release).
     fn dispatch(&self, event: WindowEvent) {
         if let Ok(mut v) = self.view.try_borrow_mut() {
-            v.handle_winit_event(event.clone());
+            guard(|| v.handle_winit_event(event.clone()));
         }
         self.with_editor(|ed| ed.window_event(&event));
     }
