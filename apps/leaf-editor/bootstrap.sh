@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# First-time setup for the cross-platform editor app (and whenever the Rust *API*
+# First-time setup for the iOS editor app (and whenever the Rust *API*
 # changes):
 #   1. regenerate the committed UniFFI binding under
 #      packages/leaf-swift/uniffi-generated/ (scripts/gen-bindings.sh — after an
@@ -24,9 +24,6 @@ echo "▸ Generating Xcode project…"
 cd "$HERE" && xcodegen generate
 
 echo "✓ Ready."
-echo "  Run on macOS:"
-echo "    xcodebuild -project $HERE/Leaf.xcodeproj -scheme Leaf \\"
-echo "      -destination 'platform=macOS' -derivedDataPath build/DD build"
 echo "  Run in the iOS simulator:"
 echo "    xcodebuild -project $HERE/Leaf.xcodeproj -scheme Leaf \\"
 echo "      -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath build/DD build"

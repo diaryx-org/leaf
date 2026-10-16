@@ -1,5 +1,7 @@
 name: Mac app
-# Ship Leaf, the Mac document app in apps/leaf-editor, as a Developer ID–signed,
+# Ship Leaf, the Mac document app in apps/leaf-mac (a SwiftUI app over the
+# leaf-dioxus editor; its Xcode build compiles crates/leaf-dioxus-embed in
+# release), as a Developer ID–signed,
 # notarised and stapled .dmg attached to the tag's GitHub Release. The work is
 # `cargo xtask package`'s — this workflow only gives it a keychain holding the
 # certificate and an App Store Connect key to notarise with, the same two

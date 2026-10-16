@@ -6,7 +6,8 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # The Mac app runs unsandboxed
 
-**Where.** `apps/leaf-editor/project.yml`, and `ContentView.wire()`.
+**Where.** `apps/leaf-mac/project.yml`, and `EditorModel.pathForNewView`,
+where the editor learns the document's folder.
 
 **What.** Leaf is a document app — `DocumentGroup`, declared document types,
 an icon, a marketing version — and `cargo xtask package` now makes a
@@ -19,8 +20,8 @@ siblings, and a Markdown file's images are its siblings. The two known answers
 are a *related items* declaration (`NSIsRelatedItemType`, which covers a
 sidecar of the same name and not a `media/` folder) and asking for the folder
 once with an `NSOpenPanel` and keeping a security-scoped bookmark — the second
-is what Marked and iA Writer do, and what `documentDirectory` in
-`ContentView.wire()` would then be set from.
+is what Marked and iA Writer do, and what the path the editor resolves
+pictures against would then be set from.
 
 A Developer ID app does not have to be sandboxed; the Mac App Store is where
 it becomes a requirement.

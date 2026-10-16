@@ -6,8 +6,9 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Handoff of an open document between the Mac and iOS apps
 
-**Where.** `apps/leaf-editor/project.yml` (the document types), and the
-scene in `App/LeafApp.swift` that would receive an activity on iOS.
+**Where.** `apps/leaf-mac/project.yml` and `apps/leaf-editor/project.yml`
+(the document types), and the scene in `apps/leaf-editor/App/LeafApp.swift`
+that would receive an activity on iOS.
 
 **What.** Leaf advertises no `NSUserActivity` for the document a window has
 open, so Handoff never offers it on a nearby device. `DocumentGroup` does not

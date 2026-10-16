@@ -3,13 +3,13 @@ options:
   bundleIdPrefix: org.diaryx
   deploymentTarget:
     iOS: "17.0"
-    macOS: "14.0"
   createIntermediateGroups: true
 
-# Leaf, the document app — one cross-platform host for the `LeafUI` editor. The
-# same SwiftUI sources build for macOS (AppKit surface) and iOS (UIKit surface);
-# `LeafUI` already carries both renderers, so `App/` is chrome only: the
-# document classes, the menus, the settings, and the display choices.
+# Leaf for iOS, the document app over the `LeafUI` editor: `App/` is chrome
+# only — the document classes, the menus, the settings, and the display
+# choices. Leaf for the Mac is `apps/leaf-mac`, over the leaf-dioxus editor;
+# the sources here still carry their macOS branches from when this target built
+# for both, compiled out.
 #
 # The editor is consumed as a local Swift package: `LeafUI` (the renderer) →
 # `LeafFFI` (the generated binding, built from source) → the C module in
@@ -30,10 +30,7 @@ packages:
 targets:
   Leaf:
     type: application
-    # A single multiplatform target: Xcode builds it for whichever destination is
-    # selected (My Mac / an iOS simulator / a device). `LeafUI` compiles the
-    # matching AppKit or UIKit surface behind `#if canImport(...)`.
-    supportedDestinations: [macOS, iOS]
+    supportedDestinations: [iOS]
     sources:
       - path: App
         excludes: [Media, Sample.md, Info.plist]
@@ -105,8 +102,6 @@ targets:
         "INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]": YES
         "INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=iphoneos*]": "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         "INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=iphonesimulator*]": "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        # macOS: an ordinary windowed app.
-        "INFOPLIST_KEY_LSApplicationCategoryType[sdk=macosx*]": public.app-category.productivity
         # Language mode 5 — the Swift-6 strict-concurrency checker would reject the
         # FFI handle crossing the main-actor boundary; the model serialises access.
         SWIFT_VERSION: "5.0"
@@ -116,11 +111,8 @@ targets:
         # required, and `cargo xtask swift` builds on a machine without one.
         # `cargo xtask package` turns Developer ID signing back on from the
         # xcodebuild command line, which outranks these.
-        "CODE_SIGNING_ALLOWED[sdk=macosx*]": NO
         "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO
-        "CODE_SIGNING_REQUIRED[sdk=macosx*]": NO
         "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": NO
-        "CODE_SIGN_IDENTITY[sdk=macosx*]": ""
         "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": ""
         # A real iPhone refuses an unsigned binary ("The executable is not
         # codesigned"), and a device build needs a provisioning profile, which
@@ -135,7 +127,6 @@ targets:
         # handed without asking for the folder — see
         # docs/tasks/sandboxed-mac-app.md. Until that is answered it runs
         # unsandboxed. (Signing is `cargo xtask package`'s, on its command line.)
-        "ENABLE_APP_SANDBOX[sdk=macosx*]": NO
         # Force-load the Rust staticlib the pre-build script produces. The path is
         # SDK-conditional (mac vs sim vs device); $(LEAF_STATIC_LIB) picks the match.
         # PROJECT_DIR is apps/leaf-editor → ../.. is the repo root whose `target/`
@@ -143,12 +134,10 @@ targets:
         OTHER_LDFLAGS:
           - "-force_load"
           - "$(LEAF_STATIC_LIB)"
-        "LEAF_STATIC_LIB[sdk=macosx*]": "$(PROJECT_DIR)/../../target/aarch64-apple-darwin/debug/libleaf_ffi.a"
         "LEAF_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/debug/libleaf_ffi.a"
         "LEAF_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios/debug/libleaf_ffi.a"
       configs:
         Release:
-          "LEAF_STATIC_LIB[sdk=macosx*]": "$(PROJECT_DIR)/../../target/aarch64-apple-darwin/release/libleaf_ffi.a"
           "LEAF_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/release/libleaf_ffi.a"
           "LEAF_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios/release/libleaf_ffi.a"
     preBuildScripts:
@@ -168,7 +157,6 @@ targets:
           cd "${PROJECT_DIR}/../.."        # repo root (workspace Cargo.toml)
 
           case "${PLATFORM_NAME}" in
-            macosx)           RUST_TARGET="aarch64-apple-darwin" ;;
             iphonesimulator)  RUST_TARGET="aarch64-apple-ios-sim" ;;
             *)                RUST_TARGET="aarch64-apple-ios" ;;
           esac

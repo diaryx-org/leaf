@@ -60,13 +60,9 @@ private extension Scene {
 }
 
 private extension View {
+    /// What a Mac window needed; the Mac's app is `apps/leaf-mac` now.
     func sized(fileURL: URL?) -> some View {
-        #if os(macOS)
-        frame(minWidth: 480, minHeight: 320)
-            .remembersWindowFrame(for: fileURL)
-        #else
         self
-        #endif
     }
 }
 

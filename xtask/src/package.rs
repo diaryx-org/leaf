@@ -32,7 +32,8 @@ use crate::util::{cmd, require_tool, root, run, stdout};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
-/// The team `DEVELOPMENT_TEAM` in `apps/leaf-editor/project.yml` names.
+/// The team `DEVELOPMENT_TEAM` in `apps/leaf-editor/project.yml` names, which
+/// signs the Mac app too.
 const TEAM: &str = "V4322HH5HU";
 
 #[derive(clap::Args)]
@@ -61,11 +62,11 @@ pub fn run_task(args: Args) -> Result<()> {
     // Always regenerated: the project is git-ignored, and one made before a
     // source file was added builds without it — or, from an older
     // `project.yml`, for the wrong deployment target — and says nothing.
-    let project = crate::swift::project(true)?;
+    let project = crate::swift::project(true, false)?;
     let root = root();
     // Its own derived data: a signed and an unsigned build of the same
     // configuration would otherwise take turns invalidating each other.
-    let derived = root.join("apps/leaf-editor/build/DD-package");
+    let derived = root.join("apps/leaf-mac/build/DD-package");
 
     let mut build = cmd("xcodebuild");
     build

@@ -368,8 +368,8 @@ Pure logic is unit-tested beside it (`cargo test` in each crate);
 `LEAF_TRACE=1` and `LEAF_OUTLINE=1` are the instruments for the rest. A window
 covered by others does not paint — see `occluded` in the trace.
 
-**Still not at parity**, all frontend work: dictation, math and Mermaid drawn as pictures rather than as
-core's monospace fallbacks, video and audio playback, spellcheck and
-autocorrect, Writing Tools and data detectors in the context menu, link
-peeks, block drag, a toolbar, print and PDF,
-accessibility.
+**Still not at parity.** The Mac app is now `apps/leaf-mac`, which hosts this
+editor in a native document app through `crates/leaf-dioxus-embed`; formulas
+and Mermaid diagrams are pictures in the widget (`picture.rs`), and Export as
+PDF and Print are the embedding's (`pdf.rs`). What is still missing against
+the LeafUI Mac app is the task "What the Mac app does not do yet".

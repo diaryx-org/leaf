@@ -17,6 +17,7 @@ post_bump = cargo xtask sync-versions
 extra_version_files = [
   packages/leaf-web/package.json,
   apps/leaf-editor/project.yml,
+  apps/leaf-mac/project.yml,
 ]
 
 # Not on crates.io: leaf is consumed from git, by commit, so a tag is a name
@@ -70,11 +71,12 @@ job
 > > name = Package isolation
 > > run = cargo xtask package-isolation
 > *
-> > # The Dioxus widget and its app, each a workspace of its own (an alpha
-> > # Dioxus; the app's winit is patched, the widget's is not), so nothing above
+> > # The Dioxus widget, its winit app and the Mac app's embedding of it
+> > # (leaf-dioxus-embed), each a workspace of its own (an alpha Dioxus; the
+> > # winit app's winit is patched, the others' are not), so nothing above
 > > # reaches them. The widget is linted without `system-clipboard` too, the
 > > # shape a host with its own clipboard builds. Last because it compiles Blitz
 > > # and wgpu: the slowest job, and the least likely to be the one that fails.
 > > id = dioxus
-> > name = Dioxus widget and app
-> > run = cargo fmt --manifest-path crates/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets --no-default-features -- -D warnings && cargo test --manifest-path crates/leaf-dioxus/Cargo.toml && cargo fmt --manifest-path apps/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path apps/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/leaf-dioxus/Cargo.toml
+> > name = Dioxus widget, app and embedding
+> > run = cargo fmt --manifest-path crates/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets --no-default-features -- -D warnings && cargo test --manifest-path crates/leaf-dioxus/Cargo.toml && cargo fmt --manifest-path apps/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path apps/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/leaf-dioxus/Cargo.toml && cargo fmt --manifest-path crates/leaf-dioxus-embed/Cargo.toml --check && cargo clippy --manifest-path crates/leaf-dioxus-embed/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path crates/leaf-dioxus-embed/Cargo.toml

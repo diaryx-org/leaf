@@ -1,8 +1,9 @@
 //! `cargo xtask sync-versions` — write the workspace version into the files no
 //! manifest parser will ever find, and the CI check that they agree.
 //!
-//! Two such files today: `packages/leaf-web/package.json`, and the Mac app's
-//! `MARKETING_VERSION` in `apps/leaf-editor/project.yml`. `ship` moves every
+//! Three such files today: `packages/leaf-web/package.json`, and the
+//! `MARKETING_VERSION` of the iOS and Mac apps, in `apps/leaf-editor/` and
+//! `apps/leaf-mac/project.yml`. `ship` moves every
 //! Cargo manifest and the lockfile, and knows nothing about an npm
 //! manifest or an Xcode setting — so the package sat at 0.1.2 through three
 //! releases of the crates it wraps. `.config/ship.figl` names this task as the
@@ -20,6 +21,7 @@ const FOLLOWERS: &[(&str, &str)] = &[
         "apps/leaf-editor/project.yml",
         "        MARKETING_VERSION: \"",
     ),
+    ("apps/leaf-mac/project.yml", "        MARKETING_VERSION: \""),
 ];
 
 /// The version `[workspace.package]` states.

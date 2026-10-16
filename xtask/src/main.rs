@@ -39,7 +39,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Task {
-    /// Build and launch the Apple app (apps/leaf-editor) over packages/leaf-swift.
+    /// Build and launch Leaf: on macOS apps/leaf-mac, with --ios apps/leaf-editor.
     Swift(swift::Args),
     /// Build the wasm binding and serve the web demo (apps/leaf-web-demo).
     Web(web::Args),
