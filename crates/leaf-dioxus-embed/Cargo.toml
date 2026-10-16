@@ -71,6 +71,12 @@ raw-window-handle = "0.6"
 debug = "line-tables-only"
 incremental = false
 
+# Everything but this crate optimised, even in a debug build: unoptimised,
+# Stylo, parley and Vello take 11 ms to draw a frame the release build draws
+# in 1.4, and a scroll keeps the main thread too busy to reach 60 fps.
+[profile.dev.package."*"]
+opt-level = 3
+
 [target.'cfg(target_vendor = "apple")'.dependencies]
 # Blitz's wake-ups, run as blocks on the main queue: the host's run loop.
 dispatch2 = "0.3"

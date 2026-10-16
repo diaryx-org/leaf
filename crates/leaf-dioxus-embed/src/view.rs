@@ -13,6 +13,7 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use blitz_dom::DocumentConfig;
 use blitz_shell::{BlitzShellEvent, BlitzShellProvider, View};
@@ -31,7 +32,7 @@ use dioxus_native::winit::window::{Theme, Window, WindowId};
 
 use crate::renderer::Renderer;
 use leaf_core::Doc;
-use leaf_dioxus::{Editor, Host, Look, use_editor};
+use leaf_dioxus::{Editor, Host, Look, trace, use_editor};
 
 use crate::callbacks::{Callbacks, Scroll};
 use crate::guard::guard;
@@ -245,7 +246,9 @@ impl Hosted {
 
     pub fn poll(&self) {
         if let Ok(mut v) = self.view.try_borrow_mut() {
+            let t = Instant::now();
             guard(|| v.poll());
+            trace(|| format!("poll {:.1}ms", t.elapsed().as_secs_f64() * 1e3));
         } else {
             self.wake();
         }
@@ -256,7 +259,9 @@ impl Hosted {
     pub fn redraw(&self) -> bool {
         match self.view.try_borrow_mut() {
             Ok(mut v) => {
+                let t = Instant::now();
                 guard(|| v.redraw());
+                trace(|| format!("redraw {:.1}ms", t.elapsed().as_secs_f64() * 1e3));
                 drop(v);
                 self.report_scroll();
                 true
@@ -267,6 +272,7 @@ impl Hosted {
 
     /// The host scrolled the editor to `top`.
     pub fn set_scroll(&self, top: f64) {
+        trace(|| format!("set scroll {top:.0}"));
         self.scroll.set(Scroll {
             top,
             ..self.scroll.get()
