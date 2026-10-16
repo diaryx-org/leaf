@@ -29,7 +29,7 @@ members = ["crates/*", "apps/leaf-tui", "xtask"]
 # crates/leaf-dioxus, the Dioxus widget, is out for its own reason: it is on
 # dioxus-native's 0.8 alpha, whose winit beta and wgpu tree nothing here should
 # resolve. Its app, apps/leaf-dioxus, is outside the `members` globs already.
-exclude = ["apps/leaf-ios", "apps/leaf", "crates/leaf-gpui", "crates/leaf-dioxus"]
+exclude = ["apps/leaf-ios", "apps/leaf", "crates/leaf-gpui", "crates/leaf-dioxus", "crates/leaf-dioxus-embed"]
 # `cargo run -- file.md` and `cargo build` default to the TUI, so the workspace
 # split doesn't change the everyday UX. xtask is a member so `cargo xtask` shares
 # this lockfile, but never a default member — nobody wants the task runner

@@ -1,0 +1,53 @@
+# leaf-dioxus-embed — the leaf-dioxus editor in a native view its host owns:
+# an NSView a Swift app makes, sized, focused and fed events by AppKit, with
+# Blitz drawing into it through wgpu. No winit event loop runs; the host's run
+# loop is the only one, and Blitz's wake-ups are main-queue blocks. A C ABI
+# (`include/leaf_dioxus_embed.h`) is what the host calls.
+#
+# A workspace of its own, `exclude`d from leaf's root one, for the same reason
+# as `crates/leaf-dioxus`: `dioxus-native` is published only as an alpha, which
+# pins a winit beta and a wgpu tree nothing in the root workspace resolves.
+#
+#     cargo build --manifest-path crates/leaf-dioxus-embed/Cargo.toml
+[workspace]
+
+[package]
+name = "leaf-dioxus-embed"
+version = "0.0.0"
+edition = "2024"
+description = "The leaf-dioxus editor hosted in a native view (NSView) its host owns, through a C ABI, with no winit event loop."
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+leaf-dioxus = { path = "../leaf-dioxus" }
+# `fs` on: the host hands the editor a path for its media and its title, and
+# the default Save writes there when the host asks it to.
+leaf-core = { path = "../leaf-core", default-features = false, features = ["fs", "syntax"] }
+dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+] }
+# The renderer and the document type, with the editor's features (its
+# Cargo.toml says why each): classic `vello`, `system-fonts`, `net`, `svg`.
+dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features = [
+    "net", "svg", "system-fonts", "vello",
+] }
+# What dioxus-native's `launch` assembles, assembled here instead around a
+# window the host owns. The versions dioxus-native 0.8.0-alpha.2 pins.
+dioxus-core = "=0.8.0-alpha.2"
+blitz-shell = { version = "=0.3.0-beta.3", default-features = false }
+blitz-dom = { version = "=0.3.0-beta.3", default-features = false }
+blitz-net = "=0.3.0-beta.3"
+blitz-traits = "=0.3.0-beta.3"
+# Blitz's network provider and the editor's word-count timer run on tokio.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+# Blitz's wake-ups, run as blocks on the main queue: the host's run loop.
+dispatch2 = "0.3"
