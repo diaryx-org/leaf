@@ -5,7 +5,12 @@ use super::*;
 /// [`map_leaf`] on a chosen surface and reveal — the whole of what a math
 /// rendering turns on.
 fn map_math(src: &str, format: Format, surface: &Surface, reveal: Option<Reveal>) -> VisualMap {
-    let mut ed = Editor::new_ext(src.as_bytes(), format, crate::doc::parse_extensions()).unwrap();
+    let mut ed = Editor::new_with_flags(
+        src.as_bytes(),
+        format.twig(),
+        crate::doc::parse_extensions(format),
+    )
+    .unwrap();
     build(&ed.nodes().unwrap(), src, Some(80), false, surface, reveal)
 }
 
@@ -106,10 +111,10 @@ fn an_atom_follows_its_glyph_across_a_wrap() {
     // Fifteen words, then a formula that wraps onto the second row: the
     // mark is drained onto the row the glyph landed on, at its index there.
     let src = format!("{}$x$ end\n", "word ".repeat(15));
-    let mut ed = Editor::new_ext(
+    let mut ed = Editor::new_with_flags(
         src.as_bytes(),
-        Format::Markdown,
-        crate::doc::parse_extensions(),
+        Format::Markdown.twig(),
+        crate::doc::parse_extensions(Format::Markdown),
     )
     .unwrap();
     let m = build(
@@ -315,10 +320,10 @@ fn a_display_block_on_the_reveal_line_is_its_source_lines_in_the_code_style() {
 #[test]
 fn a_block_that_holds_a_formula_says_so_to_the_cache() {
     let src = "plain\n\nwith $x$ in it\n\n$$\ny\n$$\n";
-    let mut ed = Editor::new_ext(
+    let mut ed = Editor::new_with_flags(
         src.as_bytes(),
-        Format::Markdown,
-        crate::doc::parse_extensions(),
+        Format::Markdown.twig(),
+        crate::doc::parse_extensions(Format::Markdown),
     )
     .unwrap();
     let mut cache = BlockCache::default();
@@ -362,10 +367,10 @@ fn incremental_builds_agree_with_the_reference_on_math() {
         "$$\n\\int\n$$\n",
     ] {
         for surface in [Surface::default(), pictures()] {
-            let mut ed = Editor::new_ext(
+            let mut ed = Editor::new_with_flags(
                 src.as_bytes(),
-                Format::Markdown,
-                crate::doc::parse_extensions(),
+                Format::Markdown.twig(),
+                crate::doc::parse_extensions(Format::Markdown),
             )
             .unwrap();
             let all = ed.nodes().unwrap();

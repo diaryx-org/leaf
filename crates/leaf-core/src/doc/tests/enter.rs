@@ -219,8 +219,12 @@ fn enter_and_backspace_anywhere_show_what_they_write_and_undo_in_one_step() {
             // edited map differing from it is a view that changes on the
             // next full rebuild, seconds after the key, with no key.
             let fresh = |source: &str| {
-                let mut ed =
-                    twig::Editor::new_ext(source.as_bytes(), format, parse_extensions()).unwrap();
+                let mut ed = twig::Editor::new_with_flags(
+                    source.as_bytes(),
+                    format.twig(),
+                    parse_extensions(format),
+                )
+                .unwrap();
                 let nodes = ed.nodes().unwrap();
                 crate::wysiwyg::build(
                     &nodes,

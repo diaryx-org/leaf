@@ -95,7 +95,7 @@ fn the_cached_build_does_not_spell_the_document_out_as_blank_rows_after_a_commen
         .collect::<Vec<_>>()
         .join("\n\n");
     let src = format!("intro\n\n<!-- exec -->\n{body}\n");
-    let mut ed = Editor::new_str(&src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(&src, Format::Markdown.twig()).unwrap();
     let mut cache = BlockCache::default();
     let (plain, cached) = render_both(&mut ed, &src, Some(80), &mut cache);
     assert_maps_eq(&plain, &cached, "comment then 200 paragraphs");
@@ -302,7 +302,7 @@ fn the_incremental_walk_labels_boundaries_like_the_full_one() {
     // build, a query match's on the cached one — against a document with one
     // of every boundary in it.
     let src = "one\n\n# Head\n\ntwo\n\n- a\n- b\n\n> q\n\n```\nc\n```\n\npara\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     let mut cache = BlockCache::default();
     let (full, cached) = render_both(&mut ed, src, Some(80), &mut cache);
     assert_maps_eq(&full, &cached, "boundary labelling");

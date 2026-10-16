@@ -9,7 +9,7 @@
 
 use crate::edit::Splice;
 use std::ops::Range;
-use twig::{Editor, Format, MarkdownExtensions};
+use twig::{Editor, Format};
 
 /// A formula's place in a document.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,16 +21,11 @@ pub struct FormulaRef {
     pub display: bool,
 }
 
-/// An editor over `src` with the math extension on.
+/// An editor over `src` with the math extension on, where `format` has one
+/// (Markdown's `math` feature; djot reads formulas without being asked).
 pub fn editor(src: &str, format: Format) -> Result<Editor, twig::Error> {
-    Editor::new_ext(
-        src.as_bytes(),
-        format,
-        MarkdownExtensions {
-            math: true,
-            ..Default::default()
-        },
-    )
+    let flags = format.feature_flags(&["math"]).unwrap_or(0);
+    Editor::new_with_flags(src.as_bytes(), format, flags)
 }
 
 /// Every formula in the document, in source order.
@@ -85,7 +80,7 @@ mod tests {
     #[test]
     fn formulas_are_found_in_markdown_and_djot() {
         let md = "Euler: $e^{i\\pi}+1=0$.\n\n$$\n\\int_0^1 x\\,dx\n$$\n";
-        let mut ed = editor(md, Format::Markdown).unwrap();
+        let mut ed = editor(md, twig_markdown::format()).unwrap();
         let fs = formulas(&mut ed).unwrap();
         assert_eq!(fs.len(), 2);
         assert_eq!(&md[fs[0].tex.clone()], "e^{i\\pi}+1=0");
@@ -94,7 +89,7 @@ mod tests {
         assert_eq!(md[fs[1].tex.clone()].trim(), "\\int_0^1 x\\,dx");
 
         let dj = "Euler: $`e^{i\\pi}`.\n";
-        let mut ed = editor(dj, Format::Djot).unwrap();
+        let mut ed = editor(dj, twig_djot::format()).unwrap();
         let fs = formulas(&mut ed).unwrap();
         assert_eq!(&dj[fs[0].tex.clone()], "e^{i\\pi}");
     }
@@ -102,7 +97,7 @@ mod tests {
     #[test]
     fn keystrokes_edit_the_formula_in_place_and_nothing_else() {
         let md = "# Notes\n\nThe area is $r^2$, roughly.\n\n- item, *kept*  \n";
-        let mut ed = editor(md, Format::Markdown).unwrap();
+        let mut ed = editor(md, twig_markdown::format()).unwrap();
         let f = formulas(&mut ed).unwrap().remove(0);
         let mut tex = f.tex.clone();
         let mut s = Session::new(&md[tex.clone()]).unwrap();

@@ -33,7 +33,7 @@ fn a_cell_wrapped_narrow_never_breaks_inside_a_character() {
     // where a click or Down can reach it and the next Backspace takes the
     // cluster apart from the middle.
     let src = "| A |\n|---|\n| 👨‍👩‍👧👨‍👩‍👧 |\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     let m = build_t(&ed.nodes().unwrap(), src, Some(8));
     let boundaries: Vec<usize> = src
         .grapheme_indices(true)
@@ -55,7 +55,7 @@ fn a_wrapped_cell_keeps_every_line_inside_its_column() {
     // on the border or in the next cell — and it is a promise about cells,
     // which is not what a count of glyphs measures.
     let src = "| A |\n|---|\n| 你好世界漢字 |\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     let m = build_t(&ed.nodes().unwrap(), src, Some(14));
     for r in &m.rows {
         assert_eq!(r.width(), 14, "{:?} is not drawn to the grid", rendered(&m));

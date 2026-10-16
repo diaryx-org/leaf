@@ -1,10 +1,10 @@
 //! Where does leaf's per-keystroke and per-paint time actually go?
 //!
 //! `cargo run --release -p leaf-core --example bench`
-use leaf_core::{Doc, View, source, wysiwyg};
+use leaf_core::{Doc, Format, View, source, wysiwyg};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
-use twig::{Editor, Format};
+use twig::Editor;
 
 fn body(bytes: usize) -> String {
     let mut s = String::new();
@@ -35,7 +35,7 @@ fn main() {
         let src = body(kb * 1024);
         println!("=== {} KB ===", src.len() / 1024);
 
-        let mut ed = Editor::new_str(&src, Format::Markdown).unwrap();
+        let mut ed = Editor::new_str(&src, Format::Markdown.twig()).unwrap();
         let nodes = ed.nodes().unwrap();
         let map = wysiwyg::build(
             &nodes,
@@ -59,7 +59,7 @@ fn main() {
         // cost leaf pays. Skipping it used to end every run in a slice panic
         // (`push_escaped_text`, walking a span past the end of a shorter source)
         // and would otherwise have quietly measured a build over a mismatch.
-        let mut ed = Editor::new_str(&src, Format::Markdown).unwrap();
+        let mut ed = Editor::new_str(&src, Format::Markdown.twig()).unwrap();
         time("twig nodes() FFI marshal", 5, || ed.nodes().unwrap().len());
         time("wysiwyg::build", 5, || {
             wysiwyg::build(

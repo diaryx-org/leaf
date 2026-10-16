@@ -5,7 +5,7 @@ fn unwrapped_mode_emits_one_row_per_paragraph() {
     // A long paragraph that would wrap under a column budget stays a single
     // row when wrap is None (the GUI wraps it at pixel width instead).
     let long = "one two three four five six seven eight nine ten eleven twelve\n";
-    let mut ed = Editor::new_str(long, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(long, Format::Markdown.twig()).unwrap();
     let wrapped = build_t(&ed.nodes().unwrap(), long, Some(12));
     let unwrapped = build_t(&ed.nodes().unwrap(), long, None);
     assert!(wrapped.num_rows() > 1, "narrow column should wrap");
@@ -37,7 +37,7 @@ fn preserve_lays_each_soft_break_on_its_own_row() {
     // A soft break (a bare newline inside a paragraph) folds into a space by
     // default — the whole paragraph is one reflowed row...
     let src = "one two\nthree four\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     let folded = build_t(&ed.nodes().unwrap(), src, None);
     assert_eq!(folded.num_rows(), 1, "fold: one reflowed row");
     assert_eq!(

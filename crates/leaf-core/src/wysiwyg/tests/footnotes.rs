@@ -139,7 +139,7 @@ fn a_footnote_definition_wearing_a_long_label_indents_its_wrapped_body() {
 
 /// [`map`] on a surface that raises a superscript — a pixel frontend's.
 fn map_raised(src: &str, wrap: Option<usize>) -> VisualMap {
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     let surface = Surface {
         raised_superscripts: true,
         ..Default::default()
@@ -185,7 +185,7 @@ fn a_plain_surface_keeps_the_brackets_a_terminal_needs() {
 #[test]
 fn a_surface_that_raises_keeps_dropping_a_verses_number() {
     let src = "{#v20}\n*20* And they did plead[^20a] wept[^20].\n\n[^20a]: note.\n\n[^20]: note.\n";
-    let mut ed = Editor::new_str(src, Format::Djot).unwrap();
+    let mut ed = Editor::new_str(src, Format::Djot.twig()).unwrap();
     let surface = Surface {
         raised_superscripts: true,
         ..Default::default()

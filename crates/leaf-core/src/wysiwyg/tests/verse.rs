@@ -1,8 +1,13 @@
 use super::*;
-use twig::Format;
+use crate::Format;
 
 fn map(src: &str, format: Format, wrap: Option<usize>) -> VisualMap {
-    let mut ed = Editor::new_ext(src.as_bytes(), format, crate::doc::parse_extensions()).unwrap();
+    let mut ed = Editor::new_with_flags(
+        src.as_bytes(),
+        format.twig(),
+        crate::doc::parse_extensions(format),
+    )
+    .unwrap();
     build(
         &ed.nodes().unwrap(),
         src,

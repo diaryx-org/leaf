@@ -124,6 +124,7 @@ field would clash with `Throwable.message`, so in Kotlin alone it is called
 `reason` (`[bindings.kotlin.rename]` in `crates/leaf-ffi/uniffi.toml`):
 `LeafException.Parse.reason` is what Swift calls `LeafError.Parse(message:)`.
 
-twig-sys builds for Android from its Zig source (bionic's thread-locals need
-API 29, which is `minSdk`); twig 3.11.1 is the first release that knows the two
-Android targets.
+twig is pure Rust since 6.0, so the library cross-compiles for both Android
+targets with nothing but cargo-ndk. `minSdk` is 29, the floor bionic's ELF
+thread-locals set for the Zig library twig used to link; nothing needs it now,
+and it stays until a lower floor has been tried on a device.

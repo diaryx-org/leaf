@@ -29,6 +29,7 @@
 
 pub mod counts;
 pub mod doc;
+pub mod format;
 pub mod frame;
 mod html;
 pub mod source;
@@ -64,4 +65,5 @@ pub use wysiwyg::{
 // `Gesture` names one authoring capability for `Doc::supports`, the finer-grained
 // half of `Capabilities` — a frontend wanting a mark leaf's own toolbar doesn't
 // offer asks with one of these.
-pub use twig::{Alignment, BlockContainerKind, BlockKind, Format, Gesture, InlineKind};
+pub use format::Format;
+pub use twig::{Alignment, BlockContainerKind, BlockKind, Gesture, InlineKind};

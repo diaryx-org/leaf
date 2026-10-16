@@ -18,8 +18,10 @@ use std::path::{Path, PathBuf};
 const APPLICATION_ID: &str = "org.diaryx.leaf";
 const ACTIVITY: &str = "org.diaryx.leaf.app.MainActivity";
 
-/// The lowest API the library loads on: bionic has ELF thread-locals from 29,
-/// and the Zig static library inside the .so (twig) uses them.
+/// The lowest API the app is built for: bionic has ELF thread-locals from 29,
+/// which the Zig static library twig used to link into the .so needed. twig is
+/// pure Rust since 6.0; this stays at 29 until a lower floor is tried, and
+/// moves with `minSdk` in `packages/leaf-android/leaf-ffi/build.gradle.kts`.
 const MIN_API: &str = "29";
 
 #[derive(clap::Args)]
@@ -50,7 +52,7 @@ pub struct Args {
 
     /// Extra arguments for the cargo build and the bindgen run, in the
     /// `LEAF_ANDROID_CARGO_ARGS` spelling — a `--config
-    /// 'patch.crates-io.twig-sys.path="…"'` while a dependency's Android
+    /// 'patch.crates-io.twig-doc.path="…"'` while a dependency's Android
     /// support is not yet released, say. Both commands take the same ones, or a
     /// patch the build wrote into the lockfile re-resolves differently for the
     /// host.
@@ -292,8 +294,8 @@ mod tests {
     #[test]
     fn a_patch_argument_splits_as_a_shell_would() {
         assert_eq!(
-            split_args(r#"--config 'patch.crates-io.twig-sys.path="../twig/x"'"#),
-            ["--config", r#"patch.crates-io.twig-sys.path="../twig/x""#]
+            split_args(r#"--config 'patch.crates-io.twig-doc.path="../twig/x"'"#),
+            ["--config", r#"patch.crates-io.twig-doc.path="../twig/x""#]
         );
         assert!(split_args("   ").is_empty());
     }

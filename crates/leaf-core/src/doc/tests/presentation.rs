@@ -774,7 +774,9 @@ fn directives_are_offered_only_where_the_walker_reads_them_back() {
         (Format::Asciidoc, "hello\n"),
     ] {
         // What twig writes for a host's name, read back by the walker.
-        let mut ed = twig::Editor::new_ext(src.as_bytes(), fmt, parse_extensions()).unwrap();
+        let mut ed =
+            twig::Editor::new_with_flags(src.as_bytes(), fmt.twig(), parse_extensions(fmt))
+                .unwrap();
         ed.insert_directive(src.len() - 1, "x-card", None, &[("k", Some("v"))])
             .unwrap_or_else(|e| panic!("{fmt:?}: twig spells it: {e}"));
         let written = String::from_utf8(ed.source().unwrap()).unwrap();

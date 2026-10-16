@@ -40,8 +40,19 @@ repository = "https://github.com/diaryx-org/leaf"
 readme = "README.md"
 
 [workspace.dependencies]
-# The document AST + offset-addressed span-splice editor.
-twig-doc = "4.1.0"
+# The document AST + offset-addressed span-splice editor. twig is pure Rust
+# since 6.0, and its core names no language: each one leaf opens is a crate
+# that registers itself with twig on first use (`twig_markdown::format()`), and
+# leaf's own `leaf_core::Format` is what picks among them. Without twig-doc's
+# default `fig` feature: that is `twig::meta` (frontmatter read and edited
+# through fig, and a document's `twig:` key obeyed), which leaf never asks for,
+# and it would bring fig's YAML, TOML, JSON and figl parsers with it.
+twig-doc = { version = "6", default-features = false }
+twig-markdown = "6"
+twig-djot = "6"
+twig-html = "6"
+twig-asciidoc = "6"
+twig-xml = "6"
 # The CSS inside a `style` attribute: the presentation vocabulary is written
 # there, so another app renders it, and every edit to it keeps the declarations
 # leaf did not write. Shared with thorn, which edits an SVG's `style` the same way.
