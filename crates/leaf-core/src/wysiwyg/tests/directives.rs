@@ -321,14 +321,10 @@ fn a_container_directive_is_still_a_panel_not_a_placeholder() {
 /// Every `container` node in `src`, parsed the way production does (both
 /// extensions on), paired with what [`container_is_directive`] makes of it.
 fn containers(src: &str) -> Vec<(String, bool, Option<DirectiveForm>)> {
-    let mut ed = Editor::new_ext(
+    let mut ed = Editor::new_with_features(
         src.as_bytes(),
-        Format::Markdown,
-        twig::MarkdownExtensions {
-            directives: true,
-            html_elements: true,
-            ..Default::default()
-        },
+        Format::Markdown.twig(),
+        &["directives", "html_elements"],
     )
     .unwrap();
     ed.nodes()

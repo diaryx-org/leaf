@@ -1,6 +1,7 @@
 use super::*;
+use crate::Format;
 use crate::style::{FontFamily, LineSpacing, SizeStep};
-use twig::{Editor, Format, NodeId};
+use twig::{Editor, NodeId};
 
 mod block_boundaries;
 mod code_blocks;
@@ -17,14 +18,14 @@ mod tables;
 mod verse;
 
 fn map(src: &str) -> VisualMap {
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     build_t(&ed.nodes().unwrap(), src, Some(80))
 }
 
 /// [`map`] over a Djot source. Djot is the format that spells superscript
 /// and subscript at all — Markdown has no syntax for either.
 fn map_djot(src: &str) -> VisualMap {
-    let mut ed = Editor::new_str(src, Format::Djot).unwrap();
+    let mut ed = Editor::new_str(src, Format::Djot.twig()).unwrap();
     build_t(&ed.nodes().unwrap(), src, Some(80))
 }
 
@@ -42,7 +43,7 @@ fn baselines_of(m: &VisualMap, ch: char) -> Vec<Baseline> {
 
 /// [`map`] at a chosen wrap width.
 fn map_at(src: &str, wrap: Option<usize>) -> VisualMap {
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     build_t(&ed.nodes().unwrap(), src, wrap)
 }
 
@@ -50,15 +51,9 @@ fn map_at(src: &str, wrap: Option<usize>) -> VisualMap {
 /// default) — the `:::name{.class}` fenced-div containers leaf-core's
 /// `"directive"` wysiwyg arm renders.
 fn map_directives(src: &str) -> VisualMap {
-    let mut ed = Editor::new_ext(
-        src.as_bytes(),
-        Format::Markdown,
-        twig::MarkdownExtensions {
-            directives: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let mut ed =
+        Editor::new_with_features(src.as_bytes(), Format::Markdown.twig(), &["directives"])
+            .unwrap();
     build_t(&ed.nodes().unwrap(), src, Some(80))
 }
 
@@ -67,13 +62,18 @@ fn map_directives(src: &str) -> VisualMap {
 /// pairs a Markdown `<div …>` with its `</div>` into a container and makes
 /// `::page-break` a directive rather than a paragraph of colons.
 fn map_leaf(src: &str, format: Format) -> VisualMap {
-    let mut ed = Editor::new_ext(src.as_bytes(), format, crate::doc::parse_extensions()).unwrap();
+    let mut ed = Editor::new_with_flags(
+        src.as_bytes(),
+        format.twig(),
+        crate::doc::parse_extensions(format),
+    )
+    .unwrap();
     build_t(&ed.nodes().unwrap(), src, Some(80))
 }
 
 /// [`map`] with soft breaks preserved (`LineFlow::Preserve`).
 fn map_preserve(src: &str, wrap: Option<usize>) -> VisualMap {
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     build(
         &ed.nodes().unwrap(),
         src,

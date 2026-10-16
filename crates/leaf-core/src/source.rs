@@ -416,12 +416,13 @@ fn style_of(node: &FlatNode, base: Style) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use twig::{Editor, Format};
+    use crate::Format;
+    use twig::Editor;
 
     /// Build a map the way `Doc` does, and hand back the source alongside it so
     /// assertions can name bytes by the text they cover rather than by offset.
     fn map(src: &str, format: Format) -> SourceMap {
-        let mut ed = Editor::new_str(src, format).unwrap();
+        let mut ed = Editor::new_str(src, format.twig()).unwrap();
         let nodes = ed.nodes().unwrap();
         build(&nodes, src)
     }
@@ -486,10 +487,10 @@ mod tests {
         // Markdown *extension*, and a map built without them would show the
         // literal text this test would then be asserting nothing about.
         let src = "a ==🔴 red== b\n";
-        let mut ed = twig::Editor::new_ext(
+        let mut ed = twig::Editor::new_with_flags(
             src.as_bytes(),
-            Format::Markdown,
-            crate::doc::parse_extensions(),
+            Format::Markdown.twig(),
+            crate::doc::parse_extensions(Format::Markdown),
         )
         .unwrap();
         let m = build(&ed.nodes().unwrap(), src);
@@ -776,7 +777,7 @@ mod tests {
     /// place to find out.
     #[test]
     fn a_span_past_the_end_of_the_source_is_clipped_not_panicked() {
-        let mut ed = Editor::new_str("# H\n", Format::Markdown).unwrap();
+        let mut ed = Editor::new_str("# H\n", Format::Markdown.twig()).unwrap();
         let nodes = ed.nodes().unwrap();
         let m = build(&nodes, "# ");
         for run in m.runs() {

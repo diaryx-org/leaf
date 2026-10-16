@@ -12,8 +12,10 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        // 29 is the floor for ELF thread-locals in bionic; below it the Zig
-        // static library inside libleaf_ffi.so (twig) cannot load.
+        // 29 was the floor for ELF thread-locals in bionic, which the Zig static
+        // library twig used to link into libleaf_ffi.so needed. twig is pure
+        // Rust since 6.0, so nothing forces it any more; it stays until a lower
+        // floor has been tried on a device.
         minSdk = 29
     }
 

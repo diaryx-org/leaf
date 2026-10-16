@@ -460,7 +460,7 @@ impl Builder<'_> {
             // `diaryx_core::visibility`'s hand-rolled publish-time filter and
             // apps/web's directive serializer both write; twig parses each
             // bare word as its own attribute with an empty value, per
-            // `languages/markdown/attributes.zig`). Reading only `.class`
+            // twig-markdown's `attributes.rs`). Reading only `.class`
             // would leave every *existing* diaryx `:::vis{...}` block
             // unlabeled.
             // Only the *container* form is the panel below. A `text` directive

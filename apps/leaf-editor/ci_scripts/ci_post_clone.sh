@@ -16,7 +16,6 @@
 set -euo pipefail
 
 ROOT="${CI_PRIMARY_REPOSITORY_PATH:?ci_post_clone.sh must run under Xcode Cloud}"
-ZIG_VERSION="0.16.0"   # twig's minimum_zig_version
 
 echo "▸ Repository:   $ROOT"
 echo "▸ Platform:     ${CI_PRODUCT_PLATFORM:-unknown}"
@@ -42,30 +41,6 @@ rustc --version
 # one, ios-sim for a Test action.
 echo "▸ Adding Rust targets…"
 rustup target add aarch64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim
-
-# Zig. twig-sys ships a prebuilt library for macOS but not for iOS, and
-# compiles twig's Zig core from source there. Installed under $HOME/.local/bin,
-# which the pre-build phase puts on PATH.
-echo "▸ Installing Zig ${ZIG_VERSION}…"
-ZIG_PREFIX="$HOME/.local/zig-$ZIG_VERSION"
-if [ ! -x "$ZIG_PREFIX/zig" ]; then
-  ZIG_URL="$(curl -fsSL https://ziglang.org/download/index.json | /usr/bin/python3 -c "
-import json, sys
-release = json.load(sys.stdin)['$ZIG_VERSION']
-for key in ('aarch64-macos', 'macos-aarch64'):
-    if key in release:
-        print(release[key]['tarball'])
-        break
-else:
-    sys.exit('no aarch64 macOS tarball for Zig $ZIG_VERSION')
-")"
-  mkdir -p "$ZIG_PREFIX"
-  curl -fsSL "$ZIG_URL" | tar -xJ --strip-components=1 -C "$ZIG_PREFIX"
-fi
-mkdir -p "$HOME/.local/bin"
-ln -sf "$ZIG_PREFIX/zig" "$HOME/.local/bin/zig"
-export PATH="$HOME/.local/bin:$PATH"
-zig version
 
 # CFBundleVersion. project.yml carries 1 for local builds; App Store Connect
 # refuses a second upload under one number, so a cloud build takes Xcode

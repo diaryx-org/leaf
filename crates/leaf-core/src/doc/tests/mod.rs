@@ -181,8 +181,12 @@ fn reference_map_revealing(source: &str, reveal: Option<Reveal>) -> crate::wysiw
     // sides disagree on what the *document* is before the renderer is even
     // reached — a bare `:word` is a text directive to one and prose to the
     // other — and the mismatch reads as a splice bug that isn't one.
-    let mut ed =
-        twig::Editor::new_ext(source.as_bytes(), Format::Markdown, parse_extensions()).unwrap();
+    let mut ed = twig::Editor::new_with_flags(
+        source.as_bytes(),
+        Format::Markdown.twig(),
+        parse_extensions(Format::Markdown),
+    )
+    .unwrap();
     let nodes = ed.nodes().unwrap();
     crate::wysiwyg::build(
         &nodes,

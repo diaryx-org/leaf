@@ -1671,14 +1671,15 @@ struct Inner {
     frame: u32,
 }
 
-// SAFETY: `Doc` embeds a `twig::Editor`, which holds a `NonNull<TwigEditor>` and
-// is therefore `!Send`. UniFFI hands `LeafDoc` to Swift as a reference-counted
+// SAFETY: `Doc` embeds a `twig::Editor`, which holds its reparse as a boxed
+// `dyn Fn` with no `Send` bound and is therefore `!Send`. UniFFI hands `LeafDoc` to Swift as a reference-counted
 // handle that must be `Send + Sync`, so `Inner` must be `Send`. This is sound
 // because:
 //   1. Every access goes through `LeafDoc::lock()` — the `Mutex` serializes all
 //      reads and mutations, so there is never concurrent access to the handle.
-//   2. twig's editor handle owns a plain heap allocation with no thread-affinity
-//      (no thread-locals, no per-thread state) — moving the pointer between
+//   2. twig's editor owns plain heap allocations with no thread-affinity: the
+//      closure captures only the format and its parse config, and the language
+//      registry it reads is process-wide, not thread-local — moving it between
 //      threads is fine as long as use is serialized, which (1) guarantees.
 // The intended usage is still main-thread-driven; this impl only permits the
 // handle to cross threads safely, it does not invite concurrent use.

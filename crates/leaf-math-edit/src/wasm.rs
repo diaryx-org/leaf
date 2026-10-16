@@ -4,7 +4,6 @@
 use crate::doc;
 use crate::edit::{Key, Session};
 use std::ops::Range;
-use twig::Format;
 use wasm_bindgen::prelude::*;
 
 /// Pixels per em the demo draws at.
@@ -27,8 +26,8 @@ impl Demo {
     #[wasm_bindgen(constructor)]
     pub fn new(markdown: &str, index: usize) -> Result<Demo, JsError> {
         console_error_panic_hook::set_once();
-        let mut ed =
-            doc::editor(markdown, Format::Markdown).map_err(|e| JsError::new(&e.to_string()))?;
+        let mut ed = doc::editor(markdown, twig_markdown::format())
+            .map_err(|e| JsError::new(&e.to_string()))?;
         let f = doc::formulas(&mut ed)
             .map_err(|e| JsError::new(&e.to_string()))?
             .into_iter()
@@ -46,7 +45,7 @@ impl Demo {
 
     /// How many formulas `markdown` holds.
     pub fn count(markdown: &str) -> usize {
-        doc::editor(markdown, Format::Markdown)
+        doc::editor(markdown, twig_markdown::format())
             .ok()
             .and_then(|mut ed| doc::formulas(&mut ed).ok())
             .map_or(0, |f| f.len())

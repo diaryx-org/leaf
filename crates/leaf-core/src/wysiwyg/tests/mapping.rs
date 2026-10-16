@@ -18,7 +18,7 @@ fn a_source_shorter_than_the_arena_built_over_it_renders_rather_than_panicking()
     // An escape puts the run on `push_escaped_text`'s slow path — the fast
     // path is a length comparison that a truncated source fails anyway.
     let src = "alpha \\*beta\\* gamma delta epsilon\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     let nodes = ed.nodes().unwrap();
 
     // Every truncation of it, so the cut lands before, inside and after the
@@ -150,7 +150,7 @@ fn build_cached_matches_build() {
     for wrap in [None, Some(80usize), Some(20)] {
         for src in docs {
             let ctx = format!("wrap={wrap:?} src={src:?}");
-            let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+            let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
             let mut cache = BlockCache::default();
 
             // 1) Fresh cache equals the cache-free build.
@@ -195,7 +195,7 @@ fn a_block_running_past_the_last_byte_still_keys_the_cache_by_its_own_bytes() {
     // served the first's rows, and the definition rendered as a copy of the
     // heading.
     let src = "A claim[^1] worth checking.\n\n# A heading with a reference[^1] in it\n\n[^1]: The first note.\n[^note]: A note with a word for a label.";
-    let mut ed = Editor::new_str(src, Format::Djot).unwrap();
+    let mut ed = Editor::new_str(src, Format::Djot.twig()).unwrap();
     let (plain, cached) = render_both(&mut ed, src, Some(80), &mut BlockCache::default());
     assert_maps_eq(&plain, &cached, "a definition ending the file");
     let text = rendered(&cached);
@@ -215,12 +215,12 @@ fn a_block_running_past_the_last_byte_still_keys_the_cache_by_its_own_bytes() {
     // types in it.
     let mut cache = BlockCache::default();
     let first = "first para\n\n# A heading\n\nlast para with no newline";
-    let mut ed = Editor::new_str(first, Format::Djot).unwrap();
+    let mut ed = Editor::new_str(first, Format::Djot.twig()).unwrap();
     let (_, warm) = render_both(&mut ed, first, Some(80), &mut cache);
     assert!(rendered(&warm).ends_with("last para with no newline"));
 
     let second = "first para\n\n# A heading\n\nDIFFERENT text without a newline";
-    let mut ed = Editor::new_str(second, Format::Djot).unwrap();
+    let mut ed = Editor::new_str(second, Format::Djot.twig()).unwrap();
     let (plain, cached) = render_both(&mut ed, second, Some(80), &mut cache);
     assert_maps_eq(&plain, &cached, "edited last block, warm cache");
     let text = rendered(&cached);

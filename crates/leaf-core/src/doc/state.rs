@@ -685,9 +685,9 @@ impl Doc {
     }
 
     pub fn format_name(&self) -> &'static str {
-        // `Format` is `#[non_exhaustive]` as of twig 3.0, so the wildcard is
-        // required. It also covers `Asciidoc`, which twig parses but cannot
-        // serialize — leaf never opens a document in it (see `Doc::open`).
+        // The wildcard is `Asciidoc`, which twig parses but leaf never opens a
+        // document in (see `Doc::open`) — and any language `Format` learns
+        // later, before this learns its name.
         match self.format {
             Format::Djot => "djot",
             Format::Markdown => "markdown",
@@ -723,7 +723,8 @@ impl Doc {
     /// `UnsupportedFormat`. Gray out on `false`; don't read `true` as "this
     /// will work here".
     pub fn supports(&self, gesture: Gesture) -> bool {
-        self.format.supports_with(parse_extensions(), gesture)
+        self.format
+            .supports_with(parse_extensions(self.format), gesture)
     }
 
     /// Every control's enabled state in one read — what a toolbar builds itself

@@ -569,7 +569,7 @@ is the reference event-loop for a proportional renderer — the same wiring in J
 `DocView` is a rich nested value returned from every call; UniFFI maps
 records/enums/`Vec`/`Option` to native Swift structs, so there's no JSON round
 trip. Because a UniFFI object is a thread-safe `Arc`, the `Doc` lives behind a
-`Mutex`, and `Inner` carries one `unsafe impl Send` — twig's editor handle is a
-`NonNull` (hence `!Send`), but every access is serialized through that mutex and
-the handle has no thread-affinity. Drive it from the main thread. See the safety
+`Mutex`, and `Inner` carries one `unsafe impl Send` — twig's editor holds its
+reparse as a boxed closure with no `Send` bound (hence `!Send`), but every access
+is serialized through that mutex and the editor has no thread-affinity. Drive it from the main thread. See the safety
 comment in `src/lib.rs`.

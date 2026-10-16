@@ -33,11 +33,12 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::{Result, anyhow};
 use twig::{
-    Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, Gesture,
-    InlineKind, Kind, MarkdownExtensions, NodeId, QueryMatch,
+    Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Gesture, InlineKind, Kind,
+    NodeId, QueryMatch,
 };
 use unicode_segmentation::GraphemeCursor;
 
+use crate::Format;
 use crate::counts::{self, TextCounts};
 use crate::html;
 use crate::source::{self, SourceMap};
@@ -822,24 +823,29 @@ pub struct Doc {
 /// twig's own rule that a dollar followed by whitespace never opens math, so
 /// `$5 and $6` stays prose.
 ///
-/// Every flag is inert for non-Markdown formats, so it's safe to pass them
-/// unconditionally. Threading this through every constructor (not just `open`)
-/// keeps `from_source`, `blank`, and `reload` parsing the same document the same
-/// way — twig reparses with these same flags after each edit.
-pub(crate) fn parse_extensions() -> MarkdownExtensions {
-    MarkdownExtensions {
-        html_elements: true,
-        directives: true,
-        highlight: true,
-        highlight_colors: true,
-        math: true,
-    }
+/// They are Markdown's features; no other language leaf opens declares any, so
+/// every other format's mask is empty. Threading this through every
+/// constructor (not just `open`) keeps `from_source`, `blank`, and `reload`
+/// parsing the same document the same way — twig reparses with these same
+/// flags after each edit.
+pub(crate) fn parse_extensions(format: Format) -> u32 {
+    const FEATURES: &[&str] = &[
+        "html_elements",
+        "directives",
+        "highlight",
+        "highlight_colors",
+        "math",
+    ];
+    // `UnsupportedFormat` is a language with no features at all — the empty
+    // mask is exactly what it parses with.
+    format.twig().feature_flags(FEATURES).unwrap_or(0)
 }
 
 /// Build an editor over `bytes` in `format` with leaf's [`parse_extensions`],
 /// mapping twig's error into the `anyhow` context every constructor shares.
 fn new_editor(bytes: &[u8], format: Format) -> Result<Editor> {
-    Editor::new_ext(bytes, format, parse_extensions()).map_err(|e| anyhow!("twig parse: {e}"))
+    Editor::new_with_flags(bytes, format.twig(), parse_extensions(format))
+        .map_err(|e| anyhow!("twig parse: {e}"))
 }
 
 /// Does `format` spell a table as a **pipe table** — the one grid twig's table
@@ -1018,8 +1024,8 @@ impl Capabilities {
     /// caller makes: every leaf document is parsed with [`parse_extensions`],
     /// so the format is the whole of what varies.
     pub fn of(format: Format) -> Self {
-        let exts = parse_extensions();
-        let supports = |g| format.supports_with(exts, g);
+        let flags = parse_extensions(format);
+        let supports = |g| format.supports_with(flags, g);
         let inline = |k| supports(Gesture::ToggleInline(k));
         let container = |k| supports(Gesture::ToggleBlockContainer(k));
         Self {

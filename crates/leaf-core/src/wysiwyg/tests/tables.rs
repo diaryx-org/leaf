@@ -93,7 +93,7 @@ fn a_wide_table_is_cut_to_fit_and_its_cells_wrap() {
     // an alignment holds on every line of a wrapped cell, not just the first.
     let src = "| Ingredient | Notes |\n|---|---:|\n\
                    | flour milled coarse | sift it twice |\n| salt | a pinch |\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     let m = build_t(&ed.nodes().unwrap(), src, Some(30));
     let text = rendered(&m);
     assert_eq!(
@@ -121,7 +121,7 @@ fn a_column_too_narrow_for_a_word_breaks_it_rather_than_spilling() {
     // A paragraph lets an overlong word trail off the end of the line; a
     // table column can't — a glyph past the border lands on the border.
     let src = "| A | B |\n|---|---|\n| antidisestablishmentarianism | x |\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     let m = build_t(&ed.nodes().unwrap(), src, Some(20));
     for (r, row) in m.rows.iter().enumerate() {
         assert!(
@@ -255,7 +255,7 @@ fn every_hidden_inline_mark_gives_its_content_end_a_home() {
     assert!(m.stops.contains(&6));
     // Revealed, the delimiter is glyphs of its own and the end is an
     // ordinary glyph stop: nothing to add.
-    let mut ed = Editor::new_str("a **bold** b\n", Format::Markdown).unwrap();
+    let mut ed = Editor::new_str("a **bold** b\n", Format::Markdown.twig()).unwrap();
     let src = "a **bold** b\n";
     let revealed = build(
         &ed.nodes().unwrap(),
@@ -580,7 +580,7 @@ fn structural_cells_are_unwrapped_even_when_the_picture_wraps_them() {
     // in pixels needs the text as the document spells it, before that
     // decision. Narrow enough that the drawn cell must break.
     let src = "| Name |\n|------|\n| alpha beta gamma |\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
     let m = build_t(&ed.nodes().unwrap(), src, Some(12));
     let drawn = rendered(&m);
     let cell: String = m.tables[0].grid[1].cells[0]

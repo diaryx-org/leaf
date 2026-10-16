@@ -34,7 +34,8 @@
 //! over the input nodes and the output text. twig 3.0 exposes the library's own
 //! measured answer, so all three are gone; see [`parse_fragment`].
 
-use twig::{Document, Fidelity, Format, Kind, Target, Warning};
+use crate::Format;
+use twig::{Document, Fidelity, Kind, Target, Warning};
 
 /// Render a `format` source fragment to HTML, for the clipboard's `text/html`.
 ///
@@ -42,7 +43,7 @@ use twig::{Document, Fidelity, Format, Kind, Target, Warning};
 /// document is a real possibility and not an error worth reporting: the caller
 /// still has the plain flavor, which is what the user copied.
 pub(crate) fn render_fragment(source: &str, format: Format) -> Option<String> {
-    let mut doc = Document::parse_str(source, format).ok()?;
+    let mut doc = Document::parse_str(source, format.twig()).ok()?;
     let html = String::from_utf8(doc.render_html().ok()?).ok()?;
     let html = html.trim();
     (!html.is_empty()).then(|| html.to_string())
@@ -52,7 +53,7 @@ pub(crate) fn render_fragment(source: &str, format: Format) -> Option<String> {
 /// not survive the trip well enough to paste — see the diagnostics gate below.
 pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
     let cleaned = sanitize(html);
-    let mut doc = Document::parse_str(&cleaned, Format::Html).ok()?;
+    let mut doc = Document::parse_str(&cleaned, Format::Html.twig()).ok()?;
 
     // Would this conversion lose anything? twig 3.0 answers that directly, and
     // it is the whole of the faithfulness test: a paste that degrades is worse
@@ -85,12 +86,12 @@ pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
     // plain flavor's cue. Note that arboard wraps leaf's *own* copy in
     // `<html><head>…</head><body>`, so a leaf→leaf paste is a section every
     // time.
-    let warnings = doc.diagnostics(Target::from(format)).ok()?;
+    let warnings = doc.diagnostics(Target::from(format.twig())).ok()?;
     if warnings.iter().any(would_leak) {
         return None;
     }
 
-    let source = String::from_utf8(doc.serialize(format).ok()?).ok()?;
+    let source = String::from_utf8(doc.serialize(format.twig()).ok()?).ok()?;
 
     // twig's serializers terminate a block with a newline, because a document
     // ends in one. A paste is not a document — it lands at a caret, usually

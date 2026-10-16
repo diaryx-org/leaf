@@ -88,7 +88,7 @@ fn the_lines_above_the_first_block_draw_as_the_lines_under_the_last_do() {
 
     // Preserve flow draws every line, but the frontmatter's.
     let preserve = |src: &str| {
-        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        let mut ed = Editor::new_str(src, Format::Markdown.twig()).unwrap();
         build(
             &ed.nodes().unwrap(),
             src,
