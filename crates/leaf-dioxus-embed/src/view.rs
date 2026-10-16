@@ -264,7 +264,26 @@ impl Hosted {
     /// same ones (its size, the input method, a click's release).
     fn dispatch(&self, event: WindowEvent) {
         if let Ok(mut v) = self.view.try_borrow_mut() {
-            guard(|| v.handle_winit_event(event.clone()));
+            guard(|| {
+                // A change a poll made to the page is laid out at the next
+                // redraw, and a pointer event the host sends before it would
+                // hit-test the tree as it was, through nodes the change
+                // removed — a panic in Blitz's `hit_inner`. blitz-shell's
+                // loop rarely lets one in between; AppKit's main queue does.
+                // So the page is brought up to date first: a no-op when
+                // nothing changed. (`has_changes` would say, but it answers
+                // the opposite of its name in this Blitz.)
+                if matches!(
+                    event,
+                    WindowEvent::PointerMoved { .. }
+                        | WindowEvent::PointerButton { .. }
+                        | WindowEvent::MouseWheel { .. }
+                ) {
+                    let time = v.current_animation_time();
+                    v.doc.inner_mut().resolve(time);
+                }
+                v.handle_winit_event(event.clone())
+            });
         }
         self.with_editor(|ed| ed.window_event(&event));
     }
