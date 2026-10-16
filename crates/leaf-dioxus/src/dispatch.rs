@@ -144,6 +144,8 @@ impl Editor {
             // the window would wait for the next event to show it.
             WindowEvent::ThemeChanged(theme) => {
                 trace(|| format!("theme {theme:?}"));
+                // Formulas and diagrams are inked for the appearance.
+                self.repaint();
                 self.st.window.request_redraw();
             }
             _ => {}

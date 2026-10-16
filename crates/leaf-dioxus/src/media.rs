@@ -419,8 +419,8 @@ pub fn MediaBlock(block: Block) -> Element {
             span { style: "flex: none; width: {block.indent}px; white-space: pre;",
                 for seg in prefix {
                     match seg {
-                        Seg::Text(class, text) => rsx! { span { class, "{text}" } },
                         Seg::Caret => rsx! {},
+                        seg => seg.render(),
                     }
                 }
             }

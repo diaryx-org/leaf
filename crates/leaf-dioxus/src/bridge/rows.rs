@@ -135,7 +135,10 @@ pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
     for g in &vrow.glyphs {
         let selected = within(g, marks.selection);
         let composing = within(g, marks.composing);
-        let extends = open == Some((g.style, selected, composing));
+        // An inline formula's atom is a run of its own, with its offset,
+        // which is how its picture is found (`picture.rs`).
+        let math = g.style.role == leaf_core::Role::Math;
+        let extends = !math && open == Some((g.style, selected, composing));
         if !extends {
             class.clear();
             class_of(&g.style, &mut class);
@@ -148,9 +151,9 @@ pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
             runs.push(Run {
                 text: String::new(),
                 class: class.clone(),
-                src: opts.offsets.then_some(g.src),
+                src: (opts.offsets || math).then_some(g.src),
             });
-            open = Some((g.style, selected, composing));
+            open = (!math).then_some((g.style, selected, composing));
         }
         // `drawn()` rather than `ch`: a list item's indent on a continuation
         // row is spelled with the marker's characters for its width and drawn

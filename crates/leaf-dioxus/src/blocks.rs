@@ -22,6 +22,7 @@ use leaf_core::{Doc, View};
 
 use crate::host::Host;
 use crate::media::{self, MediaBlock};
+use crate::picture::{self, PictureBlock};
 use crate::row::{Pointer, TableBlock};
 use crate::table;
 use crate::text::{Fonts, byte_of_col};
@@ -31,6 +32,7 @@ use crate::text::{Fonts, byte_of_col};
 pub enum Block {
     Table(table::Block),
     Media(media::Block),
+    Picture(picture::Block),
 }
 
 impl Block {
@@ -39,6 +41,7 @@ impl Block {
         match self {
             Block::Table(t) => t.rows.clone(),
             Block::Media(m) => m.rows.clone(),
+            Block::Picture(p) => p.rows.clone(),
         }
     }
 
@@ -47,6 +50,7 @@ impl Block {
         match self {
             Block::Table(t) => t.first,
             Block::Media(m) => m.first,
+            Block::Picture(p) => p.first,
         }
     }
 
@@ -55,6 +59,7 @@ impl Block {
         match self {
             Block::Table(t) => t.layout.height as f64,
             Block::Media(m) => m.height() as f64,
+            Block::Picture(p) => p.height() as f64,
         }
     }
 
@@ -72,6 +77,7 @@ impl Block {
                 Some(cell.offset(byte_of_col(&text, cl.col_at(line, x))))
             }
             (Block::Media(m), crate::row::Target::Block { .. }) => Some(m.hit(x)),
+            (Block::Picture(b), crate::row::Target::Block { .. }) => Some(b.hit(x)),
             _ => None,
         }
     }
@@ -86,6 +92,7 @@ pub fn locate(host: &dyn Host, doc: &Doc, dest: &str) -> Option<PathBuf> {
 
 /// Every block in the document as it stands, reusing last frame's where
 /// nothing about one has changed.
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     doc: &Doc,
     host: &dyn Host,
@@ -93,6 +100,7 @@ pub fn build(
     composing: Option<(usize, usize)>,
     fonts: &mut Fonts,
     width: f32,
+    dark: bool,
     cache: &RefCell<Vec<Block>>,
 ) -> Vec<Block> {
     if doc.view == View::Source {
@@ -148,6 +156,21 @@ pub fn build(
         }
     }
 
+    // Display formulas and Mermaid diagrams, as their pictures.
+    let size = fonts.ty().size;
+    for m in &doc.vmap.math {
+        if let Some(b) = picture::math_block(m, &doc.vmap.rows, caret, sel, size, dark, width) {
+            out.push(Block::Picture(b));
+        }
+    }
+    for c in &doc.vmap.code_blocks {
+        if let Some(b) =
+            picture::diagram_block(c, &doc.vmap.rows, &doc.source, caret, sel, dark, width)
+        {
+            out.push(Block::Picture(b));
+        }
+    }
+
     *cache.borrow_mut() = out.clone();
     out
 }
@@ -157,5 +180,6 @@ pub fn render(i: usize, block: &Block) -> Element {
     match block {
         Block::Table(b) => rsx! { TableBlock { key: "{i}", block: b.clone() } },
         Block::Media(b) => rsx! { MediaBlock { key: "{i}", block: b.clone() } },
+        Block::Picture(b) => rsx! { PictureBlock { key: "{i}", block: b.clone() } },
     }
 }

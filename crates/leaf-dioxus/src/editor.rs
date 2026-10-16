@@ -314,6 +314,9 @@ impl Editor {
                 (h, kinds, Some(row), srows.rebuilt)
             }
             View::Wysiwyg => {
+                // Inline formulas as atoms this editor draws as pictures;
+                // a no-op once set.
+                doc.set_inline_pictures(true);
                 doc.build_visual_unwrapped();
                 let marks = Marks::of(&doc.vmap, caret, doc.anchor).composing(composer.marked());
                 let h = frame.update(&doc.vmap, &marks).to_vec();
@@ -352,6 +355,8 @@ impl Editor {
         };
         let t1 = Instant::now();
 
+        // Inline formulas are boxes in the rows' layout; say which first.
+        crate::picture::set_inline(&doc, self.dark());
         let mut fonts = st.fonts.borrow_mut();
         let w = column_width(
             *self.sig.win_w.peek(),
@@ -397,6 +402,7 @@ impl Editor {
             composer.marked(),
             &mut fonts,
             w,
+            self.dark(),
             &st.block_cache,
         );
         let t2 = Instant::now();
@@ -449,6 +455,17 @@ impl Editor {
         trace(|| format!("follow caret row {r} -> {to:?}"));
         if let Some(y) = to {
             set(self.sig.top, y);
+        }
+    }
+
+    /// Whether the editor draws dark: the look's appearance, or the
+    /// window's when it follows the system.
+    pub fn dark(&self) -> bool {
+        use dioxus_native::winit::window::Theme;
+        match self.sig.look.peek().appearance {
+            Appearance::Dark => true,
+            Appearance::Light => false,
+            Appearance::System => self.st.window.theme() == Some(Theme::Dark),
         }
     }
 

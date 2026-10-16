@@ -161,10 +161,7 @@ pub fn Line(
                 }
             },
             for seg in segs {
-                match seg {
-                    Seg::Text(class, text) => rsx! { span { class, "{text}" } },
-                    Seg::Caret => rsx! { span { class: "caret-in" } },
-                }
+                {seg.render()}
             }
         }
     }
@@ -174,12 +171,35 @@ pub fn Line(
 #[derive(Clone, PartialEq, Debug)]
 pub enum Seg {
     Text(String, String),
+    /// An inline formula's atom: drawn as its picture, at the source offset
+    /// `picture.rs` keeps it under.
+    Math(String, usize, String),
     Caret,
 }
 
 impl Seg {
     fn text(r: &Run, s: &str) -> Self {
-        Seg::Text(r.class.clone(), s.to_owned())
+        match r.src {
+            Some(src) if r.class.split(' ').any(|c| c == "math") => {
+                Seg::Math(r.class.clone(), src, s.to_owned())
+            }
+            _ => Seg::Text(r.class.clone(), s.to_owned()),
+        }
+    }
+
+    /// The segment as markup.
+    pub fn render(self) -> Element {
+        match self {
+            Seg::Text(class, text) => rsx! { span { class, "{text}" } },
+            Seg::Math(class, src, text) => match crate::picture::inline_at(src) {
+                Some(p) => rsx! {
+                    img { class, src: "{p.url}",
+                          style: "width: {p.size.0}px; height: {p.size.1}px; vertical-align: -{p.depth}px;" }
+                },
+                None => rsx! { span { class, "{text}" } },
+            },
+            Seg::Caret => rsx! { span { class: "caret-in" } },
+        }
     }
 }
 
@@ -277,7 +297,7 @@ mod tests {
     fn texts(segs: &[Seg]) -> String {
         segs.iter()
             .map(|s| match s {
-                Seg::Text(_, t) => t.as_str(),
+                Seg::Text(_, t) | Seg::Math(_, _, t) => t.as_str(),
                 Seg::Caret => "|",
             })
             .collect()
@@ -332,10 +352,7 @@ pub fn TableBlock(block: Block) -> Element {
                     style: "height: {heights[r]}px",
                     span { class: "tprefix", style: "width: {l.indent}px",
                         for seg in prefix.clone() {
-                            match seg {
-                                Seg::Text(class, text) => rsx! { span { class, "{text}" } },
-                                Seg::Caret => rsx! { span { class: "caret-in" } },
-                            }
+                            {seg.render()}
                         }
                     }
                     for c in 0..l.cols.len() {

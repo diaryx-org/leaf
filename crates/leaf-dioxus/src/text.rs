@@ -25,8 +25,8 @@ use std::ops::Range;
 use crate::bridge::rows::{RowView, Run};
 pub use parley::Alignment;
 use parley::{
-    Affinity, AlignmentOptions, Cursor, FontContext, FontFamily, FontStyle, FontWeight, Layout,
-    LayoutContext, LineHeight, StyleProperty,
+    Affinity, AlignmentOptions, Cursor, FontContext, FontFamily, FontStyle, FontWeight, InlineBox,
+    InlineBoxKind, Layout, LayoutContext, LineHeight, StyleProperty, VerticalAlign,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -238,6 +238,22 @@ impl Fonts {
             for property in style_of(&r.class, kind == Kind::Source, ty) {
                 b.push(property, range.clone());
             }
+            // An inline formula: its atom glyph takes no room, and its
+            // picture is a box after it, on the text's baseline.
+            if let Some(src) = r.src.filter(|_| has_class(r, "math"))
+                && let Some(p) = crate::picture::lay_inline(src, run_size(&r.class, ty))
+            {
+                b.push(StyleProperty::FontSize(0.01), range.clone());
+                b.push_inline_box(InlineBox {
+                    id: src as u64,
+                    kind: InlineBoxKind::InFlow,
+                    index: range.end,
+                    width: p.size.0,
+                    height: p.size.1,
+                    baseline: Some(p.size.1 - p.depth),
+                    vertical_align: VerticalAlign::BASELINE,
+                });
+            }
         }
         let mut layout = b.build(&text);
         layout.break_all_lines(max);
@@ -283,6 +299,21 @@ fn style_of(class: &str, uniform: bool, ty: &Type) -> Vec<StyleProperty<'static,
         }
     }
     out
+}
+
+/// The font size a run is set at, for a formula set inline in it.
+fn run_size(class: &str, ty: &Type) -> f32 {
+    let mut size = ty.size;
+    for c in class.split(' ') {
+        size = match c {
+            "h1" => ty.size * 2.0,
+            "h2" => ty.size * 1.6,
+            "h3" => ty.size * 1.3,
+            "sup" | "sub" => ty.size * 0.8,
+            _ => size,
+        };
+    }
+    size
 }
 
 /// A run of body text with no style of its own.

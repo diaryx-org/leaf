@@ -64,6 +64,10 @@ leaf-core = { path = "../leaf-core", default-features = false, features = [
 # The system clipboard, for the default `Host`. Already in the tree through
 # Blitz's own `clipboard` feature when a host has that on.
 arboard = { version = "3.7", optional = true }
+# Display formulas and Mermaid diagrams as pictures (`picture.rs`): leaf's
+# own typesetters, each a TeX or Mermaid source to a self-contained SVG.
+leaf-math = { path = "../leaf-math" }
+leaf-mermaid = { path = "../leaf-mermaid" }
 # A timer for work that should wait for the typing to stop (the word count).
 # Already in the tree: dioxus-native builds and enters a tokio runtime with
 # timers enabled, which is what makes `tokio::time::sleep` work in a task.

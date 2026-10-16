@@ -23,8 +23,8 @@
 //! - [`motion`]: caret geometry, visual-line motion, the pointer.
 //! - [`text`]: proportional rows, wrapped and hit-tested by parley; [`row`]
 //!   draws them; [`source`] builds the source view's.
-//! - [`blocks`]: what is drawn in place of rows — tables ([`table`]) now,
-//!   and media ([`media`]). **Adding a kind of block is that file.**
+//! - [`blocks`]: what is drawn in place of rows — tables ([`table`]),
+//!   media ([`media`]), and formulas and diagrams ([`picture`]). **Adding a kind of block is that file.**
 //! - [`link`]: ⌘-click on a link or footnote, and what a context menu offers.
 //! - [`find`] / [`findbar`], [`host`], [`ime`], [`status`].
 //! - [`view`]: the stylesheet — light and dark — and the page.
@@ -61,6 +61,7 @@ mod keys;
 mod link;
 mod media;
 mod motion;
+mod picture;
 mod row;
 mod source;
 mod status;
