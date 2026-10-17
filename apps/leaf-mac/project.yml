@@ -17,10 +17,20 @@ options:
 # target: each links a Rust staticlib, and two in one binary carry two copies
 # of Rust's runtime. The icon, the sample and its media are that app's, used
 # from there.
+# The repository's own Swift package, for LeafToolbar alone: the formatting
+# toolbar, which links no Rust. LeafUI would bring leaf-ffi's staticlib, and
+# a second Rust runtime with it.
+packages:
+  Leaf:
+    path: ../..
+
 targets:
   Leaf:
     type: application
     platform: macOS
+    dependencies:
+      - package: Leaf
+        product: LeafToolbar
     sources:
       - path: App
         excludes: [Info.plist]

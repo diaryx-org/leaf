@@ -10,9 +10,14 @@
 //  The model outlives its view: the document makes it, with the source it
 //  read, before any window shows it, and asks it for the source to save
 //  whether or not a view ever appeared.
+//
+//  `@Observable` rather than an `ObservableObject` because the toolbar is
+//  LeafToolbar's, generic over its editor, and a generic control holding the
+//  same reference is redrawn only when Observation says what it read changed.
 
 import AppKit
-import Combine
+import LeafToolbar
+import Observation
 
 /// A key chord, as the editor's bindings match it: a DOM key value, a DOM
 /// code, and the modifiers.
@@ -42,26 +47,27 @@ enum DocumentFormat: UInt32 {
     case markdown = 0, djot = 1, html = 2
 }
 
-final class EditorModel: ObservableObject {
+@Observable
+final class EditorModel {
     /// What the menus and toolbar show, refreshed after every repaint.
-    @Published private(set) var state = LeafState()
+    private(set) var state = LeafState()
     /// The text zoom over the settings' size — View ▸ Make Text Bigger.
-    @Published var zoom: Double = 1
+    var zoom: Double = 1
 
     let format: DocumentFormat
     /// The source the document was read with, until a view takes it over.
-    private var initialSource: String
+    @ObservationIgnored private var initialSource: String
     /// Where the document lives, for its pictures' relative paths.
-    var fileURL: URL? {
+    @ObservationIgnored var fileURL: URL? {
         didSet { if fileURL != oldValue { pushPath() } }
     }
     /// The edit count the document system was last told about.
-    private var reportedRevision: UInt64 = 0
+    @ObservationIgnored private var reportedRevision: UInt64 = 0
     /// Tell the document system the document changed: the edited dot, Save,
     /// the autosave clock.
-    var onEdit: (() -> Void)?
+    @ObservationIgnored var onEdit: (() -> Void)?
 
-    weak var view: LeafEditorNSView?
+    @ObservationIgnored weak var view: LeafEditorNSView?
     var handle: OpaquePointer? { view?.handle }
 
     init(source: String, format: DocumentFormat) {
@@ -194,7 +200,7 @@ final class EditorModel: ObservableObject {
 
     /// The display choices last applied, kept for a view that appears later
     /// and for a change of zoom.
-    private var look: Look?
+    @ObservationIgnored private var look: Look?
 
     /// Draw with these display choices, at the model's zoom.
     func apply(_ look: Look) {
@@ -258,4 +264,88 @@ struct Look: Equatable {
     var size: Double
     var leading: Double
     var measure: Double?
+}
+
+// MARK: - The toolbar
+
+/// LeafToolbar's controls over this editor. A command is the key chord it
+/// stands for where the editor binds one, and a `leaf_view_*` call where it
+/// does not. Alignment, the Text menu and a host's directives are leaf-core
+/// presentation the dioxus editor does not offer yet, so those menus are off
+/// the bar.
+extension EditorModel: LeafToolbarEditor {
+    var toolbarState: LeafToolbarState {
+        let s = state
+        let bits: [(LeafMark, Int)] = [(.bold, LEAF_MARK_STRONG), (.italic, LEAF_MARK_EMPH),
+                                       (.underline, LEAF_MARK_UNDERLINE), (.strikethrough, LEAF_MARK_STRIKE),
+                                       (.code, LEAF_MARK_CODE), (.highlight, LEAF_MARK_HIGHLIGHT)]
+        let marks = Set(bits.filter { isActive($0.1) }.map(\.0))
+        return LeafToolbarState(
+            marks: marks,
+            heading: s.heading == 0 ? nil : Int(s.heading),
+            codeBlock: s.code_block,
+            verse: s.verse,
+            blockquote: s.blockquote,
+            task: s.task < 0 ? nil : s.task == 1,
+            link: s.link,
+            highlightColour: s.mark_color < 0 ? nil : LeafHighlightColour(rawValue: Int(s.mark_color)),
+            inHighlight: marks.contains(.highlight),
+            inTable: s.in_table,
+            canUndo: s.can_undo,
+            canRedo: s.can_redo,
+            capabilities: LeafToolbarCapabilities(directives: false, alignment: false, text: false))
+    }
+
+    func perform(_ command: LeafToolbarCommand) {
+        switch command {
+        case .toggle(.bold): send(.cmd("b", "KeyB"))
+        case .toggle(.italic): send(.cmd("i", "KeyI"))
+        case .toggle(.underline): send(.cmd("u", "KeyU"))
+        case .toggle(.strikethrough): send(.cmd("x", "KeyX", shift: true))
+        case .toggle(.code): send(.cmd("c", "KeyC", shift: true))
+        case .toggle(.highlight): send(.cmd("m", "KeyM", shift: true))
+        case .highlightColour(let colour): highlight(Int32(colour?.rawValue ?? -1))
+        case .link: promptForLink()
+        case .paragraph: send(.ctrl("0", "Digit0"))
+        case .heading(let level): send(.ctrl("\(level)", "Digit\(level)"))
+        case .blockquote: send(.cmd("(", "Digit9", shift: true))
+        case .codeBlock: send(.cmd("ç", "KeyC", alt: true))
+        case .verse: action(LEAF_ACTION_TOGGLE_VERSE)
+        case .bulletList: send(.cmd("*", "Digit8", shift: true))
+        case .numberedList: send(.cmd("&", "Digit7", shift: true))
+        case .checklist: send(.cmd("l", "KeyL", shift: true))
+        case .checked: send(.cmd("u", "KeyU", shift: true))
+        case .indent: send(.cmd("]", "BracketRight"))
+        case .outdent: send(.cmd("[", "BracketLeft"))
+        case .moveBlockUp: send(.alt("ArrowUp", "ArrowUp"))
+        case .moveBlockDown: send(.alt("ArrowDown", "ArrowDown"))
+        case .horizontalRule: action(LEAF_ACTION_INSERT_RULE)
+        case .footnote: action(LEAF_ACTION_INSERT_FOOTNOTE)
+        case .pageBreak: action(LEAF_ACTION_INSERT_PAGE_BREAK)
+        case .table(let op): table(op)
+        case .undo: send(.cmd("z", "KeyZ"))
+        case .redo: send(.cmd("z", "KeyZ", shift: true))
+        case .align, .directive: break
+        }
+    }
+
+    private func table(_ op: LeafTableCommand) {
+        switch op {
+        case .insert(let columns): table(LEAF_TABLE_INSERT, Int32(columns))
+        case .insertRow(let below): table(LEAF_TABLE_INSERT_ROW, below ? 1 : 0)
+        case .deleteRow: table(LEAF_TABLE_DELETE_ROW)
+        case .insertColumn(let right): table(LEAF_TABLE_INSERT_COLUMN, right ? 1 : 0)
+        case .deleteColumn: table(LEAF_TABLE_DELETE_COLUMN)
+        case .align(let alignment):
+            let arg: Int32 = switch alignment {
+            case .default: 0
+            case .left: 1
+            case .center: 2
+            case .right: 3
+            }
+            table(LEAF_TABLE_ALIGN, arg)
+        case .moveRow(let down): table(LEAF_TABLE_MOVE_ROW, down ? 1 : 0)
+        case .moveColumn(let right): table(LEAF_TABLE_MOVE_COLUMN, right ? 1 : 0)
+        }
+    }
 }

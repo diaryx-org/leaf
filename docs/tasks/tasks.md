@@ -18,6 +18,7 @@ contents:
 - '[A force click on a date shows no Calendar card](date-event-popover.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 - '[What the Mac app does not do yet](/docs/tasks/what-the-mac-app-does-not-do-yet.md)'
+- '[LeafUI''s own toolbar still defines every control a second time](/docs/tasks/one-toolbar-definition.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks

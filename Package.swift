@@ -38,6 +38,9 @@ let package = Package(
         .library(name: "LeafFFI", targets: ["LeafFFI"]),
         // The AppKit/SwiftUI renderer built on it: `LeafEditor` + `LeafEditorModel`.
         .library(name: "LeafUI", targets: ["LeafUI"]),
+        // The formatting toolbar over any editor that answers `LeafToolbarEditor`.
+        // No Rust: an app whose editor is not LeafUI's links this alone.
+        .library(name: "LeafToolbar", targets: ["LeafToolbar"]),
     ],
     dependencies: [
         // SVG as vectors: `SVGPicture` parses through usvg and replays into the
@@ -60,11 +63,18 @@ let package = Package(
             dependencies: ["leaf_ffiFFI"],
             path: "packages/leaf-swift/uniffi-generated/Sources/LeafFFI"
         ),
+        // The formatting toolbar: SwiftUI only, with no FFI and no Rust, so
+        // apps/leaf-mac (whose editor is leaf-dioxus) links it as LeafUI does.
+        .target(
+            name: "LeafToolbar",
+            path: "packages/leaf-swift/Sources/LeafToolbar"
+        ),
         // The reusable AppKit/SwiftUI editor surface (committed source).
         .target(
             name: "LeafUI",
             dependencies: [
                 "LeafFFI",
+                "LeafToolbar",
                 .product(name: "ResvgCoreGraphics", package: "resvg-swift"),
             ],
             path: "packages/leaf-swift/Sources/LeafUI"

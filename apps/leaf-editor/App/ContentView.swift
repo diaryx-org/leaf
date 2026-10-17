@@ -46,6 +46,9 @@ struct ContentView: View {
     /// The Settings sheet, which the bar's menu opens. The Mac has
     /// a Settings window for these; a phone has no app menu to open one from.
     @State private var showingSettings = false
+    /// Regular on an iPad's full or half screen, where the navigation bar
+    /// has room for the formatting controls.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
     var body: some View {
@@ -68,8 +71,15 @@ struct ContentView: View {
             }
             .background(page == nil ? editorBackground : Color.clear)
             .toolbar {
+                // On an iPad the window's toolbar is the Mac's: LeafToolbar's
+                // controls, centred in the navigation bar. A phone's bar has
+                // room for none of them, and the keyboard's row is its toolbar.
+                if horizontalSizeClass == .regular {
+                    LeafToolbarItems(editor: model)
+                }
                 ToolbarItem(placement: .primaryAction) { moreMenu }
             }
+            .toolbarRole(.editor)
             .sheet(isPresented: $showingSettings) {
                 NavigationStack {
                     SettingsView()

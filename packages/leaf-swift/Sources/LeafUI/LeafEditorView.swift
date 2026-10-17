@@ -266,12 +266,14 @@ public final class LeafEditorModel {
         textView.reloadInputViews()
     }
 
+    #endif
+
     /// The Link fallback's destination, seed and all, while the field is up;
     /// nil otherwise. Set by `beginLinkInSheet`, and `LeafEditor` raises the
     /// field as a sheet while it is.
     var pendingLinkDestination: String?
 
-    /// Link, from the iOS row or the panel: the host's `onEditLink` first
+    /// Link, from the iOS row, the panel or LeafToolbar: the host's `onEditLink` first
     /// (`beginLink(fallback:)`), and otherwise leaf's own field, raised by
     /// `LeafEditor` as a sheet. Not a popover on the key that asked: the
     /// field takes focus and the text view resigns, which takes the panel
@@ -282,6 +284,7 @@ public final class LeafEditorModel {
         beginLink { [weak self] seed in self?.pendingLinkDestination = seed }
     }
 
+    #if canImport(UIKit)
     /// `setFormattingPanelShown(!isFormattingPanelShown)`.
     public func toggleFormattingPanel() {
         setFormattingPanelShown(!(textView?.showsFormattingPanel ?? false))
@@ -1369,6 +1372,9 @@ public struct LeafEditor: View {
             // The one place an *Other…* field is raised, from either surface
             // that offers the row — see `PresentationOther.swift`.
             .presentingOtherValues(model)
+            // And leaf's own Link field, for LeafToolbar's Link when the host
+            // has not claimed the question with `onEditLink`.
+            .background(LinkPromptHost(editor: model))
     }
 }
 

@@ -12,7 +12,7 @@ import SwiftUI
 
 /// The editor, for SwiftUI.
 struct LeafEditorView: NSViewRepresentable {
-    @ObservedObject var model: EditorModel
+    let model: EditorModel
 
     func makeNSView(context: Context) -> LeafScrollView {
         LeafScrollView(model: model)

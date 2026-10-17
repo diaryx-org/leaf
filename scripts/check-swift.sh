@@ -11,6 +11,10 @@
 # the same way from wherever SwiftPM resolved the package to — its checkout
 # under .build/, or a local path.
 #
+# LeafUI imports LeafToolbar too, which is plain Swift: it is emitted from
+# packages/leaf-swift/Sources/LeafToolbar for each triple, and type-checks
+# as it is emitted.
+#
 # Usage: scripts/check-swift.sh
 set -euo pipefail
 
@@ -52,13 +56,24 @@ emit_resvg() {
     "$@" -I "$out" -I "$RESVG_HEADERS" -Xcc -fmodule-map-file="$RESVG_HEADERS/module.modulemap"
 }
 
-echo "▸ Emitting LeafFFI, ResvgFFI, ResvgCoreGraphics .swiftmodules…"
+# Emit LeafToolbar for one triple into $1, given the SDK and target flags
+# that follow.
+emit_toolbar() {
+  local out="$1"; shift
+  mkdir -p "$out"
+  swiftc -emit-module -module-name LeafToolbar \
+    -emit-module-path "$out/LeafToolbar.swiftmodule" \
+    "$ROOT"/packages/leaf-swift/Sources/LeafToolbar/*.swift "$@"
+}
+
+echo "▸ Emitting LeafFFI, LeafToolbar, ResvgFFI, ResvgCoreGraphics .swiftmodules…"
 swiftc -emit-module -module-name LeafFFI \
   -emit-module-path "$WORK/LeafFFI.swiftmodule" \
   "$WORK/gen/leaf_ffi.swift" \
   -sdk "$SDK" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
 emit_resvg "$WORK" -sdk "$SDK"
+emit_toolbar "$WORK" -sdk "$SDK"
 
 echo "▸ Type-checking LeafUI (macOS / AppKit)…"
 swiftc -typecheck -module-name LeafUI \
@@ -82,6 +97,7 @@ swiftc -emit-module -module-name LeafFFI \
   -sdk "$SDK_IOS" -target "$TARGET_IOS" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
 emit_resvg "$WORK/ios" -sdk "$SDK_IOS" -target "$TARGET_IOS"
+emit_toolbar "$WORK/ios" -sdk "$SDK_IOS" -target "$TARGET_IOS"
 swiftc -typecheck -module-name LeafUI \
   "$ROOT"/packages/leaf-swift/Sources/LeafUI/*.swift \
   -sdk "$SDK_IOS" -target "$TARGET_IOS" \

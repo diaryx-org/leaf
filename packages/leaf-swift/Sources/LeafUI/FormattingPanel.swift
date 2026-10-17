@@ -446,41 +446,6 @@ private struct TypingKey: View {
     }
 }
 
-/// Leaf's own Link field on iOS, raised by `LeafEditor` as a sheet over the
-/// editor while `pendingLinkDestination` is set — from the row's Link and
-/// the panel's alike. Seeded with the caret link's
-/// destination, so it re-points a link as readily as it makes one.
-struct LinkPromptHost: View {
-    let editor: LeafEditorModel
-
-    var body: some View {
-        Color.clear.sheet(isPresented: Binding(
-            get: { editor.pendingLinkDestination != nil },
-            set: { if !$0 { editor.pendingLinkDestination = nil } }
-        )) {
-            LinkPromptSheet(editor: editor, typed: editor.pendingLinkDestination ?? "")
-        }
-    }
-}
-
-private struct LinkPromptSheet: View {
-    let editor: LeafEditorModel
-    @State var typed: String
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        LinkDestinationField(text: $typed, commit: commit)
-            .focused($focused)
-            .onAppear { DispatchQueue.main.async { focused = true } }
-            .presentationDetents([.height(120)])
-    }
-
-    private func commit() {
-        editor.pendingLinkDestination = nil
-        editor.commitLinkDestination(typed)
-    }
-}
-
 extension LeafTextView {
     /// Type `text` as the keyboard would, from the panel. The input delegate is
     /// told around it, as `command` tells it: the keyboard is not the one

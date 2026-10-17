@@ -2,17 +2,23 @@
 //
 //  The editor's menus — Edit's Undo, Redo and Find, Format, and View — laid
 //  out as LeafUI's `EditorCommands.swift` lays them out for the iOS app's
-//  sibling, aimed at whichever document window is in front (`@FocusedObject`).
+//  sibling, aimed at whichever document window is in front (`@FocusedValue`).
 //
 //  Every item that has a key binding is that binding: its shortcut is shown,
 //  and choosing it — by mouse, or by pressing the shortcut, which AppKit hands
 //  to the menu before the view sees it — sends the same chord the keyboard
 //  would, so a command is defined once, in the editor's `input.rs`.
 
+import LeafToolbar
 import SwiftUI
 
+extension FocusedValues {
+    /// The editor of the document window in front, published by `ContentView`.
+    @Entry var editorModel: EditorModel?
+}
+
 struct LeafEditorCommands: Commands {
-    @FocusedObject private var editor: EditorModel?
+    @FocusedValue(\.editorModel) private var editor
     @ObservedObject private var spelling = SpellingSettings.shared
 
     var body: some Commands {
@@ -92,7 +98,9 @@ struct LeafEditorCommands: Commands {
         toggle("Strikethrough", LEAF_MARK_STRIKE, .cmd("x", "KeyX", shift: true), "x", [.command, .shift])
         toggle("Code", LEAF_MARK_CODE, .cmd("c", "KeyC", shift: true), "c", [.command, .shift])
         toggle("Highlight", LEAF_MARK_HIGHLIGHT, .cmd("m", "KeyM", shift: true), "m", [.command, .shift])
-        if let editor { HighlightColourMenu(model: editor) }
+        if let editor {
+            Menu("Highlight Colour") { LeafHighlightColourRows(editor: editor) }
+        }
         Button("Link…") { editor?.promptForLink() }
             .keyboardShortcut("k", modifiers: .command)
             .disabled(editor == nil)
@@ -133,7 +141,8 @@ struct LeafEditorCommands: Commands {
         Button("Insert Footnote") { editor?.action(LEAF_ACTION_INSERT_FOOTNOTE) }.disabled(editor == nil)
         Button("Insert Horizontal Rule") { editor?.action(LEAF_ACTION_INSERT_RULE) }.disabled(editor == nil)
         Button("Insert Page Break") { editor?.action(LEAF_ACTION_INSERT_PAGE_BREAK) }.disabled(editor == nil)
-        if let editor { TableMenu(model: editor) } else { Menu("Table") {}.disabled(true) }
+        Menu("Table") { if let editor { LeafTableRows(editor: editor) } }
+            .disabled(editor == nil)
     }
 
     /// An item that sends `chord`, shown with its shortcut.
@@ -151,64 +160,5 @@ struct LeafEditorCommands: Commands {
                                     set: { _ in editor?.send(chord) }))
             .keyboardShortcut(key, modifiers: mods)
             .disabled(editor == nil)
-    }
-}
-
-/// Format ▸ Highlight Colour: the seven colours, and the plain highlighter.
-struct HighlightColourMenu: View {
-    @ObservedObject var model: EditorModel
-
-    static let colours = ["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Brown"]
-
-    var body: some View {
-        Menu("Highlight Colour") {
-            ForEach(Array(Self.colours.enumerated()), id: \.offset) { i, name in
-                Toggle(name, isOn: Binding(get: { model.state.mark_color == Int32(i) },
-                                           set: { _ in model.highlight(Int32(i)) }))
-            }
-            Divider()
-            Toggle("No Colour", isOn: Binding(get: { model.state.mark_color < 0 && model.isActive(LEAF_MARK_HIGHLIGHT) },
-                                              set: { _ in model.highlight(-1) }))
-        }
-    }
-}
-
-/// Format ▸ Table, as LeafUI's `TableRows`: none of it with a shortcut, and
-/// everything but the inserts disabled outside a table.
-struct TableMenu: View {
-    @ObservedObject var model: EditorModel
-
-    var body: some View {
-        Menu("Table") {
-            Button("Insert Table") { model.table(LEAF_TABLE_INSERT, 2) }
-            Menu("Insert Table With") {
-                ForEach(3...5, id: \.self) { n in
-                    Button("\(n) Columns") { model.table(LEAF_TABLE_INSERT, Int32(n)) }
-                }
-            }
-            Divider()
-            Group {
-                Button("Insert Row Above") { model.table(LEAF_TABLE_INSERT_ROW, 0) }
-                Button("Insert Row Below") { model.table(LEAF_TABLE_INSERT_ROW, 1) }
-                Button("Delete Row") { model.table(LEAF_TABLE_DELETE_ROW) }
-                Divider()
-                Button("Insert Column Left") { model.table(LEAF_TABLE_INSERT_COLUMN, 0) }
-                Button("Insert Column Right") { model.table(LEAF_TABLE_INSERT_COLUMN, 1) }
-                Button("Delete Column") { model.table(LEAF_TABLE_DELETE_COLUMN) }
-                Divider()
-                Menu("Align Column") {
-                    Button("Left") { model.table(LEAF_TABLE_ALIGN, 1) }
-                    Button("Center") { model.table(LEAF_TABLE_ALIGN, 2) }
-                    Button("Right") { model.table(LEAF_TABLE_ALIGN, 3) }
-                    Button("Default") { model.table(LEAF_TABLE_ALIGN, 0) }
-                }
-                Divider()
-                Button("Move Row Up") { model.table(LEAF_TABLE_MOVE_ROW, 0) }
-                Button("Move Row Down") { model.table(LEAF_TABLE_MOVE_ROW, 1) }
-                Button("Move Column Left") { model.table(LEAF_TABLE_MOVE_COLUMN, 0) }
-                Button("Move Column Right") { model.table(LEAF_TABLE_MOVE_COLUMN, 1) }
-            }
-            .disabled(!model.state.in_table)
-        }
     }
 }

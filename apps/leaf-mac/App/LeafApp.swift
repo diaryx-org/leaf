@@ -49,7 +49,7 @@ private extension View {
 
 /// The app's own menu items, beside the editor's.
 struct LeafAppCommands: Commands {
-    @FocusedObject private var editor: EditorModel?
+    @FocusedValue(\.editorModel) private var editor
     @AppStorage(DisplayChoice.paperKey) private var paper: Paper = .usLetter
 
     var body: some Commands {

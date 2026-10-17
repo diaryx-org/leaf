@@ -27,10 +27,10 @@ runtimes.
 |---|---|
 | `LeafApp.swift` | the scenes: a `DocumentGroup` per format, Settings, File ▸ New, Export as PDF, Page Setup, Print, Help ▸ Open Sample Document |
 | `LeafDocument.swift` | the document classes, one per format, and the sample |
-| `EditorModel.swift` | one window's editor as the chrome sees it: its `LeafState`, and every command, mostly the key chord it stands for |
+| `EditorModel.swift` | one window's editor as the chrome sees it: its `LeafState`, and every command, mostly the key chord it stands for; and the same as LeafToolbar's `LeafToolbarEditor` |
 | `LeafEditorView.swift` | the `NSView`, in an `NSScrollView` that does its scrolling: pointer, keys, the text input client, the Edit menu's actions, the context menu |
 | `EditorCommands.swift` | Edit, Format and View, aimed at the window in front |
-| `ContentView.swift` | the window: the editor and its toolbar |
+| `ContentView.swift` | the window: the editor and its toolbar, which is LeafToolbar's (`packages/leaf-swift/Sources/LeafToolbar`), the one Diaryx and the iOS app on an iPad show |
 | `DisplayChoice.swift`, `SettingsView.swift` | the reader's display choices and Settings |
 
 A menu item with a shortcut is the editor's key binding: choosing it sends
