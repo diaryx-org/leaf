@@ -629,6 +629,68 @@ mod tests {
     }
 
     #[test]
+    fn a_quotes_bars_meet_down_its_lines_and_rows() {
+        // A heading, a paragraph that wraps, a table and a nested quote, all
+        // in one quote, between two paragraphs outside it.
+        let src = "Before.\n\n> # Quoted\n>\n> The quick brown fox jumps over the lazy dog, and \
+                   then it jumps over the lazy dog again, until the line wraps onto another and \
+                   then onto one more after that.\n>\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n>\n\
+                   > > Nested.\n\nAfter.\n";
+        let look = Look::default();
+        let (indent, line) = (look.ty.quote_indent(), look.ty.line());
+        let (document, ..) = offscreen(src, Format::Markdown, None, look, Paper::US_LETTER, None)
+            .expect("an editor");
+        let inner = document.inner.borrow();
+        let rect = |id| {
+            let node = inner.get_node(id).unwrap();
+            let at = node.absolute_position(0.0, 0.0);
+            let size = node.final_layout().size;
+            (at.x, at.y, size.width, size.height)
+        };
+        let bars: Vec<_> = inner
+            .query_selector_all(".qbar")
+            .unwrap()
+            .into_iter()
+            .map(rect)
+            .collect();
+        assert!(bars.len() > 8, "{} bars", bars.len());
+        for &(_, _, w, h) in &bars {
+            assert!((w - indent).abs() < 0.5, "a bar {w} wide");
+            assert!(h >= line - 0.5, "a bar {h} tall");
+        }
+        // A line is as tall with its bars as parley measured it: no bar
+        // stands past the line it is drawn in.
+        for id in inner.query_selector_all(".line").unwrap() {
+            let (_, y, _, h) = rect(id);
+            for &(_, by, _, bh) in bars.iter().filter(|b| (b.1 - y).abs() < 0.5) {
+                assert!(
+                    (by + bh - (y + h)).abs() < 0.5,
+                    "a bar {by}+{bh} in a line {y}+{h}"
+                );
+            }
+        }
+        // Each level's bars stand at one x and tile into one unbroken rule:
+        // the outer one from the heading to the nested quote, the inner one
+        // beside the nested quote alone.
+        let mut xs: Vec<f32> = bars.iter().map(|b| b.0.round()).collect();
+        xs.sort_by(f32::total_cmp);
+        xs.dedup();
+        assert_eq!(xs.len(), 2, "the levels' x: {xs:?}");
+        assert!((xs[1] - xs[0] - indent).abs() < 1.0, "{xs:?}");
+        for &x in &xs {
+            let mut column: Vec<_> = bars.iter().filter(|b| b.0.round() == x).collect();
+            column.sort_by(|a, b| a.1.total_cmp(&b.1));
+            for pair in column.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                assert!(
+                    (a.1 + a.3 - b.1).abs() < 0.5,
+                    "a gap in the bar at x {x}: {a:?} then {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn pages_break_between_rows() {
         let bottoms = [100.0, 250.0, 400.0, 500.0, 650.0];
         assert_eq!(

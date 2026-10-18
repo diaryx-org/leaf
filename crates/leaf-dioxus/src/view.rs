@@ -54,6 +54,7 @@ pub fn css(ty: &Type) -> String {
         size,
         leading,
     } = ty;
+    let quote = ty.quote_indent();
     let mut css = format!(
         "html, body {{ margin: 0; overflow: hidden; height: 100vh; background: var(--leaf-bg); }}
 body {{ position: relative; }}
@@ -61,6 +62,9 @@ body {{ position: relative; }}
 .leaf .row.code, .leaf .row.table, .leaf .row.source, .leaf .code {{ font-family: {mono}; }}
 .leaf .row.source .g {{ font-size: 1em; vertical-align: baseline; }}
 .leaf .row, .leaf .line {{ min-height: {leading}em; }}
+.leaf .qbar {{ display: inline-block; width: {quote}px; vertical-align: top; box-sizing: border-box;
+               border-left: 3px solid currentColor; }}
+.leaf .ghost {{ color: transparent; background: none; }}
 .leaf .ime {{ text-decoration: underline; text-decoration-color: var(--leaf-accent); }}
 .leaf .miss {{ text-decoration: underline wavy; text-decoration-color: var(--leaf-misspelled); }}
 .leaf .table {{ box-sizing: border-box; }}
@@ -383,6 +387,8 @@ mod tests {
         );
         assert!(css.contains("font-family: Monaco, monospace;"));
         assert!(css.contains("min-height: 1.75em;"));
+        // A quote's level, as wide as `text.rs` measures it.
+        assert!(css.contains(&format!("width: {}px;", ty.quote_indent())));
     }
 
     #[test]

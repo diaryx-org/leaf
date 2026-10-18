@@ -65,7 +65,20 @@ impl Type {
     pub fn line(&self) -> f32 {
         self.size * self.leading
     }
+
+    /// How wide one level of a quote's gutter is: Swift's `quoteIndent`, 22
+    /// points beside its 16-point body, and scaled with the size as Swift's
+    /// is with Dynamic Type. Every level is this wide at any font size, so a
+    /// heading in a quote stands its bar where the body rows around it do.
+    pub fn quote_indent(&self) -> f32 {
+        self.size * 1.375
+    }
 }
+
+/// The character core spells one level of a quote's gutter with. It is
+/// never drawn: each one is a cell [`Type::quote_indent`] wide that the row
+/// draws a bar down (`row.rs`), and the space after it takes no room.
+pub const QUOTE_BAR: char = '│';
 
 /// How a row is set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -253,6 +266,22 @@ impl Fonts {
                     baseline: Some(p.size.1 - p.depth),
                     vertical_align: VerticalAlign::BASELINE,
                 });
+            }
+            // A quote's gutter: its glyphs take no room, and each bar is a
+            // box a level wide after its glyph, as the row draws it.
+            if has_class(r, "gutter") {
+                b.push(StyleProperty::FontSize(0.01), range.clone());
+                for (i, c) in r.text.char_indices().filter(|&(_, c)| c == QUOTE_BAR) {
+                    b.push_inline_box(InlineBox {
+                        id: (range.start + i) as u64,
+                        kind: InlineBoxKind::InFlow,
+                        index: range.start + i + c.len_utf8(),
+                        width: ty.quote_indent(),
+                        height: 0.0,
+                        baseline: None,
+                        vertical_align: VerticalAlign::BASELINE,
+                    });
+                }
             }
         }
         let mut layout = b.build(&text);
@@ -532,6 +561,42 @@ mod tests {
         assert!(l.col_at(0, 0.0) < 2);
         // On a continuation line it lands at the body's start of that line.
         assert_eq!(l.col_at(1, 0.0), l.edge(1, false));
+    }
+
+    #[test]
+    fn a_quote_level_is_a_fixed_cell_whatever_the_text_beside_it() {
+        let ty = Type::default();
+        let mut f = Fonts::new(ty.clone());
+        let one = f.layout(
+            &row(vec![run("│ ", "g gutter"), run(PROSE, "g")]),
+            300.0,
+            Kind::Prose,
+        );
+        assert!(one.repeat);
+        assert_eq!(one.prefix_cols, 2);
+        assert!(
+            (one.prefix_w - ty.quote_indent()).abs() < 0.1,
+            "{}",
+            one.prefix_w
+        );
+        // Two levels are twice as wide, in a heading as in the body.
+        let two = f.layout(
+            &row(vec![run("│ │ ", "g gutter"), run("Title", "g h1 b")]),
+            600.0,
+            Kind::Prose,
+        );
+        assert!(
+            (two.prefix_w - 2.0 * ty.quote_indent()).abs() < 0.1,
+            "{}",
+            two.prefix_w
+        );
+        // The body starts past the gutter, and a click there finds it.
+        assert_eq!(one.caret(2), (0, one.prefix_w));
+        assert_eq!(one.col_at(1, 0.0), one.edge(1, false));
+        // An empty quote's row is still a line tall.
+        let empty = f.layout(&row(vec![run("│ ", "g gutter")]), 300.0, Kind::Prose);
+        assert_eq!(empty.lines.len(), 1);
+        assert!((empty.height - ty.line()).abs() < 0.5, "{}", empty.height);
     }
 
     #[test]
