@@ -34,13 +34,15 @@ pub struct SourceRows {
 impl SourceRows {
     /// The rows for `doc`'s source as it stands, with the caret at `caret`,
     /// the selection `selection` and a composition `composing` (source
-    /// offsets). Answers the rows and the caret's (row, column).
+    /// offsets), with grab handles at the selection's ends when `grips`.
+    /// Answers the rows and the caret's (row, column).
     pub fn update(
         &mut self,
         doc: &Doc,
         caret: usize,
         selection: Option<(usize, usize)>,
         composing: Option<(usize, usize)>,
+        grips: bool,
     ) -> (&[RowHandle], (usize, usize)) {
         let mut previous: HashMap<&RowView, &RowHandle> =
             HashMap::with_capacity(self.handles.len());
@@ -65,11 +67,21 @@ impl SourceRows {
             if let Some(c) = caret_col {
                 caret_pos = (row, c);
             }
+            let col_of = |at: usize| {
+                (start..=end)
+                    .contains(&at)
+                    .then(|| cols(&line[..at - start]))
+            };
+            let grips = match selection.filter(|(lo, hi)| grips && lo != hi) {
+                Some((lo, hi)) => (col_of(lo), col_of(hi)),
+                None => (None, None),
+            };
             let view = RowView {
                 runs: line_runs(line, start, &runs[next_run..], selection, composing),
                 caret_col,
                 code: false,
                 decoration: false,
+                grips,
             };
             let handle = match previous.get(&view) {
                 Some(h) => (*h).clone(),
@@ -187,7 +199,7 @@ mod tests {
     fn a_row_per_line_with_the_markup_shown() {
         let d = doc("# Title\n\nSome **bold** text.\n");
         let mut s = SourceRows::default();
-        let (rows, _) = s.update(&d, 0, None, None);
+        let (rows, _) = s.update(&d, 0, None, None, false);
         let rows: Vec<String> = rows.iter().map(|h| text(&h.0)).collect();
         assert_eq!(rows, ["# Title", "", "Some **bold** text.", ""]);
     }
@@ -196,7 +208,7 @@ mod tests {
     fn the_markup_is_classed_as_a_delimiter() {
         let d = doc("Some **bold** text.\n");
         let mut s = SourceRows::default();
-        let (rows, _) = s.update(&d, 0, None, None);
+        let (rows, _) = s.update(&d, 0, None, None, false);
         let stars = rows[0]
             .0
             .runs
@@ -210,7 +222,7 @@ mod tests {
     fn the_caret_has_its_row_and_column() {
         let d = doc("one\ntwo\n");
         let mut s = SourceRows::default();
-        let (rows, pos) = s.update(&d, 6, None, None);
+        let (rows, pos) = s.update(&d, 6, None, None, false);
         assert_eq!(pos, (1, 2));
         assert_eq!(rows[1].0.caret_col, Some(2));
         assert_eq!(pos_of(&d, 6), (1, 2));
@@ -221,12 +233,12 @@ mod tests {
     fn an_unchanged_line_keeps_its_handle_even_when_shifted() {
         let mut d = doc("alpha\nbeta\n");
         let mut s = SourceRows::default();
-        let beta = s.update(&d, 0, None, None).0[1].clone();
+        let beta = s.update(&d, 0, None, None, false).0[1].clone();
         d.place_caret(0, false);
         d.newline();
         d.build_source();
         let caret = d.caret;
-        let (rows, _) = s.update(&d, caret, None, None);
+        let (rows, _) = s.update(&d, caret, None, None, false);
         assert_eq!(rows[2], beta, "beta moved down a row and kept its Rc");
     }
 }

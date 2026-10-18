@@ -281,6 +281,9 @@ pub enum Seg {
     /// `picture.rs` keeps it under.
     Math(String, usize, String),
     Caret,
+    /// A grab handle at one end of the selection: its knob above the start
+    /// (`false`) or below the end (`true`).
+    Grip(bool),
 }
 
 impl Seg {
@@ -305,35 +308,78 @@ impl Seg {
                 None => rsx! { span { class, "{text}" } },
             },
             Seg::Caret => rsx! { span { class: "caret-in" } },
+            // The stem and the knob are blocks inside a box exactly their
+            // size, which hangs above or below the line by negative margins:
+            // the line keeps the height parley measured, and Blitz paints
+            // nothing that hangs past its parent.
+            Seg::Grip(end) => rsx! {
+                span { class: if end { "grip end" } else { "grip start" },
+                    if !end { span { class: "knob" } }
+                    span { class: "stem" }
+                    if end { span { class: "knob" } }
+                }
+            },
         }
     }
 }
 
-/// The row cut into its visual lines, the caret spliced in where it falls.
+/// The row cut into its visual lines, the caret spliced in where it falls,
+/// and the selection's grab handles at its ends ([`RowView::grips`]) — in
+/// place of the caret, which a text view hides while it has them.
 ///
 /// The caret is an inline, zero-width span between glyphs — not the spike's
 /// absolutely-positioned `div.caret` at `left: Nch`, which Blitz lays out on
 /// the first paint and not when a later frame inserts it, and which is exact
 /// only in a monospace row. Inline, it sits after the glyph it follows in any
-/// font, at any size.
+/// font, at any size. The handles are inline for the same reason.
 pub fn lines(v: &RowView, lay: &RowLayout) -> Vec<Vec<Seg>> {
     let (prefix, body) = v.runs.split_at(lay.prefix_runs.min(v.runs.len()));
-    let caret = v.caret_col;
+    let (prefix_text, body_text) = (concat(prefix), concat(body));
+    let gripped = v.grips != (None, None);
+
+    // Where a mark at column `c` goes: in the prefix (line 0) or the body,
+    // at which byte, on which line. The end of a selection that stops where
+    // a line wraps stays on the line it ends, with the glyphs it follows;
+    // anything else goes on the line its byte starts.
+    let place = |c: usize, after: bool| -> (bool, usize, usize) {
+        if c < lay.prefix_cols {
+            return (true, byte_of_col(&prefix_text, c), 0);
+        }
+        let b = byte_of_col(&body_text, c - lay.prefix_cols);
+        let line = match after {
+            true => lay
+                .lines
+                .iter()
+                .rposition(|l| l.bytes.start < b)
+                .unwrap_or(0),
+            false => lay.line_of(b),
+        };
+        (false, b, line)
+    };
+    let mut marks: Vec<(bool, usize, usize, Seg)> = Vec::new();
+    if let Some(c) = v.grips.0 {
+        let (p, b, l) = place(c, false);
+        marks.push((p, b, l, Seg::Grip(false)));
+    }
+    if let Some(c) = v.caret_col.filter(|_| !gripped) {
+        let (p, b, l) = place(c, false);
+        marks.push((p, b, l, Seg::Caret));
+    }
+    if let Some(c) = v.grips.1 {
+        let (p, b, l) = place(c, true);
+        marks.push((p, b, l, Seg::Grip(true)));
+    }
+    let on = |in_prefix: bool, line: usize| -> Vec<(usize, Seg)> {
+        marks
+            .iter()
+            .filter(|m| m.0 == in_prefix && (in_prefix || m.2 == line))
+            .map(|m| (m.1, m.3.clone()))
+            .collect()
+    };
 
     // The prefix: on the first line always, and on every line for a quote.
-    let in_prefix = caret.filter(|&c| c < lay.prefix_cols);
-    let pre = splice(
-        prefix,
-        0..usize::MAX,
-        in_prefix.map(|c| byte_of_col(&concat(prefix), c)),
-    );
-    let bare = splice(prefix, 0..usize::MAX, None);
-
-    // The caret's byte in the body, and which line holds it.
-    let in_body = caret
-        .filter(|&c| c >= lay.prefix_cols)
-        .map(|c| byte_of_col(&concat(body), c - lay.prefix_cols));
-    let caret_line = in_body.map(|b| lay.line_of(b));
+    let pre = splice(prefix, 0..usize::MAX, &on(true, 0));
+    let bare = splice(prefix, 0..usize::MAX, &[]);
 
     lay.lines
         .iter()
@@ -344,8 +390,7 @@ pub fn lines(v: &RowView, lay: &RowLayout) -> Vec<Vec<Seg>> {
                 _ if lay.repeat => bare.clone(),
                 _ => Vec::new(),
             };
-            let at = in_body.filter(|_| caret_line == Some(n));
-            segs.extend(splice(body, l.bytes.clone(), at));
+            segs.extend(splice(body, l.bytes.clone(), &on(false, n)));
             segs
         })
         .collect()
@@ -355,36 +400,36 @@ fn concat(runs: &[Run]) -> String {
     runs.iter().map(|r| r.text.as_str()).collect()
 }
 
-/// The runs' text within `window` (bytes of their concatenation), with the
-/// caret inserted at byte `caret` — before the glyph it precedes, or at the
-/// window's end.
-fn splice(runs: &[Run], window: Range<usize>, caret: Option<usize>) -> Vec<Seg> {
+/// The runs' text within `window` (bytes of their concatenation), with each
+/// of `marks` — the caret, a grab handle — inserted at its byte: before the
+/// glyph it precedes, or at the window's end. Marks at one byte go in the
+/// order given.
+fn splice(runs: &[Run], window: Range<usize>, marks: &[(usize, Seg)]) -> Vec<Seg> {
     let mut out = Vec::new();
-    let mut caret = caret.filter(|c| window.contains(c) || *c == window.end);
+    let mut marks: Vec<&(usize, Seg)> = marks
+        .iter()
+        .filter(|(c, _)| window.contains(c) || *c == window.end)
+        .collect();
+    marks.sort_by_key(|(c, _)| *c);
+    let mut marks = marks.into_iter().peekable();
     let mut start = 0;
     for r in runs {
         let end = start + r.text.len();
         let (a, b) = (start.max(window.start), end.min(window.end));
         if a < b {
-            let s = &r.text[a - start..b - start];
-            match caret.filter(|&c| (a..b).contains(&c)) {
-                Some(c) => {
-                    let (x, y) = s.split_at(c - a);
-                    if !x.is_empty() {
-                        out.push(Seg::text(r, x));
-                    }
-                    out.push(Seg::Caret);
-                    out.push(Seg::text(r, y));
-                    caret = None;
+            let mut from = a;
+            while let Some((c, seg)) = marks.next_if(|(c, _)| (a..b).contains(c)) {
+                if *c > from {
+                    out.push(Seg::text(r, &r.text[from - start..c - start]));
+                    from = *c;
                 }
-                None => out.push(Seg::text(r, s)),
+                out.push(seg.clone());
             }
+            out.push(Seg::text(r, &r.text[from - start..b - start]));
         }
         start = end;
     }
-    if caret.is_some() {
-        out.push(Seg::Caret);
-    }
+    out.extend(marks.map(|(_, seg)| seg.clone()));
     out
 }
 
@@ -405,6 +450,8 @@ mod tests {
             .map(|s| match s {
                 Seg::Text(_, t) | Seg::Math(_, _, t) => t.as_str(),
                 Seg::Caret => "|",
+                Seg::Grip(false) => "[",
+                Seg::Grip(true) => "]",
             })
             .collect()
     }
@@ -412,22 +459,43 @@ mod tests {
     #[test]
     fn the_caret_splits_the_run_it_falls_in() {
         let runs = [run("hello "), run("world")];
-        assert_eq!(texts(&splice(&runs, 0..11, Some(8))), "hello wo|rld");
-        assert_eq!(texts(&splice(&runs, 0..11, Some(6))), "hello |world");
-        assert_eq!(texts(&splice(&runs, 0..11, Some(0))), "|hello world");
-        assert_eq!(texts(&splice(&runs, 0..11, Some(11))), "hello world|");
+        assert_eq!(
+            texts(&splice(&runs, 0..11, &[(8, Seg::Caret)])),
+            "hello wo|rld"
+        );
+        assert_eq!(
+            texts(&splice(&runs, 0..11, &[(6, Seg::Caret)])),
+            "hello |world"
+        );
+        assert_eq!(
+            texts(&splice(&runs, 0..11, &[(0, Seg::Caret)])),
+            "|hello world"
+        );
+        assert_eq!(
+            texts(&splice(&runs, 0..11, &[(11, Seg::Caret)])),
+            "hello world|"
+        );
     }
 
     #[test]
     fn a_window_cuts_runs_at_a_line_break() {
         let runs = [run("hello "), run("world")];
-        assert_eq!(texts(&splice(&runs, 3..8, None)), "lo wo");
-        assert_eq!(texts(&splice(&runs, 6..11, Some(6))), "|world");
+        assert_eq!(texts(&splice(&runs, 3..8, &[])), "lo wo");
+        assert_eq!(texts(&splice(&runs, 6..11, &[(6, Seg::Caret)])), "|world");
+    }
+
+    #[test]
+    fn a_selection_has_a_handle_at_each_end() {
+        let runs = [run("hello "), run("world")];
+        let both = [(6, Seg::Grip(false)), (11, Seg::Grip(true))];
+        assert_eq!(texts(&splice(&runs, 0..11, &both)), "hello [world]");
+        let inner = [(2, Seg::Grip(false)), (4, Seg::Grip(true))];
+        assert_eq!(texts(&splice(&runs, 0..11, &inner)), "he[ll]o world");
     }
 
     #[test]
     fn an_empty_row_still_draws_its_caret() {
-        assert_eq!(texts(&splice(&[], 0..0, Some(0))), "|");
+        assert_eq!(texts(&splice(&[], 0..0, &[(0, Seg::Caret)])), "|");
     }
 }
 

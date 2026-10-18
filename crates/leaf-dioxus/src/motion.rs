@@ -255,7 +255,7 @@ impl Editor {
     /// whether it was a finger's tap or a mouse's press, of which the editor
     /// hears only the one it is listening for (see [`pointer`](Self::pointer)).
     pub fn past_end(&self, tap: bool) {
-        if tap != self.st.touch_mode.get() {
+        if tap != self.st.touch_mode.get() || (tap && self.st.gripped.get()) {
             return;
         }
         if tap {
@@ -271,6 +271,8 @@ impl Editor {
     pub fn pointer(&self, p: Pointer) {
         let st = &*self.st;
         let p = match p {
+            // A finger let go of a grab handle, not tapped the text.
+            Pointer::Tap { .. } if st.gripped.get() => return,
             Pointer::Tap { at, line, x } if st.touch_mode.get() => {
                 self.enable_ime();
                 Pointer::Press {

@@ -218,6 +218,9 @@ pub struct State {
     /// Whether the last pointer was a finger, which decides how a row hears
     /// it: a mouse by its press, a finger by its tap.
     pub touch_mode: Cell<bool>,
+    /// Whether the last finger went down on a grab handle: the tap Blitz
+    /// sends when it comes up without moving is then not a tap on the text.
+    pub gripped: Cell<bool>,
     /// Which ways a sideways drag may turn the page: back, and forward.
     pub turns: Cell<(bool, bool)>,
     /// Every visual line on screen, as Blitz laid it out — what
@@ -407,6 +410,7 @@ impl Editor {
             bounds: Cell::new(None),
             touch: Cell::new(None),
             touch_mode: Cell::new(false),
+            gripped: Cell::new(false),
             turns: Cell::new((false, false)),
             lines: Default::default(),
         };
@@ -439,7 +443,13 @@ impl Editor {
         let (handles, kinds, caret_row, rebuilt) = match doc.view {
             View::Source => {
                 doc.build_source();
-                let (h, (row, _)) = srows.update(&doc, caret, doc.selection(), composer.marked());
+                let (h, (row, _)) = srows.update(
+                    &doc,
+                    caret,
+                    doc.selection(),
+                    composer.marked(),
+                    st.touch_mode.get(),
+                );
                 let h = h.to_vec();
                 let kinds = vec![Kind::Source; h.len()];
                 (h, kinds, Some(row), srows.rebuilt)
@@ -458,7 +468,8 @@ impl Editor {
                 let marks = Marks::of(&doc.vmap, shown, doc.anchor)
                     .composing(composer.marked())
                     .misspelled(current)
-                    .highlighted(doc.highlights());
+                    .highlighted(doc.highlights())
+                    .gripped(&doc.vmap, st.touch_mode.get());
                 let h = frame.update(&doc.vmap, &marks).to_vec();
                 // A table's picture is box-drawn in character cells, so its
                 // rows stay monospace, as code does.

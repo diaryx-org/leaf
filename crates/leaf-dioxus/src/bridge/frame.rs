@@ -143,6 +143,9 @@ fn marked_rows(vmap: &VisualMap, marks: &Marks) -> Vec<usize> {
     if let Some((r, _)) = marks.caret {
         rows.push(r);
     }
+    if let Some((a, b)) = marks.grips {
+        rows.extend([a.0, b.0]);
+    }
     let ranges = [marks.selection, marks.composing].into_iter().flatten();
     let highlights = marks.highlights.iter().map(|h| (h.start, h.end));
     for (lo, hi) in ranges

@@ -169,8 +169,7 @@ pub fn view_of(
                         view: RowView {
                             runs,
                             caret_col,
-                            code: false,
-                            decoration: false,
+                            ..RowView::default()
                         },
                         srcs,
                         end: cell.end,

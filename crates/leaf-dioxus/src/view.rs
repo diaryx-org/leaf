@@ -27,7 +27,8 @@ pub enum Appearance {
 /// What the widget adds to the bridge's stylesheet: proportional body text
 /// with code and tables in cells, in the type `text.rs` measures with;
 /// `.leaf` as a viewport the editor scrolls itself; a known left edge for
-/// [`row::PAD`]; the inline caret `row.rs` draws; tables; the find bar and
+/// [`row::PAD`]; the inline caret and a selection's grab handles
+/// `row.rs` draws; tables; the find bar and
 /// the status line.
 ///
 /// A function of the [`Type`] because the faces, the size and the leading
@@ -126,6 +127,11 @@ const REST: &str = "
 .leaf .caret-in { display: inline-block; width: 0; height: 1.2em;
                   border-left: 2px solid var(--leaf-accent); margin-right: -2px;
                   vertical-align: text-bottom; }
+.leaf .grip { display: inline-block; width: 10px; margin: 0 -5px; vertical-align: text-bottom; }
+.leaf .grip.start { margin-top: -10px; }
+.leaf .grip.end { margin-bottom: -10px; }
+.leaf .grip .stem { display: block; width: 2px; height: 1.2em; margin-left: 4px; background: var(--leaf-accent); }
+.leaf .grip .knob { display: block; width: 10px; height: 10px; border-radius: 5px; background: var(--leaf-accent); }
 .status { position: absolute; z-index: 1;
           height: 24px; line-height: 24px; padding: 0 16px; box-sizing: border-box;
           font: 12px ui-monospace, monospace; color: var(--leaf-secondary); background: var(--chrome-bg);

@@ -50,6 +50,9 @@ pub struct RowView {
     pub code: bool,
     /// Drawn but holds no caret: a table rule, a block gap.
     pub decoration: bool,
+    /// The display columns of the selection's start and end, when they are
+    /// in this row and the selection has grab handles ([`Marks::grips`]).
+    pub grips: (Option<usize>, Option<usize>),
 }
 
 /// A row view behind a pointer, compared **by pointer**.
@@ -110,6 +113,10 @@ pub struct Marks<'a> {
     /// their glyphs carry `hl`, and the ink's name when it has one
     /// ([`ink`]), which the stylesheet washes.
     pub highlights: &'a [leaf_core::Highlight],
+    /// The selection's start and end as (row, column), when it is drawn
+    /// with grab handles a finger drags — under a finger, as a phone's text
+    /// view draws them, and not under a mouse.
+    pub grips: Option<((usize, usize), (usize, usize))>,
 }
 
 impl<'a> Marks<'a> {
@@ -121,6 +128,18 @@ impl<'a> Marks<'a> {
             composing: None,
             misspelled: &[],
             highlights: &[],
+            grips: None,
+        }
+    }
+
+    /// The same marks, the selection drawn with grab handles when `on`.
+    pub fn gripped(self, vmap: &VisualMap, on: bool) -> Self {
+        Self {
+            grips: self
+                .selection
+                .filter(|(lo, hi)| on && lo != hi)
+                .map(|(lo, hi)| (vmap.pos_of_offset(lo), vmap.pos_of_offset(hi))),
+            ..self
         }
     }
 
@@ -206,6 +225,9 @@ pub fn row_view(vrow: &VRow, row: usize, marks: &Marks, opts: Opts) -> RowView {
         caret_col: marks.caret.and_then(|(r, c)| (r == row).then_some(c)),
         code: vrow.code,
         decoration: vrow.decoration,
+        grips: marks.grips.map_or((None, None), |(a, b)| {
+            ((a.0 == row).then_some(a.1), (b.0 == row).then_some(b.1))
+        }),
     }
 }
 
@@ -312,6 +334,22 @@ mod tests {
     }
 
     #[test]
+    fn a_gripped_selection_marks_its_ends_on_their_rows() {
+        let d = doc("hello world\n\nagain here\n");
+        let marks = Marks::of(&d.vmap, 15, Some(6)).gripped(&d.vmap, true);
+        let rows: Vec<_> = (0..d.vmap.rows.len())
+            .map(|r| row_view(&d.vmap.rows[r], r, &marks, Opts::default()).grips)
+            .collect();
+        assert_eq!(rows[0], (Some(6), None));
+        assert_eq!(rows.last(), Some(&(None, Some(2))));
+        let off = Marks::of(&d.vmap, 15, Some(6)).gripped(&d.vmap, false);
+        assert_eq!(
+            row_view(&d.vmap.rows[0], 0, &off, Opts::default()).grips,
+            (None, None)
+        );
+    }
+
+    #[test]
     fn a_selection_splits_a_run_and_classes_it() {
         let d = doc("hello world\n");
         let marks = Marks {
@@ -320,6 +358,7 @@ mod tests {
             composing: None,
             misspelled: &[],
             highlights: &[],
+            grips: None,
         };
         let v = row_view(&d.vmap.rows[0], 0, &marks, Opts::default());
         assert_eq!(v.runs[0].text, "hello");
