@@ -349,6 +349,13 @@ pub fn MediaBlock(block: Block) -> Element {
         .into_iter()
         .next()
         .unwrap_or_default();
+    // A quote's bars stand over the box's margin above and below too, so
+    // they meet the bars of the rows around it.
+    let quoted = if prefix.iter().any(|s| matches!(s, Seg::Bar(..))) {
+        format!("align-self: stretch; margin: -{GAP}px 0;")
+    } else {
+        String::new()
+    };
     let caret = |at: Caret| {
         (block.caret == Some(at)).then(|| {
             rsx! { span { style: "flex: none; width: 0; height: {h}px; border-left: 2px solid #1a73e8; margin-right: -2px;" } }
@@ -421,11 +428,11 @@ pub fn MediaBlock(block: Block) -> Element {
                 let x = (e.client_coordinates().x - PAD) as f32;
                 (tap.0)(Pointer::Tap { at: Target::Block { first }, line: 0, x });
             },
-            span { style: "flex: none; width: {block.indent}px; white-space: pre;",
+            span { style: "flex: none; width: {block.indent}px; white-space: pre; {quoted}",
                 for seg in prefix {
                     match seg {
                         Seg::Caret => rsx! {},
-                        seg => seg.render(),
+                        seg => seg.tall(block.height()).render(),
                     }
                 }
             }

@@ -12,7 +12,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::table::{AlignKind, BORDER, Block};
-use crate::text::{Kind, RowLayout, byte_of_col};
+use crate::text::{Kind, QUOTE_BAR, RowLayout, byte_of_col};
 
 /// The column's side padding, in CSS pixels: the document's left edge in a
 /// window just wide enough for it. A line reports a click's client x less
@@ -284,6 +284,14 @@ pub enum Seg {
     /// A grab handle at one end of the selection: its knob above the start
     /// (`false`) or below the end (`true`).
     Grip(bool),
+    /// One level of a quote's gutter, in place of the `│ ` core spells it
+    /// with: a cell [`Type::quote_indent`] wide with a bar down its left
+    /// edge, this many pixels tall — the whole line, so the bars of a
+    /// quote's lines and rows meet in one unbroken rule, as Swift's
+    /// `BlockChrome` draws it.
+    ///
+    /// [`Type::quote_indent`]: crate::text::Type::quote_indent
+    Bar(String, f32),
 }
 
 impl Seg {
@@ -293,6 +301,24 @@ impl Seg {
                 Seg::Math(r.class.clone(), src, s.to_owned())
             }
             _ => Seg::Text(r.class.clone(), s.to_owned()),
+        }
+    }
+
+    /// The same bar, `height` pixels tall: a table row's or a picture's
+    /// height, which its prefix stands beside.
+    pub fn tall(self, height: f32) -> Self {
+        match self {
+            Seg::Bar(class, _) => Seg::Bar(class, height),
+            seg => seg,
+        }
+    }
+
+    /// A prefix's text kept for its width and not drawn: a quoted list
+    /// item's marker on the lines after its first, which hang under it.
+    fn ghost(self) -> Self {
+        match self {
+            Seg::Text(class, text) if !is_gutter(&class) => Seg::Text(class + " ghost", text),
+            seg => seg,
         }
     }
 
@@ -319,8 +345,32 @@ impl Seg {
                     if end { span { class: "knob" } }
                 }
             },
+            Seg::Bar(class, height) => rsx! {
+                span { class: "{class} qbar", style: "height: {height}px" }
+            },
         }
     }
+}
+
+fn is_gutter(class: &str) -> bool {
+    class.split(' ').any(|c| c == "gutter")
+}
+
+/// `segs` with each quote gutter's text as its bars, `height` pixels tall.
+/// The gutter's spaces go: `text.rs` gives them no room.
+fn barred(segs: Vec<Seg>, height: f32) -> Vec<Seg> {
+    let mut out = Vec::with_capacity(segs.len());
+    for seg in segs {
+        match seg {
+            Seg::Text(class, text) if is_gutter(&class) => out.extend(
+                text.chars()
+                    .filter(|&c| c == QUOTE_BAR)
+                    .map(|_| Seg::Bar(class.clone(), height)),
+            ),
+            seg => out.push(seg),
+        }
+    }
+    out
 }
 
 /// The row cut into its visual lines, the caret spliced in where it falls,
@@ -377,17 +427,22 @@ pub fn lines(v: &RowView, lay: &RowLayout) -> Vec<Vec<Seg>> {
             .collect()
     };
 
-    // The prefix: on the first line always, and on every line for a quote.
+    // The prefix: on the first line always. A quote's bars go down every
+    // line; the rest of its prefix — a quoted list item's marker — is only
+    // room on the lines after the first, so the item hangs under its text.
     let pre = splice(prefix, 0..usize::MAX, &on(true, 0));
-    let bare = splice(prefix, 0..usize::MAX, &[]);
+    let bare: Vec<Seg> = splice(prefix, 0..usize::MAX, &[])
+        .into_iter()
+        .map(Seg::ghost)
+        .collect();
 
     lay.lines
         .iter()
         .enumerate()
         .map(|(n, l)| {
             let mut segs = match n {
-                0 => pre.clone(),
-                _ if lay.repeat => bare.clone(),
+                0 => barred(pre.clone(), l.height),
+                _ if lay.repeat => barred(bare.clone(), l.height),
                 _ => Vec::new(),
             };
             segs.extend(splice(body, l.bytes.clone(), &on(false, n)));
@@ -452,8 +507,76 @@ mod tests {
                 Seg::Caret => "|",
                 Seg::Grip(false) => "[",
                 Seg::Grip(true) => "]",
+                Seg::Bar(..) => "┃",
             })
             .collect()
+    }
+
+    fn styled(text: &str, class: &str) -> Run {
+        Run {
+            text: text.into(),
+            class: class.into(),
+            src: None,
+        }
+    }
+
+    const PROSE: &str = "The quick brown fox jumps over the lazy dog, and then it does so again, \
+                         at length, until the line has no choice but to wrap at least twice over.";
+
+    #[test]
+    fn a_quote_draws_a_bar_per_level_down_every_line() {
+        use crate::text::{Fonts, Type};
+        let v = RowView {
+            runs: vec![styled("│ │ ", "g gutter"), run(PROSE)],
+            caret_col: Some(4),
+            ..RowView::default()
+        };
+        let lay = Fonts::new(Type::default()).layout(&v, 300.0, Kind::Prose);
+        let lines = lines(&v, &lay);
+        assert!(lines.len() >= 3, "{} lines", lines.len());
+        for (n, segs) in lines.iter().enumerate() {
+            let text = texts(segs);
+            assert!(text.starts_with("┃┃"), "line {n}: {text:?}");
+            assert!(!text.contains('│'), "line {n} draws the glyph: {text:?}");
+            // Each bar is its line's height, so the lines' bars meet.
+            for seg in segs {
+                if let Seg::Bar(_, h) = seg {
+                    assert_eq!(*h, lay.lines[n].height, "line {n}");
+                }
+            }
+        }
+        assert!(texts(&lines[0]).starts_with("┃┃|The"), "{:?}", lines[0]);
+    }
+
+    #[test]
+    fn a_quoted_list_item_wears_its_marker_on_its_first_line_only() {
+        use crate::text::{Fonts, Type};
+        let v = RowView {
+            runs: vec![
+                styled("│ ", "g gutter"),
+                styled("• ", "g marker"),
+                run(PROSE),
+            ],
+            ..RowView::default()
+        };
+        let lay = Fonts::new(Type::default()).layout(&v, 300.0, Kind::Prose);
+        let lines = lines(&v, &lay);
+        assert!(lines[0].contains(&Seg::Text("g marker".into(), "• ".into())));
+        for segs in &lines[1..] {
+            assert!(matches!(segs[0], Seg::Bar(..)));
+            // The marker stays as room, so the text hangs under the first
+            // line's, but it is not drawn again.
+            assert_eq!(segs[1], Seg::Text("g marker ghost".into(), "• ".into()));
+        }
+    }
+
+    #[test]
+    fn a_bar_beside_a_table_row_or_a_picture_is_as_tall_as_it() {
+        assert_eq!(
+            Seg::Bar("g gutter".into(), 24.0).tall(40.0),
+            Seg::Bar("g gutter".into(), 40.0)
+        );
+        assert_eq!(Seg::Caret.tall(40.0), Seg::Caret);
     }
 
     #[test]
@@ -526,7 +649,7 @@ pub fn TableBlock(block: Block) -> Element {
                     style: "height: {heights[r]}px",
                     span { class: "tprefix", style: "width: {l.indent}px",
                         for seg in prefix.clone() {
-                            {seg.render()}
+                            {seg.tall(heights[r]).render()}
                         }
                     }
                     for c in 0..l.cols.len() {

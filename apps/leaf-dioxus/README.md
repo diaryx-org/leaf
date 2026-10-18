@@ -94,7 +94,12 @@ truth, and only a sub-glyph x could drift between the two. A click is
 caret was already an inline span, so it sits after the right glyph in any
 font. ↑/↓, Home/End and ⌘←/→ move by *visual* line from the caret's x with a
 sticky goal x, Swift's rule, because core's own motion knows only its rows.
-List items hang under their text; a quote's gutter repeats on every line.
+List items hang under their text. A quote's gutter is not the `│ ` core
+spells it with but, as in the Swift editor, a cell a fixed 1.375em wide per
+level (22 px at 16) with a 3 px bar down its left edge, as tall as the line it
+stands in — so the bars of a quote's lines, rows, tables and images meet in one
+unbroken rule. parley measures the same cell, so a click past the gutter still
+lands on its text; a quoted list item hangs under its text like any other.
 
 Measured on the corpus: a click lands the caret between the two letters
 under the pointer, ↑ keeps its x across lines, End stops at the wrapped
