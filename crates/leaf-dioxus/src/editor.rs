@@ -220,6 +220,9 @@ pub struct State {
     pub touch_mode: Cell<bool>,
     /// Which ways a sideways drag may turn the page: back, and forward.
     pub turns: Cell<(bool, bool)>,
+    /// Every visual line on screen, as Blitz laid it out — what
+    /// [`Editor::drawn_rect_of`] measures.
+    pub lines: crate::row::LineBoxes,
 }
 
 /// What the render reads. Each is a signal, so the page re-renders when an
@@ -365,6 +368,11 @@ pub fn use_shared_editor(
         let ed = ed.clone();
         move || PointerSink(Rc::new(move |p| ed.pointer(p)))
     });
+    // And where each line was put, from every line of every row.
+    use_context_provider({
+        let ed = ed.clone();
+        move || ed.st.lines.clone()
+    });
     ed
 }
 
@@ -400,6 +408,7 @@ impl Editor {
             touch: Cell::new(None),
             touch_mode: Cell::new(false),
             turns: Cell::new((false, false)),
+            lines: Default::default(),
         };
         Self {
             st: Rc::new(st),

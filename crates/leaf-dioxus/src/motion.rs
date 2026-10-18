@@ -120,6 +120,30 @@ impl Editor {
         ))
     }
 
+    /// [`rect_of`](Self::rect_of), its line measured where Blitz drew it
+    /// rather than where the layout puts it: the two part where the page's
+    /// stylesheet has not reached the rows (they are drawn in the bridge's
+    /// monospace, and parley measured the look's face), or where something
+    /// above the rows takes room the layout does not count. What a host
+    /// points at a range with — a system edit menu over a selection — so
+    /// that it points at the glyphs on screen. `None` where `rect_of` is, or
+    /// where the line is not mounted.
+    pub async fn drawn_rect_of(&self, from: usize, to: usize) -> Option<(f64, f64, f64, f64)> {
+        let (x, _, w, _) = self.rect_of(from, to)?;
+        let (row, col) = pos_of(&self.st.doc.borrow(), from);
+        let line = self.sig.lays.peek().get(row)?.0.caret(col).0;
+        let data = self
+            .st
+            .lines
+            .0
+            .borrow()
+            .get(&(Target::Row(row), line))?
+            .1
+            .clone();
+        let r = data.get_client_rect().await.ok()?;
+        Some((x, r.origin.y, w, r.size.height))
+    }
+
     /// The face and size the character at source offset `off` is set in,
     /// in CSS pixels. `None` on a block, or where no row is laid out.
     pub fn font_at(&self, off: usize) -> Option<(parley::FontData, f32)> {

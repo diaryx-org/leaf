@@ -1,6 +1,8 @@
 //! One row: its visual lines, the caret spliced in among their runs, and the
 //! pointer that lands on them.
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -22,7 +24,7 @@ pub const PAD: f64 = 16.0;
 
 /// What a line belongs to: a row, a cell of the table whose first row is
 /// `first`, or a block with nothing finer to hit (a picture).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
     Row(usize),
     Cell { first: usize, r: usize, c: usize },
@@ -122,6 +124,32 @@ impl PartialEq for PointerSink {
     }
 }
 
+/// Every visual line mounted, by what it belongs to and its number there:
+/// the element Blitz laid it out as, to ask where it is drawn
+/// ([`Editor::drawn_rect_of`]). Each entry carries the id of the [`Line`]
+/// that put it there, so a line going takes out its own entry and not one a
+/// line now at its place has put in.
+///
+/// [`Editor::drawn_rect_of`]: crate::Editor::drawn_rect_of
+#[derive(Clone, Default)]
+pub struct LineBoxes(pub Rc<RefCell<HashMap<LineAt, LineBox>>>);
+
+/// A visual line's place: what it belongs to, and its number there.
+pub type LineAt = (Target, usize);
+
+/// A mounted line: the id of the [`Line`] that mounted it, and its element.
+pub type LineBox = (u64, Rc<MountedData>);
+
+impl PartialEq for LineBoxes {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+thread_local! {
+    static NEXT_LINE: Cell<u64> = const { Cell::new(0) };
+}
+
 /// A row's layout behind a pointer, compared by pointer like [`RowHandle`]:
 /// the editor reuses it for every row whose handle and width did not change.
 #[derive(Clone)]
@@ -180,12 +208,49 @@ pub fn Line(
     segs: Vec<Seg>,
 ) -> Element {
     let (drag, tap) = (sink.clone(), sink.clone());
+    // Where this line is, kept under its place for as long as it is
+    // mounted — and moved when the line is given another place, as a row
+    // is when one above it goes.
+    let boxes = try_use_context::<LineBoxes>();
+    let me = use_hook(|| NEXT_LINE.with(|n| n.replace(n.get() + 1)));
+    let kept = use_hook(|| Rc::new(RefCell::new(None::<(LineAt, Rc<MountedData>)>)));
+    if let Some(b) = &boxes {
+        let mut k = kept.borrow_mut();
+        if let Some((key, data)) = k.as_mut()
+            && *key != (at, line)
+        {
+            let mut map = b.0.borrow_mut();
+            if map.get(key).is_some_and(|(id, _)| *id == me) {
+                map.remove(key);
+            }
+            *key = (at, line);
+            map.insert(*key, (me, data.clone()));
+        }
+    }
+    use_drop({
+        let (boxes, kept) = (boxes.clone(), kept.clone());
+        move || {
+            if let (Some(b), Some((key, _))) = (boxes, kept.borrow_mut().take()) {
+                let mut map = b.0.borrow_mut();
+                if map.get(&key).is_some_and(|(id, _)| *id == me) {
+                    map.remove(&key);
+                }
+            }
+        }
+    });
     rsx! {
         // A wrapped list item's lines hang under its text by padding, not by
         // a spacer child: a child that is only sometimes there is a Dioxus
         // placeholder the rest of the time, and Blitz gave that a few
         // pixels of width at the start of the line.
         div { class: "line", style: "padding-left: {indent}px",
+            onmounted: move |e: MountedEvent| {
+                let data = e.data();
+                if let Some(b) = &boxes {
+                    b.0.borrow_mut().insert((at, line), (me, data.clone()));
+                }
+                *kept.borrow_mut() = Some(((at, line), data));
+            },
             onmousedown: move |e: MouseEvent| {
                 let x = (e.client_coordinates().x - origin) as f32;
                 let (extend, mode) = press_mode(&e);
