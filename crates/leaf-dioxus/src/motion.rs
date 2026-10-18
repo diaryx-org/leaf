@@ -140,8 +140,19 @@ impl Editor {
             .get(&(Target::Row(row), line))?
             .1
             .clone();
-        let r = data.get_client_rect().await.ok()?;
-        Some((x, r.origin.y, w, r.size.height))
+        // Read through the document's shared borrow, not `get_client_rect`,
+        // which takes it mutably and panics while it is borrowed — as it is
+        // when a window event reaches the host that asks. Busy, it is asked
+        // again a frame later, a few times.
+        let node = data.downcast::<dioxus_native::NodeHandle>()?;
+        for _ in 0..10 {
+            if let Some(doc) = node.try_doc() {
+                let r = doc.get_client_bounding_rect(node.node_id())?;
+                return Some((x, r.y, w, r.height));
+            }
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+        None
     }
 
     /// The face and size the character at source offset `off` is set in,
