@@ -65,6 +65,11 @@ impl Editor {
         let st = &*self.st;
         let (x, y) = self.logical(at);
         if pressed {
+            // A finger on a gliding page stops it where it is.
+            st.caught.set(self.gliding());
+            self.stop_glide();
+            st.tracker.borrow_mut().reset();
+            st.tracker.borrow_mut().push(y);
             let grip = st.touch_mode.get().then(|| self.grip_at(x, y)).flatten();
             st.touch_mode.set(true);
             st.gripped.set(grip.is_some());
@@ -104,6 +109,15 @@ impl Editor {
                 return;
             }
         }
+        // A scroll let go: the page carries on at the finger's speed, or
+        // springs back from past an end.
+        if st.touch.get().is_some_and(|t| t.scrolling) {
+            st.tracker.borrow_mut().push(y);
+            let vel = -st.tracker.borrow().velocity();
+            st.touch.set(None);
+            self.start_glide(vel);
+            return;
+        }
         st.touch.set(None);
     }
 
@@ -137,9 +151,77 @@ impl Editor {
             set(self.sig.slide, dx);
         }
         if t.scrolling {
-            self.scroll_to((t.top - dy).clamp(0.0, self.max_top()));
+            // Past either end the page stretches, giving less the further
+            // it is pulled.
+            let raw = t.top - dy;
+            let max = self.max_top().max(0.0);
+            self.scroll_to(crate::kinetic::rubber(raw, 0.0, max, self.bounds().height));
+            st.tracker.borrow_mut().push(y);
         }
         st.touch.set(Some(t));
+    }
+
+    /// Whether the page is moving on its own.
+    fn gliding(&self) -> bool {
+        self.st.glide.get() % 2 == 1
+    }
+
+    /// Stop the page where it is.
+    fn stop_glide(&self) {
+        let g = self.st.glide.get();
+        if g % 2 == 1 {
+            self.st.glide.set(g + 1);
+        }
+    }
+
+    /// Let the page carry on at `vel` CSS pixels a millisecond, slowing as a
+    /// phone's scroll view slows, and spring back if it is past an end —
+    /// frame by frame, each moved as far as the time since the last says.
+    /// An odd `glide` is a glide under way; landing a finger, or starting
+    /// another, makes it even and the loop below stops.
+    fn start_glide(&self, vel: f64) {
+        let st = &*self.st;
+        let max = self.max_top().max(0.0);
+        let top = self.top();
+        let still = vel.abs() < 0.05;
+        if still && (0.0..=max).contains(&top) {
+            return;
+        }
+        let Some((rt, scope)) = st.home.clone() else {
+            self.scroll_to(top.clamp(0.0, max));
+            return;
+        };
+        let id = st.glide.get() / 2 * 2 + 3;
+        st.glide.set(id);
+        let ed = self.clone();
+        let mut g = crate::kinetic::Glide {
+            pos: top,
+            vel: if still { 0.0 } else { vel },
+            min: 0.0,
+            max,
+        };
+        rt.spawn(scope, async move {
+            let mut last = std::time::Instant::now();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+                if ed.st.glide.get() != id {
+                    return;
+                }
+                let now = std::time::Instant::now();
+                let dt = now.duration_since(last).as_secs_f64() * 1000.0;
+                last = now;
+                g.max = ed.max_top().max(0.0);
+                let moving = g.step(dt);
+                ed.scroll_to(g.pos);
+                // A change made from a task waits, on iOS, for the next event
+                // to be drawn: ask for the frame.
+                ed.st.window.request_redraw();
+                if !moving {
+                    ed.st.glide.set(id + 1);
+                    return;
+                }
+            }
+        });
     }
 
     /// Whether a finger is dragging one of the selection's grab handles: a

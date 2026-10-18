@@ -273,6 +273,8 @@ impl Editor {
         let p = match p {
             // A finger let go of a grab handle, not tapped the text.
             Pointer::Tap { .. } if st.gripped.get() => return,
+            // A finger that landed on a gliding page stopped it, and only that.
+            Pointer::Tap { .. } if st.caught.replace(false) => return,
             Pointer::Tap { at, line, x } if st.touch_mode.get() => {
                 self.enable_ime();
                 Pointer::Press {

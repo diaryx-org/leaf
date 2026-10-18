@@ -226,6 +226,18 @@ pub struct State {
     /// Every visual line on screen, as Blitz laid it out — what
     /// [`Editor::drawn_rect_of`] measures.
     pub lines: crate::row::LineBoxes,
+    /// The finger's recent positions while it scrolls, for its speed when
+    /// it lets go; see `kinetic.rs`.
+    pub tracker: RefCell<crate::kinetic::Tracker>,
+    /// Which glide is the page's: each one started, or a finger landing,
+    /// moves it on, and a glide that finds it moved stops.
+    pub glide: Cell<u64>,
+    /// Whether the page was gliding when the last finger went down: that
+    /// finger caught it, and the tap Blitz sends as it comes up is not one.
+    pub caught: Cell<bool>,
+    /// The runtime and the component the editor was made in, where a glide
+    /// runs: it ends with them.
+    pub home: Option<(Rc<dioxus::core::Runtime>, dioxus::core::ScopeId)>,
 }
 
 /// What the render reads. Each is a signal, so the page re-renders when an
@@ -413,6 +425,11 @@ impl Editor {
             gripped: Cell::new(false),
             turns: Cell::new((false, false)),
             lines: Default::default(),
+            tracker: RefCell::default(),
+            glide: Cell::new(0),
+            caught: Cell::new(false),
+            home: dioxus::core::Runtime::try_current()
+                .and_then(|rt| rt.try_current_scope_id().map(|id| (rt, id))),
         };
         Self {
             st: Rc::new(st),
