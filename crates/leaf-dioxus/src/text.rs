@@ -719,7 +719,15 @@ mod tests {
     #[test]
     fn a_family_is_known_by_name() {
         let mut f = Fonts::new(Type::default());
-        assert!(f.has_family("Menlo"));
+        // Whatever face this machine has: Menlo is only on Apple platforms.
+        let installed = f
+            .fcx
+            .collection
+            .family_names()
+            .next()
+            .expect("a system font")
+            .to_owned();
+        assert!(f.has_family(&installed));
         assert!(!f.has_family("No Such Face Anywhere"));
     }
 }
