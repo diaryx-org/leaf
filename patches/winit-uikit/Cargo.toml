@@ -131,6 +131,7 @@ features = [
     "UIPinchGestureRecognizer",
     "UIResponder",
     "UIRotationGestureRecognizer",
+    "UIScene",
     "UIScreen",
     "UIScreenMode",
     "UITapGestureRecognizer",
@@ -139,6 +140,7 @@ features = [
     "UIView",
     "UIViewController",
     "UIWindow",
+    "UIWindowScene",
 ]
 default-features = false
 
