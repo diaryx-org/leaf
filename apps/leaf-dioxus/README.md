@@ -79,6 +79,20 @@ window as winit's own events (`drive.rs`) — how a session with no hand on
 the system's pointer clicks in the page. Menu bar items are pressed through
 the accessibility API, which reaches only this app's menus.
 
+**Accessibility.** Blitz's `accessibility` feature is on: AccessKit builds
+the window's tree from the page, which VoiceOver and agents read through
+`NSAccessibility`. Blitz comes from diaryx-org's fork
+([`diaryx-org/blitz`](https://github.com/diaryx-org/blitz), branch `leaf`,
+`FORK.md` there), whose tree has each node's bounds, the page's text as
+static text and the click action on buttons; every Blitz crate in the graph
+is patched from it, as its crates depend on each other by path. What
+assistive tech asks a window to do — a press — Blitz leaves to its host, and
+`access.rs` carries it out as a click at the node's middle, through the
+window's own events. The tree is rebuilt after each frame drawn
+(`App::window_event`), a no-op while no assistive tech listens: Blitz
+rebuilds it only on a poll that finds changes, which the app's own resolves
+have usually taken first. The iOS side is the spike `spikes/blitz-ios-a11y`.
+
 **winit is patched.** Its macOS backend is vendored at leaf's root, in
 `patches/winit-appkit` (`PATCH.md` says what and why; `upstream/` is the
 change prepared for winit): the text input client answers from the text

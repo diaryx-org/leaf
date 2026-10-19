@@ -486,6 +486,11 @@ fn redraw(view: &mut View<Renderer>, frame: &mut Frame) {
     if owed {
         view.is_visible = false;
     }
+    // The tree assistive tech reads, as the frame just drawn shows it: Blitz
+    // rebuilds it on a poll that finds changes, which this app's own
+    // resolves have often taken first. A no-op while no assistive tech is
+    // listening.
+    view.build_accessibility_tree();
     // Blitz paints nothing while a stylesheet or font the page waits on is
     // still loading; its arrival asks for another redraw.
     if (view.is_visible || owed) && !blocked {
@@ -579,6 +584,22 @@ impl ApplicationHandler for App {
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         while let Ok(event) = self.blitz.event_queue.try_recv() {
+            // A press assistive tech asks for is carried out here, as a
+            // click; Blitz leaves it undone.
+            if let BlitzShellEvent::Accessibility { window_id, data } = &event
+                && let accesskit_xplat::WindowEvent::ActionRequested(request) = &**data
+            {
+                let events = self
+                    .blitz
+                    .windows
+                    .get(window_id)
+                    .map(|view| crate::access::events(view, request))
+                    .unwrap_or_default();
+                for e in events {
+                    self.window_event(event_loop, *window_id, e);
+                }
+                continue;
+            }
             match event {
                 BlitzShellEvent::Embedder(_) => {}
                 // Blitz's own handling of these, noting which windows'
