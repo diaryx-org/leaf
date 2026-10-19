@@ -1,14 +1,13 @@
-//! `cargo xtask swift` — build and launch Leaf, the Apple document app: on
-//! macOS `apps/leaf-mac`, a SwiftUI app over the leaf-dioxus editor
-//! (`crates/leaf-dioxus-embed`); with `--ios`, `apps/leaf-editor`, over the
+//! `cargo xtask swift` — build and launch Leaf: on macOS the Rust app,
+//! `apps/leaf-dioxus` (which is `cargo xtask mac`'s, kept under this name for
+//! the hands that already type it); with `--ios`, `apps/leaf-editor`, over the
 //! `packages/leaf-swift` editor.
 //!
-//! The Mac app is two toolchains deep: xcodegen turns `project.yml` into an
-//! Xcode project, and xcodebuild builds it, its pre-build script building the
-//! Rust staticlib. The iOS app adds two before those — cargo builds
-//! `crates/leaf-ffi` and uniffi-bindgen turns it into Swift — which are
-//! `apps/leaf-editor/bootstrap.sh`'s job. This task decides *when* each
-//! project needs generating, then builds and launches.
+//! The iOS app is four toolchains deep: cargo builds `crates/leaf-ffi`,
+//! uniffi-bindgen turns it into Swift — `apps/leaf-editor/bootstrap.sh`'s
+//! job — then xcodegen turns `project.yml` into an Xcode project and
+//! xcodebuild builds it. This task decides *when* the project needs
+//! generating, then builds and launches.
 
 use crate::util::{cmd, require_tool, run, run_ignoring_failure, stdout};
 use anyhow::{Context, Result, bail};
@@ -70,33 +69,20 @@ pub struct Args {
     file: Option<std::path::PathBuf>,
 }
 
-/// The app's directory: the Mac's, or with `ios` the iOS one's.
-pub fn app_dir(ios: bool) -> std::path::PathBuf {
-    crate::util::root().join(if ios {
-        "apps/leaf-editor"
-    } else {
-        "apps/leaf-mac"
-    })
+/// The iOS app's directory.
+pub fn app_dir() -> std::path::PathBuf {
+    crate::util::root().join("apps/leaf-editor")
 }
 
 /// The Xcode project, generated first if it is missing, older than what it is
-/// generated from, or `regen` asks for it. Shared with `cargo xtask package`,
-/// which builds the Mac's.
-pub fn project(regen: bool, ios: bool) -> Result<std::path::PathBuf> {
+/// generated from, or `regen` asks for it.
+pub fn project(regen: bool) -> Result<std::path::PathBuf> {
     require_tool("xcodebuild", "install Xcode and its command-line tools")?;
     require_tool("xcodegen", "brew install xcodegen")?;
 
     let root = crate::util::root();
-    let app_dir = app_dir(ios);
+    let app_dir = app_dir();
     let project = app_dir.join(format!("{SCHEME}.xcodeproj"));
-    if !ios {
-        // No binding to generate: the Mac app's Rust is a C ABI whose header
-        // is committed beside the crate.
-        if regen || !project.exists() || stale(&app_dir, &project) {
-            run(cmd("xcodegen").arg("generate").current_dir(&app_dir))?;
-        }
-        return Ok(project);
-    }
     let binding = root.join("packages/leaf-swift/uniffi-generated/Sources/LeafFFI/leaf_ffi.swift");
 
     // The project is git-ignored and regenerable (the binding is committed, but
@@ -137,29 +123,31 @@ fn stale(app_dir: &Path, project: &Path) -> bool {
 
 pub fn run_task(args: Args) -> Result<()> {
     let ios = args.ios || args.device.is_some();
-    let project = project(args.regen, ios)?;
-    let root = crate::util::root();
-    let app_dir = app_dir(ios);
+    if !ios {
+        return crate::mac::run_task(crate::mac::Args {
+            release: args.release,
+            build_only: args.build_only,
+            file: args.file,
+        });
+    }
+    let project = project(args.regen)?;
+    let app_dir = app_dir();
 
     // A build alone needs no simulator: it is for a generic one, and makes
     // or boots none.
-    let device = if ios && !args.build_only {
+    let device = if !args.build_only {
         Some(simulator(args.device.as_deref())?)
     } else {
         None
     };
     let config = if args.release { "Release" } else { "Debug" };
 
-    // A macOS build and a simulator build write incompatible products under the
-    // same names, so they get their own derived-data trees and neither
-    // invalidates the other's incremental state.
-    let derived = app_dir.join(if ios { "build/DD-iOS" } else { "build/DD" });
+    let derived = app_dir.join("build/DD-iOS");
     let destination = match &device {
         // By id rather than name: two runtimes can each hold an `iPhone 17`,
         // and a name then builds for whichever xcodebuild reaches first.
         Some(device) => format!("platform=iOS Simulator,id={}", device.udid),
-        None if ios => "generic/platform=iOS Simulator".to_string(),
-        None => "platform=macOS".to_string(),
+        None => "generic/platform=iOS Simulator".to_string(),
     };
 
     let mut build = cmd("xcodebuild");
@@ -173,7 +161,7 @@ pub fn run_task(args: Args) -> Result<()> {
         .arg("-derivedDataPath")
         .arg(&derived)
         .arg("build");
-    if ios && device.is_none() {
+    if device.is_none() {
         // A generic simulator is every architecture; the Rust staticlib is
         // Apple Silicon's alone.
         build.arg("ARCHS=arm64");
@@ -185,11 +173,7 @@ pub fn run_task(args: Args) -> Result<()> {
 
     let product = derived
         .join("Build/Products")
-        .join(if ios {
-            format!("{config}-iphonesimulator")
-        } else {
-            config.to_string()
-        })
+        .join(format!("{config}-iphonesimulator"))
         .join(format!("{SCHEME}.app"));
     if !product.is_dir() {
         bail!(
@@ -205,30 +189,8 @@ pub fn run_task(args: Args) -> Result<()> {
 
     match device {
         Some(device) => launch_simulator(&device, &product),
-        None => {
-            let file = match args.file {
-                Some(file) => file,
-                None => sample_copy(&root)?,
-            };
-            launch_macos(&product, &file)
-        }
+        None => Ok(()),
     }
-}
-
-/// The bundled sample and its media, copied to `target/leaf-sample/` so the
-/// app can open it as a file — a document app with nothing to open shows the
-/// Open panel at launch, and a copy is one the developer can edit and save.
-fn sample_copy(root: &Path) -> Result<std::path::PathBuf> {
-    let dir = root.join("target/leaf-sample");
-    std::fs::create_dir_all(&dir)?;
-    // Both apps' sample: the iOS app's, which the Mac app bundles from there.
-    let app = app_dir(true).join("App");
-    std::fs::copy(app.join("Sample.md"), dir.join("Sample.md"))?;
-    for entry in std::fs::read_dir(app.join("Media"))? {
-        let entry = entry?;
-        std::fs::copy(entry.path(), dir.join(entry.file_name()))?;
-    }
-    Ok(dir.join("Sample.md"))
 }
 
 /// A simulator as `simctl` knows it. Every `simctl` verb and xcodebuild's
@@ -273,20 +235,6 @@ fn find_simulator(name: &str) -> Result<Option<String>> {
         let (candidate, udid) = rest.rsplit_once(" (")?;
         (candidate == name).then(|| udid.trim_end_matches(')').to_string())
     }))
-}
-
-fn launch_macos(product: &Path, file: &Path) -> Result<()> {
-    // `open` on a bundle that is already running only raises its window, which
-    // would silently show the *previous* build. Retiring the old instance first
-    // makes "run" mean the thing that was just built.
-    run_ignoring_failure(cmd("pkill").args(["-x", SCHEME]));
-    // Through the document system, as a double-click in the Finder would.
-    let file = file
-        .canonicalize()
-        .with_context(|| format!("no such document: {}", file.display()))?;
-    run(cmd("open").arg("-a").arg(product).arg(&file))?;
-    println!("✓ Running {SCHEME} on macOS, with {}", file.display());
-    Ok(())
 }
 
 fn launch_simulator(device: &Simulator, product: &Path) -> Result<()> {

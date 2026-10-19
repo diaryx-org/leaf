@@ -42,10 +42,7 @@ use leaf_dioxus::{Appearance, Editor, Look};
 use peniko::{ImageAlphaType, ImageFormat};
 use skrifa::MetadataProvider;
 
-use crate::callbacks::Callbacks;
-use crate::runtime;
-use crate::view::{Init, Root};
-use crate::window::HostedWindow;
+use crate::offscreen::HostedWindow;
 
 /// A sheet and its margin, in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,6 +52,7 @@ pub struct Paper {
     pub margin: f32,
 }
 
+#[cfg(test)]
 impl Paper {
     pub const US_LETTER: Paper = Paper {
         width: 612.0,
@@ -80,6 +78,15 @@ pub fn render(
 ) -> Result<Vec<u8>, String> {
     let (scene, bottoms, width) = lay_out(source, format, path, look, paper)?;
     Ok(write(&scene, &bottoms, width, paper))
+}
+
+/// The document in `page`, set in the display choices at their own size, on
+/// `paper`, as a PDF; `None` if the editor has it borrowed or it will not
+/// lay out.
+pub fn of_page(page: &crate::page::Page, paper: Paper) -> Option<Vec<u8>> {
+    let (source, format, path) = page.with_doc(|d| (d.source.clone(), d.format, d.path.clone()))?;
+    let look = crate::shell::Shell::look_unzoomed();
+    render(&source, format, Some(path), look, paper).ok()
 }
 
 /// The offscreen editor's paint, every row's bottom, and the page's width,
@@ -140,10 +147,9 @@ fn offscreen(
         height,
         1.0,
         false,
-        Callbacks::none(),
     ));
     let as_dyn: Arc<dyn Window> = window.clone();
-    let proxy = runtime::proxy();
+    let proxy = crate::app::proxy();
     let editor = Rc::new(RefCell::new(None));
     let look = Look {
         measure: if screen.is_some() { look.measure } else { None },
@@ -151,10 +157,9 @@ fn offscreen(
         ..look
     };
 
-    let mut vdom = VirtualDom::new(Root);
-    vdom.insert_any_root_context(Box::new(Init {
+    let mut vdom = VirtualDom::new(Sheet);
+    vdom.insert_any_root_context(Box::new(SheetInit {
         doc: Rc::new(RefCell::new(Some(doc))),
-        host: Rc::new(Printer),
         editor: editor.clone(),
         look,
         print: screen.is_none(),
@@ -217,6 +222,40 @@ fn offscreen(
 /// The offscreen editor's host: it asks for nothing.
 struct Printer;
 impl leaf_dioxus::Host for Printer {}
+
+/// What the offscreen page is made with, and where it leaves its editor.
+#[derive(Clone)]
+struct SheetInit {
+    doc: Rc<RefCell<Option<Doc>>>,
+    editor: Rc<RefCell<Option<Editor>>>,
+    look: Look,
+    /// Laid out for paper: no caret, no status line.
+    print: bool,
+}
+
+/// The offscreen page: the editor, and nothing else.
+#[allow(non_snake_case)]
+fn Sheet() -> dioxus::prelude::Element {
+    use dioxus::prelude::*;
+    let init = use_context::<SheetInit>();
+    let ed = leaf_dioxus::use_editor(
+        || {
+            init.doc
+                .borrow_mut()
+                .take()
+                .unwrap_or_else(|| Doc::blank().expect("a blank document"))
+        },
+        || init.look.clone(),
+        || Rc::new(Printer) as Rc<dyn leaf_dioxus::Host>,
+    );
+    use_hook(|| *init.editor.borrow_mut() = Some(ed.clone()));
+    rsx! {
+        {ed.render()}
+        if init.print {
+            style { ".caret-in, .status {{ display: none; }}" }
+        }
+    }
+}
 
 /// Where pages break: the bottom of the last row that fits on each, or a
 /// page's height into a row taller than a page.

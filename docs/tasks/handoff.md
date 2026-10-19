@@ -1,18 +1,18 @@
 ---
 status: open
 created: 2026-10-04
-updated: 2026-10-04
+updated: 2026-10-19
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Handoff of an open document between the Mac and iOS apps
 
-**Where.** `apps/leaf-mac/project.yml` and `apps/leaf-editor/project.yml`
+**Where.** `apps/leaf-dioxus/Info.plist` and `apps/leaf-editor/project.yml`
 (the document types), and the scene in `apps/leaf-editor/App/LeafApp.swift`
 that would receive an activity on iOS.
 
 **What.** Leaf advertises no `NSUserActivity` for the document a window has
-open, so Handoff never offers it on a nearby device. `DocumentGroup` does not
-do it on its own: on the Mac it is `NSDocument` underneath, and `NSDocument`
+open, so Handoff never offers it on a nearby device. The Mac's `LeafDocument` is an
+`NSDocument` (`apps/leaf-dioxus/src/platform/macos/document.rs`), and `NSDocument`
 makes a document's activity only for a file in iCloud, and only when the
 document type in `CFBundleDocumentTypes` names an
 `NSUbiquitousDocumentUserActivityType`. Neither half is cheap here, for three

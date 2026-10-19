@@ -26,7 +26,7 @@ pub fn install_hook() {
         let default = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
             let line = format!(
-                "leaf-dioxus-embed panicked at {}: {}\n{}\n",
+                "Leaf panicked at {}: {}\n{}\n",
                 info.location()
                     .map_or_else(|| "?".into(), |l| l.to_string()),
                 message(info),

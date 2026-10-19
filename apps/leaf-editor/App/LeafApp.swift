@@ -60,7 +60,7 @@ private extension Scene {
 }
 
 private extension View {
-    /// What a Mac window needed; the Mac's app is `apps/leaf-mac` now.
+    /// What a Mac window needed; the Mac's app is `apps/leaf-dioxus` now.
     func sized(fileURL: URL?) -> some View {
         self
     }

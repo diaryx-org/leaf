@@ -1,291 +1,246 @@
-//! The settings panel (⌘,) and the text zoom (⌘+ / ⌘− / ⌘0): carrying a
-//! change out, and the panel's markup. The choices themselves are
-//! `settings.rs`.
+//! The Settings window: the reader's display choices (`settings.rs`) as
+//! one page, every row a [`leaf_dioxus_ui`] control. A choice is stored at
+//! once and every document window redraws with it.
 //!
-//! A change is one new [`Look`] handed to the editor, which lays its rows out
-//! for exactly the faces, size and leading Blitz then draws them in — which
-//! is what keeps a click on the glyph under it.
-//!
-//! The Swift editor's Settings is a window of its own. This is a panel in the
-//! editor's window, over its top-right corner and not modal — the text under
-//! it reflows as a choice is made and can still be typed in — because
-//! dioxus-native 0.8's `launch` opens one window and its Blitz document
-//! cannot be shared with a second.
+//! The body and code faces are chips for the book and screen faces the
+//! system ships, and an Other ▾ menu of every family installed, grouped by
+//! letter so that no menu runs past the window.
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use dioxus_native::winit::window::Theme;
-use leaf_dioxus::{Appearance, Editor, Look, ZoomCommand, trace};
+use leaf_dioxus::{Appearance, themed};
+use leaf_dioxus_ui::{Chips, Choice as Pill, Entry, Item, MenuButton, use_layer_provider};
 
+use crate::app;
+use crate::page::Made;
+use crate::platform;
 use crate::settings::{
-    BODY_FACES, Choice, ColumnWidth, LineSpacing, MONO_FACES, Settings, TextSize, zoom_step,
+    BODY_FACES, Choice, ColumnWidth, LineSpacing, MONO_FACES, Paper, Settings, TextSize,
 };
-use crate::shell::Shell;
 
-/// What the panel draws.
-#[derive(Clone, PartialEq, Default)]
-pub struct PrefsView {
-    pub open: bool,
-    pub settings: Settings,
-    /// The faces offered that are installed, as (name, CSS family list).
-    pub bodies: Vec<(String, String)>,
-    pub monos: Vec<(String, String)>,
-}
+/// The window's size, in points.
+pub const SIZE: (f64, f64) = (500.0, 640.0);
 
-/// One of the panel's controls.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Pick {
-    Body(String),
-    Mono(String),
-    Size(TextSize),
-    Spacing(LineSpacing),
-    Column(ColumnWidth),
-    Appearance(Appearance),
-    Restore,
-    Done,
-}
-
-/// The window's appearance: the system's, or one of its two.
-fn theme(appearance: Appearance) -> Option<Theme> {
-    match appearance {
-        Appearance::System => None,
-        Appearance::Light => Some(Theme::Light),
-        Appearance::Dark => Some(Theme::Dark),
-    }
-}
-
-impl Settings {
-    /// This choice made.
-    fn with(mut self, pick: &Pick) -> Self {
-        match pick.clone() {
-            Pick::Body(f) => self.body = f,
-            Pick::Mono(f) => self.mono = f,
-            Pick::Size(v) => self.size = v,
-            Pick::Spacing(v) => self.spacing = v,
-            Pick::Column(v) => self.column = v,
-            Pick::Appearance(v) => self.appearance = v,
-            // Every choice back to a first launch's.
-            Pick::Restore => return Settings::default(),
-            Pick::Done => {}
-        }
-        self
-    }
-}
-
-impl Shell {
-    /// What the editor draws with: the settings, at the zoom.
-    pub fn look(&self) -> Look {
-        let s = self.settings.borrow();
-        Look {
-            ty: s.ty(self.zoom.get()),
-            measure: s.column.chars(),
-            appearance: s.appearance,
-            ..Default::default()
-        }
-    }
-
-    /// The settings as loaded, put into effect on the window and the panel —
-    /// the editor's first paint already has them, through [`Shell::look`].
-    pub fn apply_settings(&self, ed: &Editor) {
-        let appearance = self.settings.borrow().appearance;
-        self.window.set_theme(theme(appearance));
-        self.sync_prefs(ed);
-    }
-
-    /// ⌘, — open the panel, or close it.
-    pub fn toggle_prefs(&self) {
-        let open = !self.prefs.peek().open;
-        self.show_prefs(open);
-    }
-
-    pub fn prefs_open(&self) -> bool {
-        self.prefs.peek().open
-    }
-
-    pub fn show_prefs(&self, open: bool) {
-        let mut v = self.prefs.peek().clone();
-        v.open = open;
-        let mut prefs = self.prefs;
-        prefs.set(v);
-    }
-
-    /// A click on the panel.
-    pub fn pick(&self, ed: &Editor, pick: Pick) {
-        trace(|| format!("settings {pick:?}"));
-        if pick == Pick::Done {
-            return self.show_prefs(false);
-        }
-        let now = self.settings.borrow().clone().with(&pick);
-        if now == *self.settings.borrow() {
-            return;
-        }
-        let theme_changed = now.appearance != self.settings.borrow().appearance;
-        if let Err(e) = now.save() {
-            eprintln!("settings: {e}");
-        }
-        *self.settings.borrow_mut() = now;
-        if theme_changed {
-            self.window
-                .set_theme(theme(self.settings.borrow().appearance));
-        }
-        ed.set_look(self.look());
-        self.sync_prefs(ed);
-    }
-
-    /// ⌘+, ⌘−, ⌘0: the text set larger or smaller, and the column with it,
-    /// since its measure is counted in characters.
-    pub fn zoom(&self, ed: &Editor, z: ZoomCommand) {
-        let was = self.zoom.get();
-        let now = match z {
-            ZoomCommand::In => zoom_step(was, true),
-            ZoomCommand::Out => zoom_step(was, false),
-            ZoomCommand::Reset => 1.0,
-        };
-        ed.doc().status = Some(format!("Zoom {:.0}%", now * 100.0));
-        if now != was {
-            self.zoom.set(now);
-            ed.set_look(self.look());
-        } else {
-            ed.refresh();
-        }
-    }
-
-    /// Refresh what the panel draws.
-    fn sync_prefs(&self, ed: &Editor) {
-        let installed = |faces: &[(&str, &str)]| -> Vec<(String, String)> {
-            faces
-                .iter()
-                .filter(|(name, _)| *name == "System" || ed.has_family(name))
-                .map(|(n, css)| (n.to_string(), css.to_string()))
-                .collect()
-        };
-        let v = PrefsView {
-            open: self.prefs.peek().open,
-            settings: self.settings.borrow().clone(),
-            bodies: installed(BODY_FACES),
-            monos: installed(MONO_FACES),
-        };
-        let mut prefs = self.prefs;
-        prefs.set(v);
-    }
-}
-
-/// The panel's look: the editor's chrome colours, and the chips' own,
-/// written into the page beside the editor's stylesheet.
-pub const CSS: &str = "
-:root {
-  --chip-on: #007aff;
-  --chip-on-text: #ffffff;
-}
+const CSS: &str = "
+:root { --prefs-bg: #ececec; --prefs-text: #1f1f1f; --prefs-dim: #6b6b6b; }
 @media (prefers-color-scheme: dark) {
-  :root {
-    --chip-on: #0a84ff;
-    --chip-on-text: #ffffff;
-  }
+  :root { --prefs-bg: #262626; --prefs-text: #e8e8e8; --prefs-dim: #9a9a9a; }
 }
-.prefs { position: absolute; top: 12px; right: 12px; width: 400px; z-index: 2; box-sizing: border-box;
-         padding: 10px 14px 12px; background: var(--chrome-bg); color: var(--chrome-text);
-         border: 1px solid var(--field-border); border-radius: 10px;
-         font: 13px system-ui, sans-serif; line-height: 1.3; white-space: normal; }
-.prefs .title { font-weight: 700; margin-bottom: 4px; }
-.prefs .section { margin-top: 10px; color: var(--leaf-secondary); font-size: 11px; }
-.prefs .prow { display: flex; gap: 8px; margin-top: 6px; }
-.prefs .plabel { flex: none; width: 92px; text-align: right; padding-top: 3px; }
-.prefs .chips { flex: 1; display: flex; flex-wrap: wrap; gap: 4px; }
-.prefs .chip { padding: 2px 7px; border-radius: 5px; background: var(--field-bg);
-               border: 1px solid var(--field-border); white-space: nowrap; }
-.prefs .chip.on { background: var(--chip-on); color: var(--chip-on-text); border-color: var(--chip-on); }
-.prefs .btn { height: 22px; line-height: 22px; padding: 0 9px; background: var(--field-bg);
-              border: 1px solid var(--field-border); border-radius: 5px; }
-.prefs .foot { display: flex; gap: 8px; margin-top: 12px; }
-.prefs .foot .grow { flex: 1; }";
+body { background: var(--prefs-bg); }
+.prefs { padding: 18px 22px; color: var(--prefs-text); font: 13px system-ui, -apple-system, sans-serif;
+         line-height: 1.3; }
+.prefs .section { margin: 14px 0 4px; color: var(--prefs-dim); font-size: 11px; font-weight: 600; }
+.prefs .prow { display: flex; gap: 10px; margin-top: 8px; }
+.prefs .plabel { flex: none; width: 104px; text-align: right; padding-top: 3px; }
+.prefs .pcontrols { flex: 1; }
+.prefs .other { margin-top: 5px; }
+.prefs .foot { display: flex; margin-top: 22px; }
+.prefs .grow { flex: 1; }
+.prefs .btn { height: 22px; line-height: 22px; padding: 0 12px; border-radius: 5px;
+              background: var(--ui-field-bg); border: 1px solid var(--ui-border); }";
 
-/// The panel's markup. Always present, shown or hidden, for the find bar's
-/// reason: Blitz does not lay out an absolutely positioned element inserted
-/// after the first frame.
-pub fn render(ed: &Editor, shell: &Rc<Shell>, v: &PrefsView) -> Element {
-    let s = &v.settings;
-    let display = if v.open { "block" } else { "none" };
-    let chip = |label: String, on: bool, font: Option<String>, pick: Pick| {
-        let (ed, shell) = (ed.clone(), shell.clone());
-        let class = if on { "chip on" } else { "chip" };
-        let style = font
-            .map(|f| format!("font-family: {f}"))
-            .unwrap_or_default();
-        rsx! {
-            span { class, style,
-                onmousedown: move |e: MouseEvent| {
-                    e.prevent_default();
-                    shell.pick(&ed, pick.clone());
-                },
-                "{label}"
-            }
-        }
+/// The Settings window's page.
+#[allow(non_snake_case)]
+pub fn SettingsPage() -> Element {
+    let made = use_context::<Made>();
+    let layer = use_layer_provider();
+    use_hook(|| made.layer.set(Some(layer)));
+    let mut s = use_signal(app::settings);
+    let families = use_hook(|| Rc::new(platform::font_families()));
+    // A choice made: the settings copied, changed and stored — the copy
+    // taken first, so no read of the signal is held across its write.
+    let mut set = move |change: &dyn Fn(&mut Settings)| {
+        let mut next = s.peek().clone();
+        change(&mut next);
+        s.set(next.clone());
+        app::set_settings(next);
     };
-    let faces = |list: &[(String, String)], chosen: &str, make: fn(String) -> Pick| {
-        // A face stored that this machine does not have keeps its chip, so
-        // the panel still says what is chosen.
-        let mut list = list.to_vec();
-        if !list.iter().any(|(n, _)| n == chosen) {
-            list.push((chosen.to_string(), String::new()));
+    let now = s.read().clone();
+    let appearance = now.appearance;
+
+    let faces = |list: &'static [(&'static str, &'static str)],
+                 chosen: &str|
+     -> (Vec<Pill>, Vec<bool>, Vec<String>) {
+        // The table's faces in its order — the default always, as it is
+        // the system's own, and the rest where installed — then a chosen
+        // face from elsewhere.
+        let mut names: Vec<String> = list
+            .iter()
+            .enumerate()
+            .filter(|(i, (n, _))| {
+                *i == 0 || *n == "System" || *n == chosen || families.iter().any(|f| f == n)
+            })
+            .map(|(_, (n, _))| n.to_string())
+            .collect();
+        if !names.iter().any(|n| n == chosen) {
+            names.push(chosen.to_string());
         }
-        rsx! {
-            for (name, css) in list {
-                {chip(name.clone(), name == chosen, Some(css).filter(|c| !c.is_empty()), make(name))}
-            }
-        }
+        let pills = names
+            .iter()
+            .map(|n| {
+                Pill::new(n.clone()).styled(format!(
+                    "font-family: {}",
+                    crate::settings::family(list, n, "serif")
+                ))
+            })
+            .collect();
+        let on = names.iter().map(|n| n == chosen).collect();
+        (pills, on, names)
     };
-    fn choices<C: Choice>(
-        chosen: C,
-        chip: &dyn Fn(String, bool, Option<String>, Pick) -> Element,
-        make: fn(C) -> Pick,
-    ) -> Element {
-        rsx! {
-            for c in C::ALL.iter().copied() {
-                {chip(c.label().to_string(), c == chosen, None, make(c))}
-            }
-        }
+    let (body_pills, body_on, body_names) = faces(BODY_FACES, &now.body);
+    let (mono_pills, mono_on, mono_names) = faces(MONO_FACES, &now.mono);
+
+    fn choices<C: Choice>(chosen: C) -> (Vec<Pill>, Vec<bool>) {
+        (
+            C::ALL.iter().map(|c| Pill::new(c.label())).collect(),
+            C::ALL.iter().map(|c| *c == chosen).collect(),
+        )
     }
-    let row = |label: &str, chips: Element| {
-        rsx! {
-            div { class: "prow",
-                span { class: "plabel", "{label}" }
-                div { class: "chips", {chips} }
-            }
-        }
-    };
-    let foot = |label: &str, pick: Pick| {
-        let (ed, shell) = (ed.clone(), shell.clone());
-        rsx! {
-            span { class: "btn",
-                onmousedown: move |e: MouseEvent| {
-                    e.prevent_default();
-                    shell.pick(&ed, pick.clone());
-                },
-                "{label}"
-            }
-        }
-    };
+    let (size_p, size_on) = choices(now.size);
+    let (spacing_p, spacing_on) = choices(now.spacing);
+    let (column_p, column_on) = choices(now.column);
+    let (appearance_p, appearance_on) = choices(now.appearance);
+    let (paper_p, paper_on) = choices(now.paper);
+    let (others, other_names) = by_letter(&families);
+    let other_names = Rc::new(other_names);
+    let mono_other = other_names.clone();
+
     rsx! {
-        div { class: "prefs", style: "display: {display}",
-            onmousedown: move |e: MouseEvent| e.prevent_default(),
-            div { class: "title", "Settings" }
+        style { {themed(&format!("{CSS}{}", leaf_dioxus_ui::CSS), appearance)} }
+        div { class: "prefs",
             div { class: "section", "TEXT" }
-            {row("Font:", faces(&v.bodies, &s.body, Pick::Body))}
-            {row("Code font:", faces(&v.monos, &s.mono, Pick::Mono))}
-            {row("Size:", choices(s.size, &chip, Pick::Size))}
+            div { class: "prow",
+                span { class: "plabel", "Font:" }
+                div { class: "pcontrols",
+                    Chips { choices: body_pills, on: body_on, onpick: move |i: usize| {
+                        set(&|x| x.body = body_names[i].clone());
+                    } }
+                    div { class: "other",
+                        MenuButton { class: "ui-select", entries: others.clone(), height: 22.0,
+                            onpick: move |i: usize| {
+                                set(&|x| x.body = other_names[i].clone());
+                            },
+                            "Other ▾"
+                        }
+                    }
+                }
+            }
+            div { class: "prow",
+                span { class: "plabel", "Code font:" }
+                div { class: "pcontrols",
+                    Chips { choices: mono_pills, on: mono_on, onpick: move |i: usize| {
+                        set(&|x| x.mono = mono_names[i].clone());
+                    } }
+                    div { class: "other",
+                        MenuButton { class: "ui-select", entries: others, height: 22.0,
+                            onpick: move |i: usize| {
+                                set(&|x| x.mono = mono_other[i].clone());
+                            },
+                            "Other ▾"
+                        }
+                    }
+                }
+            }
+            div { class: "prow",
+                span { class: "plabel", "Size:" }
+                div { class: "pcontrols",
+                    Chips { choices: size_p, on: size_on, onpick: move |i: usize| {
+                        set(&|x| x.size = TextSize::ALL[i]);
+                    } }
+                }
+            }
             div { class: "section", "LAYOUT" }
-            {row("Line spacing:", choices(s.spacing, &chip, Pick::Spacing))}
-            {row("Column width:", choices(s.column, &chip, Pick::Column))}
-            {row("Appearance:", choices(s.appearance, &chip, Pick::Appearance))}
+            div { class: "prow",
+                span { class: "plabel", "Line spacing:" }
+                div { class: "pcontrols",
+                    Chips { choices: spacing_p, on: spacing_on, onpick: move |i: usize| {
+                        set(&|x| x.spacing = LineSpacing::ALL[i]);
+                    } }
+                }
+            }
+            div { class: "prow",
+                span { class: "plabel", "Column width:" }
+                div { class: "pcontrols",
+                    Chips { choices: column_p, on: column_on, onpick: move |i: usize| {
+                        set(&|x| x.column = ColumnWidth::ALL[i]);
+                    } }
+                }
+            }
+            div { class: "prow",
+                span { class: "plabel", "Line breaks:" }
+                div { class: "pcontrols",
+                    Chips {
+                        choices: vec![Pill::new("Reflow"), Pill::new("Preserve in new windows")],
+                        on: vec![!now.preserve, now.preserve],
+                        onpick: move |i: usize| {
+                            set(&|x| x.preserve = i == 1);
+                        }
+                    }
+                }
+            }
+            div { class: "prow",
+                span { class: "plabel", "Appearance:" }
+                div { class: "pcontrols",
+                    Chips { choices: appearance_p, on: appearance_on, onpick: move |i: usize| {
+                        set(&|x| x.appearance = Appearance::ALL[i]);
+                    } }
+                }
+            }
+            div { class: "section", "PAGE" }
+            div { class: "prow",
+                span { class: "plabel", "Paper:" }
+                div { class: "pcontrols",
+                    Chips { choices: paper_p, on: paper_on, onpick: move |i: usize| {
+                        set(&|x| x.paper = Paper::ALL[i]);
+                    } }
+                }
+            }
             div { class: "foot",
-                {foot("Restore Defaults", Pick::Restore)}
                 span { class: "grow" }
-                {foot("Done", Pick::Done)}
+                span { class: "btn",
+                    onmousedown: move |e: MouseEvent| {
+                        e.prevent_default();
+                        crate::settings::forget();
+                        set(&|x| *x = Settings::default());
+                    },
+                    "Restore Defaults"
+                }
             }
         }
+        {layer.render()}
     }
+}
+
+/// Every family, in a submenu per first letter: the entries, and the
+/// family each item's id names.
+fn by_letter(families: &[String]) -> (Vec<Entry>, Vec<String>) {
+    let mut groups: BTreeMap<char, Vec<&String>> = BTreeMap::new();
+    for f in families {
+        let first = f.chars().next().map_or('#', |c| c.to_ascii_uppercase());
+        let key = if first.is_ascii_alphabetic() {
+            first
+        } else {
+            '#'
+        };
+        groups.entry(key).or_default().push(f);
+    }
+    let mut names = Vec::new();
+    let entries = groups
+        .into_iter()
+        .map(|(letter, fs)| {
+            let items = fs
+                .into_iter()
+                .map(|f| {
+                    names.push(f.clone());
+                    Item::new(names.len() - 1, f.clone()).into()
+                })
+                .collect();
+            Entry::submenu(letter.to_string(), items)
+        })
+        .collect();
+    (entries, names)
 }
 
 #[cfg(test)]
@@ -293,25 +248,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_pick_changes_one_choice_and_restore_changes_them_all_back() {
-        let s = Settings::default()
-            .with(&Pick::Size(TextSize::Large))
-            .with(&Pick::Body("Georgia".into()));
-        assert_eq!(s.size, TextSize::Large);
-        assert_eq!(s.body, "Georgia");
-        assert_eq!(s.spacing, Settings::default().spacing);
-        assert_eq!(s.with(&Pick::Restore), Settings::default());
+    fn families_are_grouped_by_their_first_letter() {
+        let fs: Vec<String> = ["Avenir", "Arial", "Baskerville", "8bit"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (entries, names) = by_letter(&fs);
+        assert_eq!(entries.len(), 3);
+        let Entry::Submenu {
+            label, entries: a, ..
+        } = &entries[1]
+        else {
+            panic!()
+        };
+        assert_eq!(label, "A");
+        assert_eq!(a.len(), 2);
+        assert_eq!(names.len(), 4);
     }
 
     #[test]
-    fn the_panel_is_drawn_in_colours_set_for_both_appearances() {
-        let all = format!(
-            "{}{CSS}",
-            leaf_dioxus::stylesheet(&leaf_dioxus::Type::default())
-        );
-        leaf_dioxus::Palette::of(&all)
-            .check()
-            .expect("a whole palette");
-        assert!(CSS.contains("var(--chip-on)") && CSS.contains("var(--chrome-bg)"));
+    fn the_window_is_drawn_in_colours_set_for_both_appearances() {
+        let dark_at = CSS.find("@media").unwrap();
+        let (light, dark) = CSS.split_at(dark_at);
+        for name in ["--prefs-bg", "--prefs-text", "--prefs-dim"] {
+            assert!(light.contains(&format!("{name}:")) && dark.contains(&format!("{name}:")));
+        }
     }
 }

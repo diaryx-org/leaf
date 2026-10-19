@@ -1,72 +1,122 @@
-# Leaf on Dioxus's native renderer (Blitz): the `leaf-dioxus` editor widget
-# (crates/leaf-dioxus) in a Mac document app — its menu bar, file dialogs,
-# settings file and settings panel — as apps/leaf is the gpui one over
-# leaf-gpui.
+# Leaf for the Mac (`Leaf.app`, `org.diaryx.leaf`): the leaf-dioxus editor
+# widget (crates/leaf-dioxus) in a document app that is Rust from `main` up.
+# Each window is a Dioxus page drawn by Blitz on wgpu — the toolbar, the
+# editor and its status line, and the Settings window. What only AppKit can
+# be is AppKit, reached through objc2: an `NSDocument` per window (autosave,
+# Versions, Rename, Move To, Revert, recents, Finder's Open With), the menu
+# bar, the context menu, the spelling checker, Look Up, and the print panel.
 #
-# A workspace of its own, like apps/leaf: `dioxus-native` is published only
-# as 0.8.0-alpha.3, which pins a winit beta and a large wgpu tree that
-# nothing in leaf's root workspace should resolve, and its winit backend is
-# patched below — a [patch] applies only at the root of the workspace that
-# has it, which is also why the widget's workspace has none. Build it by
-# manifest:
+# A workspace of its own: `dioxus-native` is published only as 0.8.0-alpha.3,
+# which pins a winit beta and a large wgpu tree that nothing in leaf's root
+# workspace should resolve, and its winit backend is patched below — a
+# [patch] applies only at the root of the workspace that has it. Build it by
+# manifest, or as a bundle through the xtask:
 #
+#     cargo xtask mac                                    # Leaf.app, launched on the sample
 #     cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- document.md
 [workspace]
 
 [package]
 # Not `leaf-dioxus`, which is the widget's name: one graph cannot hold two
-# packages by one name. The binary keeps it.
+# packages by one name. The binary is the app's name.
 name = "leaf-dioxus-app"
-version = "0.0.0"
+version = "0.5.1"
 edition = "2024"
 publish = false
 
 [[bin]]
-name = "leaf-dioxus"
+name = "Leaf"
 path = "src/main.rs"
 
 [dependencies]
-# The editor: everything drawn in the window but the settings panel.
+# The editor: everything drawn in a document window but the toolbar.
 leaf-dioxus = { path = "../../crates/leaf-dioxus" }
+# Menus, dialogs and choice controls that work on Blitz: the toolbar's
+# menus, the context menu, the Link prompt, the Settings window.
+leaf-dioxus-ui = { path = "../../crates/leaf-dioxus-ui" }
 dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
     "macro",
     "html",
     "signals",
     "hooks",
 ] }
-# dioxus-native's defaults, but the classic `vello` renderer for
-# `vello-hybrid`, which the widget asks for (its Cargo.toml says why: emoji).
+# The document type and Blitz's pieces, with the editor's features (its
+# Cargo.toml says why each): classic `vello` for emoji, `system-fonts`, `net`
+# for pictures read from `file:` URLs, `svg`. No `launch`: the app runs its
+# own event loop handler, which opens a window per document (`app.rs`).
 dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features = [
-    "accessibility", "net", "html", "svg", "system-fonts", "clipboard", "file-dialog",
-    "woff", "text-transform-icu", "apple-font-embolden", "vello",
+    "net", "svg", "system-fonts", "vello",
 ] }
-# `fs` on, unlike the widget's: this is an app with a file to open and save,
-# which is what `Doc::open` and `Doc::save` are.
+# `fs` on: a document is a file, read and written through its NSDocument.
 leaf-core = { path = "../../crates/leaf-core", default-features = false, features = [
     "fs",
     "syntax",
 ] }
-# The menu bar's poll. Already in the tree: dioxus-native builds and enters a
-# tokio runtime with timers enabled, which is what makes `tokio::time::sleep`
-# work in a task.
-tokio = { version = "1", default-features = false, features = ["time"] }
-
-# The menu bar (`menu.rs`): Tauri's, the native NSMenu on macOS.
-muda = "0.21"
-# File dialogs and the unsaved-changes prompt (`file.rs`). Already in the tree
-# through Blitz's own `file-dialog` feature.
-rfd = "0.17"
-
-# The Character Viewer (⌃⌘Space), which AppKit only offers through an Edit
-# menu this app does not have. The versions winit-appkit already uses.
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
-# The context menu (`menu::show_context`): the window's NSView, through the
-# handle winit already exposes, and the main queue to pop the menu up from.
-# Both already in the tree, through winit and objc2.
+# What dioxus-native's `launch` assembles, assembled here once per window.
+# The versions dioxus-native 0.8.0-alpha.3 pins.
+dioxus-core = "=0.8.0-alpha.3"
+# Each window's `document` context (`head.rs`).
+dioxus-document = "=0.8.0-alpha.3"
+blitz-shell = { version = "=0.3.0-beta.4", default-features = false }
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false }
+blitz-net = "=0.3.0-beta.4"
+blitz-traits = "=0.3.0-beta.4"
+# Export as PDF and Print (`pdf.rs`): Blitz's paint recorded, and drawn again
+# as PDF pages by krilla, glyphs' characters read back from their fonts.
+anyrender = "0.14"
+# The windows' renderer, built here for its antialiasing (`renderer.rs`).
+anyrender_vello = "0.15"
+vello = { version = "0.11", default-features = false }
+# `apple-font-embolden`: glyphs thickened as macOS thickens its own text, and
+# not hinted, which the system never does — so the editor's text has the
+# weight of the text around it, on screen and in a PDF.
+blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = ["apple-font-embolden"] }
+krilla = { version = "0.8", default-features = false, features = ["raster-images"] }
+kurbo = "0.13"
+peniko = "0.6"
+skrifa = "0.44"
+# The font `Editor::font_at` answers with, for Look Up and the PDF.
+parley = "=0.12.0"
+# Blitz's network provider and the editor's timers run on tokio.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
 raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# AppKit and Foundation, at the versions winit-appkit already uses.
+objc2 = "0.6"
+block2 = "0.6"
 dispatch2 = "0.3"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std", "block2", "NSArray", "NSAttributedString", "NSBundle", "NSData", "NSDictionary",
+    "NSError", "NSGeometry", "NSNotification", "NSObjCRuntime", "NSOrthography", "NSProcessInfo",
+    "NSRange", "NSString", "NSTextCheckingResult", "NSThread", "NSURL", "NSUserDefaults",
+    "NSValue", "NSEnumerator", "NSKeyValueCoding", "NSCharacterSet",
+] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std", "block2", "objc2-core-foundation", "NSAlert", "NSAppearance", "NSApplication",
+    "NSAttributedString", "NSButton", "NSCell", "NSColor", "NSControl", "NSDocument",
+    "NSDocumentController", "NSEvent", "NSFont", "NSFontManager", "NSGraphics", "NSMenu",
+    "NSMenuItem", "NSOpenPanel", "NSPanel", "NSPrintInfo", "NSPrintOperation", "NSResponder",
+    "NSRunningApplication", "NSSavePanel", "NSSound", "NSSpellChecker", "NSText",
+    "NSTextField", "NSUserInterfaceItemIdentification", "NSUserInterfaceValidation", "NSView",
+    "NSWindow", "NSWindowController", "NSWorkspace", "NSPasteboard", "NSTextCheckingClient",
+] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
+# Print: the PDF `pdf.rs` makes, through PDFKit's print operation.
+objc2-pdf-kit = { version = "0.3.2", default-features = false, features = [
+    "std", "PDFDocument", "objc2-app-kit",
+] }
+
+# A debug build with full debug info is several hundred megabytes; line
+# tables are enough for a panic's file and line.
+[profile.dev]
+debug = "line-tables-only"
+
+# Everything but this crate optimised, even in a debug build: unoptimised,
+# Stylo, parley and Vello take 11 ms to draw a frame the release build draws
+# in 1.4, and a scroll keeps the main thread too busy to reach 60 fps.
+[profile.dev.package."*"]
+opt-level = 3
 
 # winit's macOS backend, vendored at the version dioxus-native pins and
 # patched (see patches/winit-appkit/PATCH.md): its text input client answered
@@ -75,11 +125,11 @@ dispatch2 = "0.3"
 # composition, which is how the emoji picker inserts.
 #
 # An exception to the org rule against [patch] in a tracked manifest, granted
-# by Adam on 2026-10-15 for the spike this app began as, and kept when it was
-# promoted. The rule keeps each org crate spelled one way in every manifest;
-# this patches a third-party crate, vendored inside the repository, in a
-# workspace nothing depends on — and winit-appkit reaches the app only
-# transitively (dioxus-native → blitz-shell → winit), which nothing but
+# by Adam on 2026-10-15 for the spike this app began as (apps/leaf-dioxus),
+# and kept when it became the Mac app. The rule keeps each org crate spelled
+# one way in every manifest; this patches a third-party crate, vendored inside
+# the repository, in a workspace nothing depends on — and winit-appkit
+# reaches the app only transitively (blitz-shell → winit), which nothing but
 # [patch] can override. It goes when the change lands upstream (PATCH.md,
 # "Upstream") and Blitz takes that winit.
 [patch.crates-io]

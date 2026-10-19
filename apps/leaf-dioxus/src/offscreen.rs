@@ -1,15 +1,12 @@
-//! A winit [`Window`] that is a view the host owns.
+//! A winit [`Window`] that is no window: a sheet of a given size that Blitz
+//! lays the editor out on and paints, offscreen, for Export as PDF and
+//! Print (`pdf.rs`).
 //!
-//! Blitz and the editor talk to their window through winit's `Window` trait —
-//! its size and scale, a redraw, the input method's caret area, the cursor —
-//! and wgpu draws into whatever its raw window handle names. Neither needs
-//! winit to have *made* the window, so this answers both from an `NSView`
-//! the host made: the handle is the view, the size and scale are what the
-//! host last said, and every request that is the host's (the caret area for
-//! its text input client, the cursor) goes to it through [`Callbacks`].
-//!
-//! Everything else a winit window can do — move, minimise, go full screen —
-//! belongs to the host's window around the view, and is a no-op here.
+//! Blitz and the editor talk to their window through winit's `Window`
+//! trait — its size and scale, a redraw, the input method's caret area —
+//! and none of them needs winit to have made it. So this answers from the
+//! sheet's size and does nothing else: there is nothing on screen to move,
+//! draw or point at.
 
 use std::ffi::c_void;
 use std::fmt;
@@ -17,7 +14,7 @@ use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use dioxus_native::winit::cursor::{Cursor, CursorIcon};
+use dioxus_native::winit::cursor::Cursor;
 use dioxus_native::winit::dpi::{PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size};
 use dioxus_native::winit::error::RequestError;
 use dioxus_native::winit::icon::Icon;
@@ -28,13 +25,10 @@ use dioxus_native::winit::window::{
 };
 use raw_window_handle as rwh;
 
-use crate::callbacks::Callbacks;
-
-/// The host's view, as a winit window.
+/// A sheet, as a winit window.
 pub struct HostedWindow {
     id: WindowId,
     view: NonNull<c_void>,
-    callbacks: Callbacks,
     state: Mutex<Geometry>,
     focused: AtomicBool,
     /// The input method's capabilities, once the editor has enabled it.
@@ -70,18 +64,10 @@ static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 impl HostedWindow {
     /// The view `view`, `width` × `height` points at `scale` pixels a point.
-    pub fn new(
-        view: NonNull<c_void>,
-        width: f64,
-        height: f64,
-        scale: f64,
-        dark: bool,
-        callbacks: Callbacks,
-    ) -> Self {
+    pub fn new(view: NonNull<c_void>, width: f64, height: f64, scale: f64, dark: bool) -> Self {
         Self {
             id: WindowId::from_raw(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
             view,
-            callbacks,
             state: Mutex::new(Geometry {
                 size: physical(width, height, scale),
                 scale,
@@ -90,29 +76,6 @@ impl HostedWindow {
             focused: AtomicBool::new(false),
             ime: Mutex::new(None),
         }
-    }
-
-    /// The host resized the view or moved it to a screen of another scale.
-    /// Answers the new physical size.
-    pub fn set_geometry(&self, width: f64, height: f64, scale: f64) -> PhysicalSize<u32> {
-        let mut g = self.state.lock().unwrap();
-        g.size = physical(width, height, scale);
-        g.scale = scale;
-        g.size
-    }
-
-    pub fn set_theme_dark(&self, dark: bool) -> Theme {
-        let theme = if dark { Theme::Dark } else { Theme::Light };
-        self.state.lock().unwrap().theme = theme;
-        theme
-    }
-
-    pub fn set_focused(&self, yes: bool) {
-        self.focused.store(yes, Ordering::Relaxed);
-    }
-
-    pub fn callbacks(&self) -> &Callbacks {
-        &self.callbacks
     }
 }
 
@@ -159,11 +122,8 @@ impl Window for HostedWindow {
     fn scale_factor(&self) -> f64 {
         self.state.lock().unwrap().scale
     }
-    /// A frame, on the main queue's next turn — coalesced, so a burst of
-    /// requests inside one event draws once.
-    fn request_redraw(&self) {
-        crate::runtime::schedule_redraw(self.id);
-    }
+    /// Nothing to draw to: a sheet is painted when `pdf.rs` asks.
+    fn request_redraw(&self) {}
     fn pre_present_notify(&self) {}
     fn reset_dead_keys(&self) {}
     fn surface_position(&self) -> PhysicalPosition<i32> {
@@ -241,12 +201,7 @@ impl Window for HostedWindow {
             }
             _ => return Ok(()),
         };
-        if let Some((position, size)) = data.cursor_area {
-            let scale = self.scale_factor();
-            let p = position.to_logical::<f64>(scale);
-            let s = size.to_logical::<f64>(scale);
-            self.callbacks.ime_area(p.x, p.y, s.width, s.height);
-        }
+        let _ = data;
         Ok(())
     }
     fn ime_capabilities(&self) -> Option<ImeCapabilities> {
@@ -267,14 +222,7 @@ impl Window for HostedWindow {
     }
     /// The pointer's shape over what Blitz says is under it: an I-beam over
     /// text, a hand over a link.
-    fn set_cursor(&self, cursor: Cursor) {
-        let code = match cursor {
-            Cursor::Icon(CursorIcon::Text) => 1,
-            Cursor::Icon(CursorIcon::Pointer) => 2,
-            _ => 0,
-        };
-        self.callbacks.set_cursor(code);
-    }
+    fn set_cursor(&self, _cursor: Cursor) {}
     fn set_cursor_position(&self, _position: Position) -> Result<(), RequestError> {
         Ok(())
     }

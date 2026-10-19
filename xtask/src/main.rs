@@ -4,7 +4,7 @@
 //!
 //! What earns a task here is work that leaves Rust, or work that must be done
 //! the same way every time. `cargo run` already opens the TUI and `cargo run -p
-//! leaf` the GUI; the Apple app, the Android app and the web demo each need three or four tools
+//! leaf` the GUI; the Apple apps, the Android app and the web demo each need several tools
 //! driven in the right order.
 //!
 //! CI and releasing are not here. Both are `ship`, configured by
@@ -17,6 +17,7 @@
 
 mod android;
 mod isolation;
+mod mac;
 mod package;
 mod swift;
 mod util;
@@ -39,7 +40,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Task {
-    /// Build and launch Leaf: on macOS apps/leaf-mac, with --ios apps/leaf-editor.
+    /// Build Leaf.app from apps/leaf-dioxus and launch it.
+    Mac(mac::Args),
+    /// Build and launch Leaf: on macOS as `mac` does, with --ios apps/leaf-editor.
     Swift(swift::Args),
     /// Build the wasm binding and serve the web demo (apps/leaf-web-demo).
     Web(web::Args),
@@ -69,6 +72,7 @@ enum Task {
 
 fn main() -> Result<()> {
     match Cli::parse().task {
+        Task::Mac(args) => mac::run_task(args),
         Task::Swift(args) => swift::run_task(args),
         Task::Web(args) => web::run_task(args),
         Task::Android(args) => android::run_task(args),
