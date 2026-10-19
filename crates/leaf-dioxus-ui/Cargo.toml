@@ -1,0 +1,31 @@
+# leaf-dioxus-ui — menus, a dialog with a text field, chips and a select for
+# a Dioxus page, built to work on dioxus-native (Blitz) as well as the web:
+# no `document::eval`, no DOM focus, every overlay mounted from the first
+# frame. See src/lib.rs for why each of those.
+#
+# A workspace of its own, `exclude`d from leaf's root one like the editor
+# widget's: it is on Dioxus 0.8's alpha, which nothing in the root workspace
+# resolves. It needs only `dioxus`, not the native renderer, so it builds
+# quickly and a web page can use it as it is.
+#
+#     cargo test --manifest-path crates/leaf-dioxus-ui/Cargo.toml
+[workspace]
+
+[package]
+name = "leaf-dioxus-ui"
+version = "0.0.0"
+edition = "2024"
+description = "Menus, dialogs and choice controls for Dioxus that work on dioxus-native as well as the web."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+] }
+
+[dev-dependencies]
+dioxus-ssr = "=0.8.0-alpha.3"
