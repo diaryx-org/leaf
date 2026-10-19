@@ -16,7 +16,7 @@
 //! Case folding is ASCII-only, which keeps every byte offset where it was;
 //! a non-ASCII letter matches only its own case.
 
-use dioxus::html::{Key, Modifiers};
+use dioxus::html::{Key, Modifiers, NamedKey};
 use leaf_core::Doc;
 
 /// Where typing goes while the find bar is open.
@@ -120,16 +120,16 @@ impl Find {
         let shift = mods.contains(Modifiers::SHIFT);
         let alt = mods.contains(Modifiers::ALT);
         match key {
-            Key::Escape => return Outcome::Close,
-            Key::Enter if self.focus == Focus::Replacement => {
+            Key::Named(NamedKey::Escape) => return Outcome::Close,
+            Key::Named(NamedKey::Enter) if self.focus == Focus::Replacement => {
                 return if alt {
                     Outcome::ReplaceAll
                 } else {
                     Outcome::Replace
                 };
             }
-            Key::Enter => return Outcome::Step { forward: !shift },
-            Key::Tab if self.replacing => {
+            Key::Named(NamedKey::Enter) => return Outcome::Step { forward: !shift },
+            Key::Named(NamedKey::Tab) if self.replacing => {
                 self.focus = match self.focus {
                     Focus::Query => Focus::Replacement,
                     _ => Focus::Query,
@@ -318,7 +318,7 @@ impl Field {
     }
 
     fn key(&mut self, key: &Key, mods: Modifiers) -> FieldEdit {
-        let cmd = mods.contains(Modifiers::SUPER) || mods.contains(Modifiers::META);
+        let cmd = mods.contains(Modifiers::META);
         match key {
             Key::Character(c) if cmd && c == "v" => FieldEdit::Paste,
             // ⌘A in a field clears it on the next keystroke in a Mac text
@@ -333,7 +333,7 @@ impl Field {
                 self.insert(c);
                 FieldEdit::Changed
             }
-            Key::Backspace if self.caret > 0 => {
+            Key::Named(NamedKey::Backspace) if self.caret > 0 => {
                 let at = if mods.contains(Modifiers::ALT) || cmd {
                     0
                 } else {
@@ -343,36 +343,36 @@ impl Field {
                 self.caret = at;
                 FieldEdit::Changed
             }
-            Key::Delete if self.caret < self.text.len() => {
+            Key::Named(NamedKey::Delete) if self.caret < self.text.len() => {
                 let to = self.next();
                 self.text.replace_range(self.caret..to, "");
                 FieldEdit::Changed
             }
-            Key::ArrowLeft if cmd => {
+            Key::Named(NamedKey::ArrowLeft) if cmd => {
                 self.caret = 0;
                 FieldEdit::Moved
             }
-            Key::ArrowRight if cmd => {
+            Key::Named(NamedKey::ArrowRight) if cmd => {
                 self.end();
                 FieldEdit::Moved
             }
-            Key::ArrowLeft => {
+            Key::Named(NamedKey::ArrowLeft) => {
                 self.caret = self.prev();
                 FieldEdit::Moved
             }
-            Key::ArrowRight => {
+            Key::Named(NamedKey::ArrowRight) => {
                 self.caret = self.next();
                 FieldEdit::Moved
             }
-            Key::Home => {
+            Key::Named(NamedKey::Home) => {
                 self.caret = 0;
                 FieldEdit::Moved
             }
-            Key::End => {
+            Key::Named(NamedKey::End) => {
                 self.end();
                 FieldEdit::Moved
             }
-            Key::Backspace | Key::Delete => FieldEdit::Moved,
+            Key::Named(NamedKey::Backspace) | Key::Named(NamedKey::Delete) => FieldEdit::Moved,
             _ => FieldEdit::Ignored,
         }
     }
@@ -467,15 +467,18 @@ mod tests {
         );
         assert_eq!(f.query.text, "x");
         assert_eq!(
-            f.key(&Key::Backspace, Modifiers::empty()),
+            f.key(&Key::Named(NamedKey::Backspace), Modifiers::empty()),
             Outcome::Searched
         );
         assert_eq!(f.query.text, "");
         assert_eq!(
-            f.key(&Key::Enter, Modifiers::SHIFT),
+            f.key(&Key::Named(NamedKey::Enter), Modifiers::SHIFT),
             Outcome::Step { forward: false }
         );
-        assert_eq!(f.key(&Key::Escape, Modifiers::empty()), Outcome::Close);
+        assert_eq!(
+            f.key(&Key::Named(NamedKey::Escape), Modifiers::empty()),
+            Outcome::Close
+        );
     }
 
     #[test]
@@ -487,7 +490,7 @@ mod tests {
         };
         // ⌘V leaves the field as it was: the clipboard is the host's.
         assert_eq!(
-            f.key(&Key::Character("v".into()), Modifiers::SUPER),
+            f.key(&Key::Character("v".into()), Modifiers::META),
             Outcome::Paste
         );
         assert_eq!(f.replacement.text, "");

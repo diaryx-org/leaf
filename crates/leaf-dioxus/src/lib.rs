@@ -1,5 +1,5 @@
 //! leaf-dioxus — an **embeddable** editor widget for Dioxus's native backend
-//! (`dioxus-native` 0.8.0-alpha.2, Blitz): an HTML/CSS renderer on wgpu, with
+//! (`dioxus-native` 0.8.0-alpha.3, Blitz): an HTML/CSS renderer on wgpu, with
 //! no webview and no browser engine.
 //!
 //! A host makes an [`Editor`] with [`use_editor`] in its component, puts

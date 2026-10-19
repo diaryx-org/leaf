@@ -1,5 +1,5 @@
 //! Leaf on Dioxus's **native backend**
-//! (`dioxus-native` 0.8.0-alpha.2, Blitz): the editor widget,
+//! (`dioxus-native` 0.8.0-alpha.3, Blitz): the editor widget,
 //! [`leaf_dioxus`], in a Mac document app.
 //!
 //! ```sh

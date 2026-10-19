@@ -15,7 +15,7 @@
 
 use std::str::FromStr;
 
-use dioxus::html::{Code, Key, Modifiers};
+use dioxus::html::{Code, Key, Modifiers, NamedKey};
 use dioxus_native::winit::event::KeyEvent;
 use dioxus_native::winit::keyboard::{self, ModifiersState, PhysicalKey};
 
@@ -40,10 +40,14 @@ pub fn pressed(event: &KeyEvent, mods: ModifiersState) -> Option<(Key, Code, Mod
 /// the editor would insert as a soft break inside the paragraph. It is Enter.
 fn key(k: &keyboard::Key) -> Key {
     match k {
-        keyboard::Key::Character(s) if s.as_str() == "\n" || s.as_str() == "\r" => Key::Enter,
+        keyboard::Key::Character(s) if s.as_str() == "\n" || s.as_str() == "\r" => {
+            Key::Named(NamedKey::Enter)
+        }
         keyboard::Key::Character(s) => Key::Character(s.to_string()),
-        keyboard::Key::Named(n) => Key::from_str(&format!("{n:?}")).unwrap_or(Key::Unidentified),
-        _ => Key::Unidentified,
+        keyboard::Key::Named(n) => {
+            Key::from_str(&format!("{n:?}")).unwrap_or(Key::Named(NamedKey::Unidentified))
+        }
+        _ => Key::Named(NamedKey::Unidentified),
     }
 }
 
@@ -56,29 +60,35 @@ fn code(k: &PhysicalKey) -> Code {
 }
 
 /// winit's `meta` is ⌘, which `keyboard-types` — and so Blitz, and so the
-/// key mapping — calls `SUPER`.
+/// key mapping — calls `META`.
 fn modifiers(m: ModifiersState) -> Modifiers {
     let mut out = Modifiers::empty();
     out.set(Modifiers::SHIFT, m.shift_key());
     out.set(Modifiers::CONTROL, m.control_key());
     out.set(Modifiers::ALT, m.alt_key());
-    out.set(Modifiers::SUPER, m.meta_key());
+    out.set(Modifiers::META, m.meta_key());
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dioxus_native::winit::keyboard::{KeyCode, NamedKey};
+    use dioxus_native::winit::keyboard::{KeyCode, NamedKey as WinitNamed};
 
     #[test]
     fn named_keys_and_codes_convert_by_name() {
         assert_eq!(
-            key(&keyboard::Key::Named(NamedKey::ArrowDown)),
-            Key::ArrowDown
+            key(&keyboard::Key::Named(WinitNamed::ArrowDown)),
+            Key::Named(NamedKey::ArrowDown)
         );
-        assert_eq!(key(&keyboard::Key::Named(NamedKey::PageUp)), Key::PageUp);
-        assert_eq!(key(&keyboard::Key::Named(NamedKey::Enter)), Key::Enter);
+        assert_eq!(
+            key(&keyboard::Key::Named(WinitNamed::PageUp)),
+            Key::Named(NamedKey::PageUp)
+        );
+        assert_eq!(
+            key(&keyboard::Key::Named(WinitNamed::Enter)),
+            Key::Named(NamedKey::Enter)
+        );
         assert_eq!(code(&PhysicalKey::Code(KeyCode::KeyB)), Code::KeyB);
         assert_eq!(code(&PhysicalKey::Code(KeyCode::Digit8)), Code::Digit8);
         assert_eq!(
@@ -89,8 +99,14 @@ mod tests {
 
     #[test]
     fn a_typed_line_break_is_enter() {
-        assert_eq!(key(&keyboard::Key::Character("\n".into())), Key::Enter);
-        assert_eq!(key(&keyboard::Key::Character("\r".into())), Key::Enter);
+        assert_eq!(
+            key(&keyboard::Key::Character("\n".into())),
+            Key::Named(NamedKey::Enter)
+        );
+        assert_eq!(
+            key(&keyboard::Key::Character("\r".into())),
+            Key::Named(NamedKey::Enter)
+        );
         assert_eq!(
             key(&keyboard::Key::Character("a".into())),
             Key::Character("a".into())
@@ -99,6 +115,6 @@ mod tests {
 
     #[test]
     fn meta_is_super() {
-        assert_eq!(modifiers(ModifiersState::META), Modifiers::SUPER);
+        assert_eq!(modifiers(ModifiersState::META), Modifiers::META);
     }
 }

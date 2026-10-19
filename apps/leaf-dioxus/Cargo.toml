@@ -4,7 +4,7 @@
 # leaf-gpui.
 #
 # A workspace of its own, like apps/leaf: `dioxus-native` is published only
-# as 0.8.0-alpha.2, which pins a winit beta and a large wgpu tree that
+# as 0.8.0-alpha.3, which pins a winit beta and a large wgpu tree that
 # nothing in leaf's root workspace should resolve, and its winit backend is
 # patched below — a [patch] applies only at the root of the workspace that
 # has it, which is also why the widget's workspace has none. Build it by
@@ -28,7 +28,7 @@ path = "src/main.rs"
 [dependencies]
 # The editor: everything drawn in the window but the settings panel.
 leaf-dioxus = { path = "../../crates/leaf-dioxus" }
-dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
+dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
     "macro",
     "html",
     "signals",
@@ -36,7 +36,7 @@ dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
 ] }
 # dioxus-native's defaults, but the classic `vello` renderer for
 # `vello-hybrid`, which the widget asks for (its Cargo.toml says why: emoji).
-dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features = [
+dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features = [
     "accessibility", "net", "html", "svg", "system-fonts", "clipboard", "file-dialog",
     "woff", "text-transform-icu", "apple-font-embolden", "vello",
 ] }

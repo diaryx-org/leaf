@@ -11,7 +11,7 @@
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
-use dioxus::html::{Code, Key, Modifiers};
+use dioxus::html::{Code, Key, Modifiers, NamedKey};
 use dioxus::prelude::*;
 use dioxus_native::winit::window::Window;
 use leaf_core::Doc;
@@ -50,7 +50,7 @@ impl Shell {
     /// panel's Escape, or the editor's.
     pub fn key(&self, ed: &Editor, key: Key, code: Code, mods: Modifiers) {
         // Escape closes the settings panel before anything else has it.
-        if key == Key::Escape && mods.is_empty() && self.prefs_open() {
+        if key == Key::Named(NamedKey::Escape) && mods.is_empty() && self.prefs_open() {
             self.show_prefs(false);
             return;
         }
