@@ -100,11 +100,11 @@ pub enum PressMode {
 pub fn press_mode(e: &MouseEvent) -> (bool, PressMode) {
     let m = e.modifiers();
     let extend = m.contains(Modifiers::SHIFT);
-    // ⌘ arrives as `SUPER`, as it does on a key.
+    // ⌘ arrives as `META`, as it does on a key.
     let mode =
         if e.trigger_button() == Some(MouseButton::Secondary) || m.contains(Modifiers::CONTROL) {
             PressMode::Context
-        } else if m.intersects(Modifiers::SUPER | Modifiers::META) {
+        } else if m.contains(Modifiers::META) {
             PressMode::Follow
         } else {
             PressMode::Place

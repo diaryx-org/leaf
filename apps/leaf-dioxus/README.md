@@ -1,6 +1,6 @@
 # leaf-dioxus
 
-Leaf on Dioxus's native renderer: `dioxus-native` 0.8.0-alpha.2, which draws
+Leaf on Dioxus's native renderer: `dioxus-native` 0.8.0-alpha.3, which draws
 HTML and CSS through Blitz on wgpu, with no webview and no browser engine.
 It edits the same documents as every other frontend through `leaf-core`, and
 works toward the Swift editor (`apps/leaf-editor`) feature for feature. macOS
@@ -58,7 +58,7 @@ differs from a browser in six ways an editor walks straight into:
 | Blitz does | So the editor |
 |---|---|
 | focus only form controls on a click, and *clear* focus on anything else | reads keys from winit (`use_window_event`), not `onkeydown` |
-| report ⌘ as `SUPER`, not `META` | matches `SUPER`; matching `META` typed ⌘I as an `i` |
+| report ⌘ as `SUPER`, not `META` (through 0.3.0-beta.3; beta.4 reports `META`, `keyboard-types` 0.8 having retired `SUPER`) | matches the one Blitz reports, `META` now; matching the other typed ⌘I as an `i` |
 | poll tasks while it holds its document borrowed, so `MountedData::scroll` / `set_focus` from a handler panic ("RefCell already borrowed") | scrolls itself: owns the offset, shifts the rows by a margin |
 | paint the first frame of an `overflow: hidden` element and not its changes | clips at `body`, never `.leaf` |
 | skip painting a child that hangs past its parent's box | gives `.leaf` no fixed height |

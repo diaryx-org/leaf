@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use dioxus::html::{Code, Key, Modifiers};
+use dioxus::html::{Code, Key, Modifiers, NamedKey};
 use leaf_core::Alignment;
 use muda::accelerator::Accelerator;
 use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
@@ -79,8 +79,8 @@ impl AppMenu {
     }
 }
 
-/// ⌘ in Dioxus's terms (`SUPER`, as winit reports it).
-const CMD: Modifiers = Modifiers::SUPER;
+/// ⌘ in Dioxus's terms (`META`, as Blitz reports it).
+const CMD: Modifiers = Modifiers::META;
 const SHIFT: Modifiers = Modifiers::SHIFT;
 const ALT: Modifiers = Modifiers::ALT;
 const CTRL: Modifiers = Modifiers::CONTROL;
@@ -191,11 +191,11 @@ pub fn install() -> AppMenu {
     b.chord(&format, "Indent", ch("]"), Code::BracketRight, CMD);
     b.chord(&format, "Outdent", ch("["), Code::BracketLeft, CMD);
     sep(&format);
-    b.chord(&format, "Move Block Up", Key::ArrowUp, Code::ArrowUp, ALT);
+    b.chord(&format, "Move Block Up", Key::Named(NamedKey::ArrowUp), Code::ArrowUp, ALT);
     b.chord(
         &format,
         "Move Block Down",
-        Key::ArrowDown,
+        Key::Named(NamedKey::ArrowDown),
         Code::ArrowDown,
         ALT,
     );
@@ -464,14 +464,14 @@ impl Builder {
     }
 }
 
-/// A chord as muda's accelerator. muda takes `keyboard-types` 0.8 and Dioxus
-/// 0.7, whose key codes share their names — the same conversion `keys.rs`
-/// makes from winit — and muda calls ⌘ `META`.
+/// A chord as muda's accelerator. muda re-exports its own key codes, which
+/// share their names with Dioxus's — the same conversion `keys.rs` makes from
+/// winit — and both call ⌘ `META`.
 fn accelerator(mods: Modifiers, code: Code) -> Option<Accelerator> {
     use muda::accelerator::{Code as MCode, Modifiers as MMods};
     let code = MCode::from_str(&format!("{code:?}")).ok()?;
     let mut m = MMods::empty();
-    m.set(MMods::META, mods.contains(Modifiers::SUPER));
+    m.set(MMods::META, mods.contains(Modifiers::META));
     m.set(MMods::SHIFT, mods.contains(Modifiers::SHIFT));
     m.set(MMods::ALT, mods.contains(Modifiers::ALT));
     m.set(MMods::CONTROL, mods.contains(Modifiers::CONTROL));

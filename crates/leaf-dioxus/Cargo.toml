@@ -4,7 +4,7 @@
 # `leaf-gpui`; Diaryx's Dioxus port is to be another.
 #
 # A workspace of its own, `exclude`d from leaf's root one: `dioxus-native` is
-# published only as 0.8.0-alpha.2, which pins a winit beta and a large wgpu tree
+# published only as 0.8.0-alpha.3, which pins a winit beta and a large wgpu tree
 # that nothing in leaf's root workspace should resolve. Unlike the app's, this
 # workspace has no [patch]: a [patch] applies only at the root of the
 # workspace that has it, so it would do nothing for a consumer anyway. A host
@@ -37,7 +37,7 @@ vello = ["dioxus-native/vello"]
 system-clipboard = ["dep:arboard"]
 
 [dependencies]
-dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
+dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
     "macro",
     "html",
     "signals",
@@ -59,7 +59,7 @@ dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
 #   it is what makes dioxus-native build and enter the tokio runtime the word
 #   count's timer runs on.
 # - `svg`: SVG pictures.
-dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features = [
+dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features = [
     "net", "svg", "system-fonts",
 ] }
 # `fs` off: the widget never touches a path to read or write a document — Save

@@ -301,15 +301,12 @@ name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
-dependencies = [
- "serde_core",
-]
 
 [[package]]
 name = "blitz-dom"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53e58a506e20e90b69ab8b03f933c125237361c31b0dae0e7e149c5bcbf9b28a"
+checksum = "a814bfd3ad19e6d8d26f99c75188062baca499564f9abe44250230962427d183"
 dependencies = [
  "accesskit",
  "anyrender",
@@ -328,7 +325,7 @@ dependencies = [
  "icu_properties",
  "icu_segmenter",
  "image",
- "keyboard-types 0.7.0",
+ "keyboard-types",
  "kurbo",
  "linebender_resource_handle",
  "markup5ever",
@@ -357,9 +354,9 @@ dependencies = [
 
 [[package]]
 name = "blitz-net"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a918421d2f94851659add7673a3e1fc7a32c7fa1c2d9fe4b51fbea02d6fc8324"
+checksum = "966a91d78155df3fd34af4cfcc711e0a998b3bdc0d2967cda40b0087e129deff"
 dependencies = [
  "blitz-traits",
  "data-url",
@@ -370,9 +367,9 @@ dependencies = [
 
 [[package]]
 name = "blitz-paint"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31dd8929dd745efd8ada25f977a163b4c17fd8e9804cb7f42441df63215d2fdd"
+checksum = "28803328124d7b7ea5f8f41501513ccb005559e9f6baf33fa0c1fb7612654a93"
 dependencies = [
  "anyrender",
  "anyrender_svg",
@@ -393,9 +390,9 @@ dependencies = [
 
 [[package]]
 name = "blitz-shell"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ab926b4e1a03f8b6985d47d93b8bb6215455f966c4cab77e66701e317934d92"
+checksum = "d80b952b007a4bd82012583da8540d95cfd276b3c790ded39299fce728864fdb"
 dependencies = [
  "android-activity",
  "anyrender",
@@ -404,7 +401,7 @@ dependencies = [
  "blitz-paint",
  "blitz-traits",
  "futures-util",
- "keyboard-types 0.7.0",
+ "keyboard-types",
  "wasm-bindgen",
  "web-sys",
  "web-time",
@@ -413,16 +410,16 @@ dependencies = [
 
 [[package]]
 name = "blitz-traits"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61b6c502871a565bb274ddead6d08e33af62cacf88ff0e2557698fdaf24dcaf0"
+checksum = "d339c3ff7fe8bed623e27695a4c15dd1ec8faa9bf9158b7475bf180280e4018c"
 dependencies = [
  "atomic_refcell",
  "bitflags",
  "bytes",
  "cursor-icon",
  "http",
- "keyboard-types 0.7.0",
+ "keyboard-types",
  "serde",
  "smol_str",
  "url",
@@ -888,9 +885,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75606497f3d958b9862334f890b14e53604d31d1313061cb3b74a51d3b194603"
+checksum = "a20d22ba8ac0eb0267459cfe6dcd3fd57158c37497ef422ba1940c34c5b04524"
 dependencies = [
  "dioxus-config-macros",
  "dioxus-core",
@@ -904,9 +901,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-asset-resolver"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1db2325dff22fe72dab179a6d1973c56c7e2c76886242a3c6fb27b9074c7ba29"
+checksum = "3405f8b33c91ddb71cd21c103cec7dde122d3c3e81702f59fa54241c996e9ad8"
 dependencies = [
  "dioxus-cli-config",
  "http",
@@ -922,27 +919,27 @@ dependencies = [
 
 [[package]]
 name = "dioxus-cli-config"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "168c693607e8cdce235959080bb13b6e59a947e72aeb4d9504ccabc2bccd1747"
+checksum = "594aecf5eaea72c8d6c27fb582cdd882fbbe3d270539888b3e19cdeec0e414b5"
 
 [[package]]
 name = "dioxus-config-macros"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff693f963b52ef85fa52b79d7890bc3590c1f956a942bc9ed40e2754e6ba88b2"
+checksum = "84024d6dfd2ed560c84d874c57435f829daad9edbca907838581e541bebf1224"
 
 [[package]]
 name = "dioxus-const-vec"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45d2aefd0ede2792f2fb3a43d53cf48cb694d6b070afe7a5fcb9866860e11801"
+checksum = "09d24d174a15ddf07d157f4644d2f6417f66278d1b90b9aeb45f73d86cbdc157"
 
 [[package]]
 name = "dioxus-core"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b516326f303de019601140079b8a8c6c830d8ff2460200bc3dbcb8e0866c3ed4"
+checksum = "44545e820910646b5ea476f913892dfc0302c146d1a8481f7fca75d80b8c6b41"
 dependencies = [
  "anyhow",
  "const_format",
@@ -965,9 +962,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-core-macro"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba18850283be1398d901dcb6274c2f97de904439af4b325fb5af89bdc43cda27"
+checksum = "13611b6d67fef8f6638e4658547106eaa15d6b5f0e142bf8bb738345e55a3a1c"
 dependencies = [
  "convert_case",
  "dioxus-rsx",
@@ -978,9 +975,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-core-template"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "815a7107f8325003c7d7ea376144e76d7920503fa59fa3da087be7e33d0562b0"
+checksum = "8b111b4b1656abff7b086fc4aee6f1c2fb62473a01a5dba5a94c2024e8640e1c"
 dependencies = [
  "dioxus-const-vec",
  "xxhash-rust",
@@ -988,15 +985,15 @@ dependencies = [
 
 [[package]]
 name = "dioxus-core-types"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88eb754e518683eb7a98366f81c6dd6b1001c550c222c370eb8da0174f6ea773"
+checksum = "4f1dab6f5671686cbf7f95231180d0937b04198bb5beb55753e1cca5b032f875"
 
 [[package]]
 name = "dioxus-document"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a907a7468690364b2c155ef709ac6229cf5c59c60d6406f8856e111803c65865"
+checksum = "977047888cad56804a70fc89ae59c5e19c112507b18979b48757524bfac2ed73"
 dependencies = [
  "dioxus-core",
  "dioxus-core-macro",
@@ -1013,9 +1010,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-history"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c3508defeee56bf06b466a60e7dc4d660b946b0690a82f0e520879a304970f0"
+checksum = "e03ffeb1cc75a1254d3fae17a5b79413041c8a15d8c247a37a2218d23976a630"
 dependencies = [
  "dioxus-core",
  "tracing",
@@ -1023,9 +1020,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-hooks"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a7db2c428b5f8719427749b0d8f17e8182e56a63ca04fbf888458d184cdb852"
+checksum = "7d11c3c292681dee1be9c8826e219b1edbaec6f510e867121dc92707384a631a"
 dependencies = [
  "dioxus-core",
  "dioxus-signals",
@@ -1039,9 +1036,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-html"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59379d1fbfc629a66cdfe808ae5072ec6a3fe0860f0c0e362c634327bb045402"
+checksum = "c23776aad7ba2effcc0efcb8a4df9adf2f9c3c705fa7695f2efc060ad62681ff"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1055,7 +1052,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "generational-box",
- "keyboard-types 0.7.0",
+ "keyboard-types",
  "lazy-js-bundle",
  "rustversion",
  "tracing",
@@ -1063,9 +1060,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-html-internal-macro"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bbd515dcefa0858fdd0c05317ec52a623f95266fd58d3150b2677d7ea9ec587"
+checksum = "965ae5c5b855cc803b173fa6acbab284057ed0af87f6193f6ab083770756bbb5"
 dependencies = [
  "convert_case",
  "proc-macro2",
@@ -1075,9 +1072,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-native"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34bc0b8168c21a2b8e0b9e87c9205c9b22cbf5d3d3277ccff37839c13eac190e"
+checksum = "7cd1cb86fdf731605cbeaf33c8a0a4752ee012f5c6a61ee506ba5963a4a1c8b3"
 dependencies = [
  "android-activity",
  "anyrender",
@@ -1097,7 +1094,7 @@ dependencies = [
  "dioxus-html",
  "dioxus-native-dom",
  "futures-util",
- "keyboard-types 0.7.0",
+ "keyboard-types",
  "peniko",
  "rustc-hash 2.1.3",
  "slotmap",
@@ -1109,24 +1106,24 @@ dependencies = [
 
 [[package]]
 name = "dioxus-native-dom"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe8637317fc2c80acdc8b54aed66a39f804841c673d07e0b06b76a54ea8da68c"
+checksum = "200d283bd0e6ecdd4a7542e081e44c1bf83f8aba7bc478837b918ff8dc9c0c5f"
 dependencies = [
  "blitz-dom",
  "blitz-traits",
  "dioxus-core",
  "dioxus-html",
  "futures-util",
- "keyboard-types 0.7.0",
+ "keyboard-types",
  "rustc-hash 2.1.3",
 ]
 
 [[package]]
 name = "dioxus-rsx"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab0a4784386abf9b60e05a4f05e45de08e1becb7ee534db77b19352bfab67fda"
+checksum = "09dff31689498efc0001c8188d549b1ef81775093b269c774fab524bc39405be"
 dependencies = [
  "dioxus-core-template",
  "proc-macro2",
@@ -1138,9 +1135,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-signals"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "198d952e6dfe1e0d10ce2ba09f3a1f213f3b49027e98c699c20c8e497f4e0ba4"
+checksum = "0093b1cfc9c7e7d9c3ef3fbf79f83ab1de1463f9715fb438328ecefbbfbc7188"
 dependencies = [
  "dioxus-core",
  "futures-channel",
@@ -1154,9 +1151,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-stores"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef025971bf379179bcabdcecad7e15d1f1462be38c26f1dca9afffa958c00a0b"
+checksum = "a5a8a869da06b6137e008b953812f1e131fe5c02ff1ff56a7bb8317b0be93695"
 dependencies = [
  "dioxus-core",
  "dioxus-signals",
@@ -1166,9 +1163,9 @@ dependencies = [
 
 [[package]]
 name = "dioxus-stores-macro"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da98f69b41bb45d359a23bc0f7b9cb02fa528dfcc9b8e0393b56005d0f24a666"
+checksum = "7f0e94b059e1b809ca044dc1b6556f19e03e9eaaf0476beae486011ef9866bd3"
 dependencies = [
  "convert_case",
  "proc-macro2",
@@ -1586,9 +1583,9 @@ dependencies = [
 
 [[package]]
 name = "generational-box"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cc576413992f40746f7baa4283186b9d29441152c02e7a79d9fca79150f7052"
+checksum = "ee2a83dd38383542a7494b942bde9cd0c5efd919402a19ca78fa323f5d351bb9"
 dependencies = [
  "parking_lot",
  "tracing",
@@ -2262,17 +2259,6 @@ dependencies = [
 
 [[package]]
 name = "keyboard-types"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b750dcadc39a09dbadd74e118f6dd6598df77fa01df0cfcdc52c28dece74528a"
-dependencies = [
- "bitflags",
- "serde",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "keyboard-types"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
@@ -2327,9 +2313,9 @@ dependencies = [
 
 [[package]]
 name = "lazy-js-bundle"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd0ba824e3d2a4659eea2eecbfaea9edae7ad014b7a4cf04b5b4f14b0aee473b"
+checksum = "0c79f0c69caec3210fc12f3cb250f3e2179bb76b52edfec846983c5b236fb68b"
 
 [[package]]
 name = "leaf-core"
@@ -4300,9 +4286,9 @@ dependencies = [
 
 [[package]]
 name = "stylo_taffy"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58d910649e40ac76167e51da4692180beadba181581b26d501024a132772f5a3"
+checksum = "3d932deb3145f9e1c4159d09237f7999a29632fba9125896abb364dab080e0c0"
 dependencies = [
  "bitflags",
  "stylo",
@@ -4334,9 +4320,9 @@ dependencies = [
 
 [[package]]
 name = "subsecond"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f6eabe8cb7ac6b873fd4c1948e454b71cdb3b5fe69a4e82f85b227415eb828c"
+checksum = "f21c1509f00df90c330f868b677ea22a7f7138e7649b0f125e95041bdf84d48f"
 dependencies = [
  "js-sys",
  "libc",
@@ -4353,9 +4339,9 @@ dependencies = [
 
 [[package]]
 name = "subsecond-types"
-version = "0.8.0-alpha.2"
+version = "0.8.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2eae72081bb190415c3b539881a800e6ab92febcf2df97dc24fdfce0c44a660a"
+checksum = "1f9ef2c7a2a28761e9291172753ff82ec56cf46f1d90c808c6bba924f5295057"
 dependencies = [
  "serde",
 ]
@@ -6077,7 +6063,7 @@ dependencies = [
  "bitflags",
  "cursor-icon",
  "dpi",
- "keyboard-types 0.8.3",
+ "keyboard-types",
  "raw-window-handle",
  "smol_str",
  "url",

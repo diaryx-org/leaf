@@ -1,7 +1,7 @@
 # leaf-dioxus
 
 The editor widget for Dioxus's native renderer: `dioxus-native`
-0.8.0-alpha.2, which draws HTML and CSS through Blitz on wgpu, with no webview
+0.8.0-alpha.3, which draws HTML and CSS through Blitz on wgpu, with no webview
 and no browser engine. It is everything `apps/leaf-dioxus` draws in its window
 but the settings panel: the rows and their proportional layout, the keys and
 the input method, find and replace, the source view, tables as a grid, block

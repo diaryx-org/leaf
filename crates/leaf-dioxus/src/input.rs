@@ -15,7 +15,7 @@
 //! Control elsewhere, and ⌃ is a modifier of its own only on Apple, where the
 //! Swift editor's ⌃0–⌃6 and ⌃K live.
 
-use dioxus::html::{Code, Key, Modifiers};
+use dioxus::html::{Code, Key, Modifiers, NamedKey};
 use leaf_core::{Alignment, BlockKind, Doc, InlineKind};
 
 use crate::host::Request;
@@ -124,11 +124,11 @@ pub fn apply_table(doc: &mut Doc, cmd: TableCommand) -> Action {
     Action::Handled
 }
 
-/// ⌘ arrives from winit as `SUPER` — not `META`, which `keyboard-types`
-/// keeps for the legacy Meta key. Matching `META` alone, every ⌘ chord fell
-/// through to the plain keys: ⌘I typed an `i`, ⌘↓ moved one row.
+/// ⌘ arrives as `META` — `keyboard-types` 0.8 retired `SUPER`, which Blitz
+/// reported it as through 0.3.0-beta.3. Matching the other one, every ⌘ chord
+/// fell through to the plain keys: ⌘I typed an `i`, ⌘↓ moved one row.
 #[cfg(target_os = "macos")]
-const CMD: Modifiers = Modifiers::SUPER;
+const CMD: Modifiers = Modifiers::META;
 #[cfg(not(target_os = "macos"))]
 const CMD: Modifiers = Modifiers::CONTROL;
 
@@ -144,7 +144,7 @@ const CMD: Modifiers = Modifiers::CONTROL;
 pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Action {
     let shift = mods.contains(Modifiers::SHIFT);
     let alt = mods.contains(Modifiers::ALT);
-    let cmd = mods.contains(CMD) || (cfg!(target_os = "macos") && mods.contains(Modifiers::META));
+    let cmd = mods.contains(CMD);
     let ctrl = cfg!(target_os = "macos") && mods.contains(Modifiers::CONTROL);
 
     if cmd && ctrl && code == Code::Space {
@@ -166,19 +166,19 @@ pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Actio
         // Inside a table Return moves down a cell and ⇧Return breaks the line
         // in it; elsewhere both are a newline. Core answers whether it was a
         // table's, as it does for Swift.
-        Key::Enter if shift => {
+        Key::Named(NamedKey::Enter) if shift => {
             if !doc.cell_line_break() {
                 doc.newline();
             }
             Action::Handled
         }
-        Key::Enter => {
+        Key::Named(NamedKey::Enter) => {
             if !doc.cell_return() {
                 doc.newline();
             }
             Action::Handled
         }
-        Key::Tab => {
+        Key::Named(NamedKey::Tab) => {
             if !doc.cell_tab(!shift) {
                 if shift {
                     doc.outdent();
@@ -188,37 +188,37 @@ pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Actio
             }
             Action::Handled
         }
-        Key::Backspace if alt => done(doc.delete_word_back()),
-        Key::Backspace => done(doc.backspace()),
-        Key::Delete if alt => done(doc.delete_word_forward()),
-        Key::Delete => done(doc.delete_forward()),
-        Key::ArrowLeft if alt => done(doc.move_word_left(shift)),
-        Key::ArrowRight if alt => done(doc.move_word_right(shift)),
-        Key::ArrowUp if alt => done(doc.move_block_up()),
-        Key::ArrowDown if alt => done(doc.move_block_down()),
-        Key::ArrowLeft => done(doc.move_left(shift)),
-        Key::ArrowRight => done(doc.move_right(shift)),
-        Key::ArrowUp => Action::Vertical {
+        Key::Named(NamedKey::Backspace) if alt => done(doc.delete_word_back()),
+        Key::Named(NamedKey::Backspace) => done(doc.backspace()),
+        Key::Named(NamedKey::Delete) if alt => done(doc.delete_word_forward()),
+        Key::Named(NamedKey::Delete) => done(doc.delete_forward()),
+        Key::Named(NamedKey::ArrowLeft) if alt => done(doc.move_word_left(shift)),
+        Key::Named(NamedKey::ArrowRight) if alt => done(doc.move_word_right(shift)),
+        Key::Named(NamedKey::ArrowUp) if alt => done(doc.move_block_up()),
+        Key::Named(NamedKey::ArrowDown) if alt => done(doc.move_block_down()),
+        Key::Named(NamedKey::ArrowLeft) => done(doc.move_left(shift)),
+        Key::Named(NamedKey::ArrowRight) => done(doc.move_right(shift)),
+        Key::Named(NamedKey::ArrowUp) => Action::Vertical {
             down: false,
             extend: shift,
         },
-        Key::ArrowDown => Action::Vertical {
+        Key::Named(NamedKey::ArrowDown) => Action::Vertical {
             down: true,
             extend: shift,
         },
-        Key::Home => Action::LineEdge {
+        Key::Named(NamedKey::Home) => Action::LineEdge {
             end: false,
             extend: shift,
         },
-        Key::End => Action::LineEdge {
+        Key::Named(NamedKey::End) => Action::LineEdge {
             end: true,
             extend: shift,
         },
-        Key::PageUp => Action::Page {
+        Key::Named(NamedKey::PageUp) => Action::Page {
             down: false,
             extend: shift,
         },
-        Key::PageDown => Action::Page {
+        Key::Named(NamedKey::PageDown) => Action::Page {
             down: true,
             extend: shift,
         },
@@ -251,22 +251,22 @@ fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Acti
         _ => {}
     }
     match key {
-        Key::ArrowUp => return done(doc.move_doc_start(shift)),
-        Key::ArrowDown => return done(doc.move_doc_end(shift)),
+        Key::Named(NamedKey::ArrowUp) => return done(doc.move_doc_start(shift)),
+        Key::Named(NamedKey::ArrowDown) => return done(doc.move_doc_end(shift)),
         // Ends of the visual line, by geometry, as Swift does.
-        Key::ArrowLeft => {
+        Key::Named(NamedKey::ArrowLeft) => {
             return Action::LineEdge {
                 end: false,
                 extend: shift,
             };
         }
-        Key::ArrowRight => {
+        Key::Named(NamedKey::ArrowRight) => {
             return Action::LineEdge {
                 end: true,
                 extend: shift,
             };
         }
-        Key::Backspace => return done(doc.delete_to_line_start()),
+        Key::Named(NamedKey::Backspace) => return done(doc.delete_to_line_start()),
         _ => {}
     }
     match code {
@@ -458,7 +458,12 @@ mod tests {
     fn alt_backspace_deletes_a_word() {
         let mut d = doc("one two\n");
         d.place_caret(7, false);
-        press(&mut d, Key::Backspace, Code::Backspace, Modifiers::ALT);
+        press(
+            &mut d,
+            Key::Named(NamedKey::Backspace),
+            Code::Backspace,
+            Modifiers::ALT,
+        );
         assert!(
             d.source.starts_with("one \n") || d.source.starts_with("one\n"),
             "{:?}",
@@ -473,9 +478,14 @@ mod tests {
     fn cmd_is_super_and_a_cmd_chord_types_nothing() {
         let mut d = doc("hello\n");
         d.place_caret(0, false);
-        press(&mut d, ch("i"), Code::KeyI, Modifiers::SUPER);
+        press(&mut d, ch("i"), Code::KeyI, Modifiers::META);
         assert_eq!(d.source, "hello\n");
-        press(&mut d, Key::ArrowDown, Code::ArrowDown, Modifiers::SUPER);
+        press(
+            &mut d,
+            Key::Named(NamedKey::ArrowDown),
+            Code::ArrowDown,
+            Modifiers::META,
+        );
         assert_eq!(d.caret, d.source.len());
     }
 
@@ -605,7 +615,12 @@ mod tests {
     fn an_unmapped_key_is_left_alone() {
         let mut d = doc("hello\n");
         assert_eq!(
-            apply_key(&mut d, &Key::F1, Code::F1, Modifiers::empty()),
+            apply_key(
+                &mut d,
+                &Key::Named(NamedKey::F1),
+                Code::F1,
+                Modifiers::empty()
+            ),
             Action::Ignored
         );
     }

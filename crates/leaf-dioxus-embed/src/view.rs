@@ -110,8 +110,8 @@ pub fn dioxus_mods(bits: u32) -> Modifiers {
     m.set(Modifiers::SHIFT, bits & MOD_SHIFT != 0);
     m.set(Modifiers::CONTROL, bits & MOD_CONTROL != 0);
     m.set(Modifiers::ALT, bits & MOD_ALT != 0);
-    // ⌘, as winit reports it and the editor's bindings match it.
-    m.set(Modifiers::SUPER, bits & MOD_COMMAND != 0);
+    // ⌘, as Blitz reports it and the editor's bindings match it.
+    m.set(Modifiers::META, bits & MOD_COMMAND != 0);
     m
 }
 
