@@ -167,6 +167,7 @@ impl Editor {
             WindowEvent::ThemeChanged(theme) => {
                 trace(|| format!("theme {theme:?}"));
                 // Formulas and diagrams are inked for the appearance.
+                self.reink();
                 self.repaint();
                 self.st.window.request_redraw();
             }

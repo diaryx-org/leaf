@@ -277,9 +277,11 @@ pub fn Line(
 #[derive(Clone, PartialEq, Debug)]
 pub enum Seg {
     Text(String, String),
-    /// An inline formula's atom: drawn as its picture, at the source offset
-    /// `picture.rs` keeps it under.
-    Math(String, usize, String),
+    /// An inline formula's atom: its source offset, its TeX, and the
+    /// picture it is drawn as, as laid out — carried here rather than looked
+    /// up when drawn, so that a picture inked anew for another appearance is
+    /// a changed line, which a memoized [`Line`] draws again.
+    Math(String, usize, String, Option<Rc<crate::picture::Inline>>),
     Caret,
     /// A grab handle at one end of the selection: its knob above the start
     /// (`false`) or below the end (`true`).
@@ -297,9 +299,12 @@ pub enum Seg {
 impl Seg {
     fn text(r: &Run, s: &str) -> Self {
         match r.src {
-            Some(src) if r.class.split(' ').any(|c| c == "math") => {
-                Seg::Math(r.class.clone(), src, s.to_owned())
-            }
+            Some(src) if r.class.split(' ').any(|c| c == "math") => Seg::Math(
+                r.class.clone(),
+                src,
+                s.to_owned(),
+                crate::picture::inline_at(src),
+            ),
             _ => Seg::Text(r.class.clone(), s.to_owned()),
         }
     }
@@ -326,7 +331,7 @@ impl Seg {
     pub fn render(self) -> Element {
         match self {
             Seg::Text(class, text) => rsx! { span { class, "{text}" } },
-            Seg::Math(class, src, text) => match crate::picture::inline_at(src) {
+            Seg::Math(class, _, text, picture) => match picture {
                 Some(p) => rsx! {
                     img { class, src: "{p.url}",
                           style: "width: {p.size.0}px; height: {p.size.1}px; vertical-align: -{p.depth}px;" }
@@ -503,7 +508,7 @@ mod tests {
     fn texts(segs: &[Seg]) -> String {
         segs.iter()
             .map(|s| match s {
-                Seg::Text(_, t) | Seg::Math(_, _, t) => t.as_str(),
+                Seg::Text(_, t) | Seg::Math(_, _, t, _) => t.as_str(),
                 Seg::Caret => "|",
                 Seg::Grip(false) => "[",
                 Seg::Grip(true) => "]",
