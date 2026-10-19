@@ -119,18 +119,20 @@ debug = "line-tables-only"
 opt-level = 3
 
 # winit's macOS backend, vendored at the version dioxus-native pins and
-# patched (see patches/winit-appkit/PATCH.md): its text input client answered
+# patched (see /patches/winit-appkit/PATCH.md): its text input client answered
 # no questions about the text around the caret, so macOS's press-and-hold
 # accent menu never opened, and it dropped any insertText that did not end a
 # composition, which is how the emoji picker inserts.
 #
-# An exception to the org rule against [patch] in a tracked manifest, granted
-# by Adam on 2026-10-15 for the spike this app began as (apps/leaf-dioxus),
-# and kept when it became the Mac app. The rule keeps each org crate spelled
-# one way in every manifest; this patches a third-party crate, vendored inside
-# the repository, in a workspace nothing depends on — and winit-appkit
-# reaches the app only transitively (blitz-shell → winit), which nothing but
-# [patch] can override. It goes when the change lands upstream (PATCH.md,
-# "Upstream") and Blitz takes that winit.
+# An exception to the org rule that a [patch] in a tracked manifest takes a
+# git source, never a local path: granted by Adam on 2026-10-15 for the spike
+# this app began as, and kept when it became the Mac app. The rule keeps a
+# build from reaching into a sibling checkout; this path stays inside the
+# repository, and a git source would build the app against what is pushed
+# rather than the patch beside it. Consumers outside leaf take the same crate
+# by git (flower's apps/flower-dioxus does). winit-appkit reaches the app only
+# transitively (blitz-shell → winit), which nothing but [patch] can override.
+# It goes when the change lands upstream (PATCH.md, "Upstream") and Blitz
+# takes that winit.
 [patch.crates-io]
-winit-appkit = { path = "patches/winit-appkit" }
+winit-appkit = { path = "../../patches/winit-appkit" }

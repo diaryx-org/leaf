@@ -79,13 +79,14 @@ window as winit's own events (`drive.rs`) — how a session with no hand on
 the system's pointer clicks in the page. Menu bar items are pressed through
 the accessibility API, which reaches only this app's menus.
 
-**winit is patched.** Its macOS backend is vendored in
+**winit is patched.** Its macOS backend is vendored at leaf's root, in
 `patches/winit-appkit` (`PATCH.md` says what and why; `upstream/` is the
 change prepared for winit): the text input client answers from the text
 around the caret, so press-and-hold accents, the Character Viewer and
-dictation work. That `[patch]` is an exception to the org's rule, granted
-for this workspace, and only this one has it — a `[patch]` reaches no build
-but its own workspace's. The proposal "A shared, patched winit for the
+dictation work. That `[patch]` takes the crate by local path, an exception
+to the org's rule granted for this workspace, and only this one has it — a
+`[patch]` reaches no build but its own workspace's. Apps outside leaf take
+the same crate by git. The proposal "A shared, patched winit for the
 Dioxus work" in `docs/proposals/` is the plan for it, and for iOS's.
 
 What the SwiftUI app did and this one does not yet is the task "What the Mac

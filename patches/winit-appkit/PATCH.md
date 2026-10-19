@@ -1,8 +1,16 @@
 # winit-appkit 0.31.0-beta.3, patched
 
 The crate dioxus-native pins, vendored unmodified in the commit before this
-file's and patched after it, so `git log -p -- .` is the patch. Every change
-is marked `leaf patch` in the source.
+file's and patched after it, so `git log -p -- .` is the patch, followed
+back through where it lived before leaf's root `patches/`:
+`apps/leaf-dioxus/patches/`, and before that
+`spikes/dioxus-widget/native-alpha/patches/`. Every change is marked
+`leaf patch` in the source.
+
+Consumers take it with `[patch.crates-io]` in their root manifest: leaf's
+`apps/leaf-dioxus` by path, anything outside leaf by git, `{ git =
+"https://github.com/diaryx-org/leaf", branch = "main" }` — cargo finds the
+crate by name in the repository.
 
 ## What was wrong
 
