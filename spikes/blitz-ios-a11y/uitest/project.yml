@@ -1,0 +1,27 @@
+# Reads the spike's accessibility tree from outside, as VoiceOver would: a UI
+# test that attaches to the running app by its bundle identifier. UI tests
+# need a host app of their own; `Host` is an empty one.
+name: ReadTree
+options:
+  bundleIdPrefix: org.diaryx.leaf.agent-readtree
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  Host:
+    type: application
+    platform: iOS
+    sources: [Host]
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
+      CODE_SIGNING_ALLOWED: NO
+  ReadTree:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [ReadTree]
+    dependencies:
+      - target: Host
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+      TEST_TARGET_NAME: Host

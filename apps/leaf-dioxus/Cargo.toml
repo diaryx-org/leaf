@@ -45,7 +45,7 @@ dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
 # for pictures read from `file:` URLs, `svg`. No `launch`: the app runs its
 # own event loop handler, which opens a window per document (`app.rs`).
 dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features = [
-    "net", "svg", "system-fonts", "vello",
+    "net", "svg", "system-fonts", "vello", "accessibility",
 ] }
 # `fs` on: a document is a file, read and written through its NSDocument.
 leaf-core = { path = "../../crates/leaf-core", default-features = false, features = [
@@ -61,6 +61,10 @@ blitz-shell = { version = "=0.3.0-beta.4", default-features = false }
 blitz-dom = { version = "=0.3.0-beta.4", default-features = false }
 blitz-net = "=0.3.0-beta.4"
 blitz-traits = "=0.3.0-beta.4"
+# Assistive tech's requests (a press), which Blitz leaves to its host
+# (`access.rs`): the versions blitz-shell's `accessibility` uses.
+accesskit = "0.25"
+accesskit_xplat = "0.2"
 # Export as PDF and Print (`pdf.rs`): Blitz's paint recorded, and drawn again
 # as PDF pages by krilla, glyphs' characters read back from their fonts.
 anyrender = "0.14"
@@ -136,3 +140,17 @@ opt-level = 3
 # takes that winit.
 [patch.crates-io]
 winit-appkit = { path = "../../patches/winit-appkit" }
+# Blitz's accessibility tree, made readable and pressable (bounds, the
+# page's text, the click action): diaryx-org's fork of Blitz, its `leaf`
+# branch at the version dioxus-native pins (FORK.md there).
+# Every Blitz crate in the graph comes from the fork: the fork's crates
+# depend on each other by path, so one from crates.io beside them would be
+# a second copy.
+blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+accesskit_xplat = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }

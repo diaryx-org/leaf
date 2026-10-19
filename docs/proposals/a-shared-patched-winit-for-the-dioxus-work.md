@@ -42,8 +42,9 @@ blitz-shell → winit, and no fork short of that whole chain avoids it.
    `apps/leaf-dioxus/patches/`, and `winit-uikit` with #4723 applied, which is
    winit's MIT/Apache code and already public. Each keeps a `PATCH.md` saying
    what changed, from where, and when it goes.
-   Done for `winit-appkit`, 2026-10-19; `winit-uikit` is still on diaryx's
-   spike branch.
+   Done for `winit-appkit`, 2026-10-19, and for `winit-uikit` the same day:
+   `patches/winit-uikit`, #4723 applied (its `PATCH.md`), used by
+   `spikes/blitz-ios-a11y`. diaryx's spike can take it from there by git.
 2. **Everyone takes them from there.** `apps/leaf-dioxus` by path. flower's
    `apps/flower-dioxus` by git since 2026-10-19, for its edit line's input
    method. diaryx's spike by git, as the org spells a leaf dependency:

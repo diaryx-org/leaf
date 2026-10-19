@@ -504,7 +504,14 @@ impl ApplicationHandler for App {
                     let time = view.current_animation_time();
                     view.doc.inner_mut().resolve(time);
                 }
-                view.handle_winit_event(event.clone())
+                view.handle_winit_event(event.clone());
+                // The tree assistive tech reads, as the frame just drawn
+                // shows it: Blitz rebuilds it on a poll that finds changes,
+                // which this app's own resolves have often taken first. A
+                // no-op while no assistive tech is listening.
+                if matches!(event, WindowEvent::RedrawRequested) {
+                    view.build_accessibility_tree();
+                }
             });
         }
         if let Some(p) = &page {
@@ -516,6 +523,22 @@ impl ApplicationHandler for App {
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         while let Ok(event) = self.blitz.event_queue.try_recv() {
+            // A press assistive tech asks for is carried out here, as a
+            // click; Blitz leaves it undone.
+            if let BlitzShellEvent::Accessibility { window_id, data } = &event
+                && let accesskit_xplat::WindowEvent::ActionRequested(request) = &**data
+            {
+                let events = self
+                    .blitz
+                    .windows
+                    .get(window_id)
+                    .map(|view| crate::access::events(view, request))
+                    .unwrap_or_default();
+                for e in events {
+                    self.window_event(event_loop, *window_id, e);
+                }
+                continue;
+            }
             if !matches!(event, BlitzShellEvent::Embedder(_)) {
                 guard(|| self.blitz.handle_blitz_shell_event(event_loop, event));
             }
