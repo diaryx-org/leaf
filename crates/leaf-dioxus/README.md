@@ -114,14 +114,14 @@ is the Swift editor's defaults.
 ## What a host has to know
 
 - **Patch winit on macOS.** Press-and-hold accents, the emoji picker and
-  dictation need the patched `winit-appkit` that leaf vendors at its root,
+  dictation need the patched `winit-appkit` kept in diaryx-org's Blitz fork,
   in `patches/winit-appkit` (`PATCH.md` says what and why). This crate cannot
   carry the `[patch]`: a `[patch]` applies only at the root of the workspace
-  that has it. A host outside leaf takes it by git, in its own root manifest:
+  that has it. A host takes it by git, in its own root manifest:
 
   ```toml
   [patch.crates-io]
-  winit-appkit = { git = "https://github.com/diaryx-org/leaf", branch = "main" }
+  winit-appkit = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
   ```
 - **Blitz features.** The crate turns on the dioxus-native features the
   editor needs to draw correctly — classic `vello` (the default

@@ -128,10 +128,11 @@ mod tests {
 
 /// Blitz's own bug, kept as a test: a box shown (`display: none` to
 /// `block`) in the same frame as rows arrive in an absolutely positioned
-/// child of it leaves blitz-dom 0.3.0-beta.4 a freed node in its layout
-/// tree, and every layout after it panics. `leaf_dioxus_ui::Layer` keeps its
-/// overlay displayed for this reason. When this stops panicking, Blitz has
-/// fixed it, and the overlay may hide again.
+/// child of it left blitz-dom 0.3.0-beta.4 a freed node in its layout tree,
+/// and every layout after it panicked. `leaf_dioxus_ui::Layer` keeps its
+/// overlay displayed for this reason. The Blitz fork's `leaf` branch fixes
+/// it (a removed node is forgotten by its layout parent), so this now lays
+/// out cleanly, and the overlay may hide again.
 #[cfg(test)]
 mod blitz {
     use super::*;
@@ -158,8 +159,7 @@ mod blitz {
     }
 
     #[test]
-    #[should_panic(expected = "is not in the slab")]
-    fn showing_a_box_as_rows_arrive_in_its_absolute_child_breaks_layout() {
+    fn showing_a_box_as_rows_arrive_in_its_absolute_child_lays_out() {
         let mut doc = page(Overlay, 600.0, 400.0);
         let rt = doc.vdom.runtime();
         for n in 1..4 {

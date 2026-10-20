@@ -342,7 +342,7 @@ pub fn open_url(what: &str) {
 }
 
 /// The emoji and symbols picker. Its choice arrives as an `Ime::Commit`
-/// (see `patches/winit-appkit/PATCH.md`).
+/// (see the Blitz fork's `patches/winit-appkit/PATCH.md`).
 pub fn character_palette() {
     NSApplication::sharedApplication(mtm()).orderFrontCharacterPalette(None);
 }

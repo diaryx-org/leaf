@@ -9,7 +9,7 @@
 # workspace has no [patch]: a [patch] applies only at the root of the
 # workspace that has it, so it would do nothing for a consumer anyway. A host
 # that wants the macOS text input fixes patches winit-appkit itself, from
-# leaf's root `patches/winit-appkit` (its `PATCH.md` says what and why).
+# the Blitz fork's `patches/winit-appkit` (its `PATCH.md` says what and why).
 #
 #     cargo test --manifest-path crates/leaf-dioxus/Cargo.toml
 [workspace]

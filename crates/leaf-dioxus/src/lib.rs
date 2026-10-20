@@ -44,8 +44,9 @@
 //!   it ([`Editor::set_bounds`]); the page's stylesheet still clips at
 //!   `body`, so a host covers what lies outside the box ([`Bounds`]).
 //! - **Patch winit on macOS.** Press-and-hold accents, the emoji picker and
-//!   dictation need the patched `winit-appkit` that leaf vendors in
-//!   `patches/winit-appkit`; a `[patch]` here would not reach a host's build.
+//!   dictation need the patched `winit-appkit` in diaryx-org's Blitz
+//!   fork (`patches/winit-appkit`); a `[patch]` here would not reach a host's
+//!   build.
 
 mod blocks;
 mod bridge;

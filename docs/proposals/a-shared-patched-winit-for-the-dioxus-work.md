@@ -9,11 +9,12 @@ created: 2026-10-15
 
 ## Status
 
-`draft`, 2026-10-15; updated 2026-10-19. Written with the session porting
+`draft`, 2026-10-15; updated 2026-10-20. Written with the session porting
 Diaryx to Dioxus on iOS, after both found winit needed patching. What Adam has
-decided is under "Decisions"; nothing has been sent upstream. The macOS half
-of step 1 is done: `winit-appkit` is in `patches/` at leaf's root, and flower's
-Dioxus app takes it from there by git.
+decided is under "Decisions"; nothing has been sent upstream. Step 1 is done, and
+its home moved on 2026-10-20: both patched backends are in diaryx-org's Blitz
+fork, `patches/`, and every app takes them from there by git with the rest
+of its Blitz (see "Decisions").
 
 ## Where it stands
 
@@ -25,7 +26,7 @@ dioxus-native pins (0.8.0-alpha.2 when this was written, and still at
 |---|---|---|
 | Backend | `winit-appkit` (macOS) | `winit-uikit` (iOS) |
 | What | the text input client answers from surrounding text: press-and-hold accents, the emoji picker and dictation | rust-windowing/winit#4723 verbatim, "ios: support the UIScene lifecycle" — without it iOS 27 refuses an app built with the iOS 27 SDK |
-| Where | `patches/winit-appkit` at leaf's root (public); `apps/leaf-dioxus/patches/` until 2026-10-19 | `spikes/dioxus-ios/patches/winit-uikit` on diaryx's `spike/dioxus-ios` (private) |
+| Where | the Blitz fork's `patches/winit-appkit` (public) since 2026-10-20; leaf's root `patches/` until then, `apps/leaf-dioxus/patches/` until 2026-10-19 | `spikes/dioxus-ios/patches/winit-uikit` on diaryx's `spike/dioxus-ios` (private) |
 | `[patch]` | `apps/leaf-dioxus` by path: an exception Adam granted for the spike, 2026-10-15, kept when it became the app. flower's `apps/flower-dioxus` by git, which the org rule allows since 2026-10-19 | an exception Adam granted for that spike, 2026-10-15 |
 | Upstream | prepared as a PR, not sent: `patches/winit-appkit/upstream/PR.md` | #4723 is open and mergeable, not on winit's master |
 
@@ -35,7 +36,8 @@ blitz-shell → winit, and no fork short of that whole chain avoids it.
 
 ## The plan
 
-1. **One home for the patched backends: leaf.** leaf is public and diaryx
+1. **One home for the patched backends: leaf, then the Blitz fork.**
+   (Leaf's, as first planned below; the Blitz fork's since 2026-10-20.) leaf is public and diaryx
    private, and code may only move from public to private, so a copy both use
    lives in leaf. Both vendored crates go to a `patches/` directory at leaf's
    root, outside its root workspace — `winit-appkit` from
@@ -45,7 +47,9 @@ blitz-shell → winit, and no fork short of that whole chain avoids it.
    Done for `winit-appkit`, 2026-10-19, and for `winit-uikit` the same day:
    `patches/winit-uikit`, #4723 applied (its `PATCH.md`), used by
    `spikes/blitz-ios-a11y`. diaryx's spike can take it from there by git.
-2. **Everyone takes them from there.** `apps/leaf-dioxus` by path. flower's
+2. **Everyone takes them from there.** Since 2026-10-20 that is
+   `{ git = "https://github.com/diaryx-org/blitz", branch = "leaf" }`, for
+   leaf's app as for every other. As first planned: `apps/leaf-dioxus` by path. flower's
    `apps/flower-dioxus` by git since 2026-10-19, for its edit line's input
    method. diaryx's spike by git, as the org spells a leaf dependency:
    `[patch.crates-io] winit-uikit = { git = "https://github.com/diaryx-org/leaf", branch = "main" }`
@@ -102,8 +106,17 @@ Made, 2026-10-19:
 
 Open:
 
-- Whether `apps/leaf-dioxus` keeps its path `[patch]` as an exception — it
-  stays inside leaf, and builds against the patch beside it — or takes the
-  crate by git like everyone else.
-- Moving `winit-uikit` from diaryx's spike to leaf's `patches/`.
 - When to send the appkit PR, and supporting #4723 upstream.
+- Whether diaryx's iOS app takes winit-uikit from the Blitz fork instead of
+  its own copy.
+
+Made, 2026-10-20:
+
+- Both patched backends move to diaryx-org's Blitz fork, `patches/`, with
+  the iOS spike (its `examples/ios-a11y`). They are pinned by the
+  blitz-shell the fork's `leaf` branch carries and move when it does, so an
+  app takes its whole Blitz stack, winit included, from one repository and
+  one branch. Leaf's app takes them by git like every other, which ends its
+  path exception for winit; the history stays in leaf.
+- blitz-shell carries out assistive tech's click itself
+  (`View::accessibility_action_events`); leaf's `access.rs` is gone.

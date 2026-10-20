@@ -210,7 +210,7 @@ impl Editor {
     /// Allow the input method on the window, unless it is already allowed
     /// — on iOS, raising the keyboard (winit-uikit's `becomeFirstResponder`)
     /// — or the document is only to be read. Surrounding text needs the
-    /// patched winit-appkit to be heard on macOS (see
+    /// patched winit-appkit to be heard on macOS (see the Blitz fork's
     /// `patches/winit-appkit/PATCH.md`); winit asks for some with the
     /// capability, so an empty line to start.
     pub(crate) fn enable_ime(&self) {

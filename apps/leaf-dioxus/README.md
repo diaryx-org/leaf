@@ -86,22 +86,21 @@ the window's tree from the page, which VoiceOver and agents read through
 `FORK.md` there), whose tree has each node's bounds, the page's text as
 static text and the click action on buttons; every Blitz crate in the graph
 is patched from it, as its crates depend on each other by path. What
-assistive tech asks a window to do — a press — Blitz leaves to its host, and
-`access.rs` carries it out as a click at the node's middle, through the
-window's own events. The tree is rebuilt after each frame drawn
+assistive tech asks a window to do — a press — blitz-shell turns into a
+click at the node's middle (`View::accessibility_action_events`), which the
+app carries out through its own handling of window events. The tree is rebuilt after each frame drawn
 (`App::window_event`), a no-op while no assistive tech listens: Blitz
 rebuilds it only on a poll that finds changes, which the app's own resolves
-have usually taken first. The iOS side is the spike `spikes/blitz-ios-a11y`.
+have usually taken first. The iOS side is the fork's `examples/ios-a11y`.
 
-**winit is patched.** Its macOS backend is vendored at leaf's root, in
-`patches/winit-appkit` (`PATCH.md` says what and why; `upstream/` is the
-change prepared for winit): the text input client answers from the text
+**winit is patched.** Its macOS backend is kept, patched, in the Blitz
+fork's `patches/winit-appkit` (`PATCH.md` there says what and why;
+`upstream/` is the change prepared for winit), and the app takes it by git
+with the rest of its Blitz: the text input client answers from the text
 around the caret, so press-and-hold accents, the Character Viewer and
-dictation work. That `[patch]` takes the crate by local path, an exception
-to the org's rule granted for this workspace, and only this one has it — a
-`[patch]` reaches no build but its own workspace's. Apps outside leaf take
-the same crate by git. The proposal "A shared, patched winit for the
-Dioxus work" in `docs/proposals/` is the plan for it, and for iOS's.
+dictation work. Every org app on Blitz takes it the same way. The proposal
+"A shared, patched winit for the Dioxus work" in `docs/proposals/` is the
+plan for it, and for iOS's.
 
 **wgpu-hal is patched.** wgpu's Metal backend refused every frame for a
 window macOS does not call visible, so a window opened or restored behind
@@ -226,8 +225,8 @@ Two macOS text features do not, and neither is the editor's to fix:
   forwards only text that ends a composition, so its insertion would be
   dropped.
 
-Both are now fixed by a patch to winit's macOS backend, vendored under
-`patches/winit-appkit` (its `PATCH.md` says what and why): the
+Both are now fixed by a patch to winit's macOS backend, kept in the Blitz
+fork's `patches/winit-appkit` (its `PATCH.md` says what and why): the
 text input client answers from the surrounding text the editor reports,
 replacement ranges become `Ime::DeleteSurrounding`, picker and dictation text
 arrives as `Ime::Commit`, and keys meant for the accent menu are not typed.

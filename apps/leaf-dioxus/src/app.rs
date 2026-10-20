@@ -584,8 +584,9 @@ impl ApplicationHandler for App {
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         while let Ok(event) = self.blitz.event_queue.try_recv() {
-            // A press assistive tech asks for is carried out here, as a
-            // click; Blitz leaves it undone.
+            // A press assistive tech asks for is carried out as a click,
+            // through this app's own handling of window events, so the page
+            // and the editor see it as they see a hand's.
             if let BlitzShellEvent::Accessibility { window_id, data } = &event
                 && let accesskit_xplat::WindowEvent::ActionRequested(request) = &**data
             {
@@ -593,7 +594,7 @@ impl ApplicationHandler for App {
                     .blitz
                     .windows
                     .get(window_id)
-                    .map(|view| crate::access::events(view, request))
+                    .map(|view| view.accessibility_action_events(request))
                     .unwrap_or_default();
                 for e in events {
                     self.window_event(event_loop, *window_id, e);

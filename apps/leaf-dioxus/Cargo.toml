@@ -61,9 +61,9 @@ blitz-shell = { version = "=0.3.0-beta.4", default-features = false }
 blitz-dom = { version = "=0.3.0-beta.4", default-features = false }
 blitz-net = "=0.3.0-beta.4"
 blitz-traits = "=0.3.0-beta.4"
-# Assistive tech's requests (a press), which Blitz leaves to its host
-# (`access.rs`): the versions blitz-shell's `accessibility` uses.
-accesskit = "0.25"
+# Assistive tech's requests (a press), carried out by blitz-shell's
+# `View::accessibility_action_events` through the app's own window events:
+# the version blitz-shell's `accessibility` uses.
 accesskit_xplat = "0.2"
 # Export as PDF and Print (`pdf.rs`): Blitz's paint recorded, and drawn again
 # as PDF pages by krilla, glyphs' characters read back from their fonts.
@@ -122,24 +122,17 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 3
 
-# winit's macOS backend, vendored at the version dioxus-native pins and
-# patched (see /patches/winit-appkit/PATCH.md): its text input client answered
-# no questions about the text around the caret, so macOS's press-and-hold
+[patch.crates-io]
+# winit's macOS backend, at the version dioxus-native pins, patched (its
+# PATCH.md, in the Blitz fork's patches/): its text input client answered no
+# questions about the text around the caret, so macOS's press-and-hold
 # accent menu never opened, and it dropped any insertText that did not end a
-# composition, which is how the emoji picker inserts.
-#
-# An exception to the org rule that a [patch] in a tracked manifest takes a
-# git source, never a local path: granted by Adam on 2026-10-15 for the spike
-# this app began as, and kept when it became the Mac app. The rule keeps a
-# build from reaching into a sibling checkout; this path stays inside the
-# repository, and a git source would build the app against what is pushed
-# rather than the patch beside it. Consumers outside leaf take the same crate
-# by git (flower's apps/flower-dioxus does). winit-appkit reaches the app only
+# composition, which is how the emoji picker inserts. From the Blitz fork,
+# with the rest of the Blitz stack. winit-appkit reaches the app only
 # transitively (blitz-shell → winit), which nothing but [patch] can override.
 # It goes when the change lands upstream (PATCH.md, "Upstream") and Blitz
 # takes that winit.
-[patch.crates-io]
-winit-appkit = { path = "../../patches/winit-appkit" }
+winit-appkit = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
 # wgpu's hardware layer, vendored at the version anyrender_vello's wgpu takes
 # and patched (see /patches/wgpu-hal/PATCH.md): on macOS it refused every
 # frame for a window not marked visible, so a window opened, restored or
@@ -148,8 +141,9 @@ winit-appkit = { path = "../../patches/winit-appkit" }
 # 2026-10-19 for this patch; it goes when wgpu stops refusing those frames.
 wgpu-hal = { path = "../../patches/wgpu-hal" }
 # Blitz's accessibility tree, made readable and pressable (bounds, the
-# page's text, the click action): diaryx-org's fork of Blitz, its `leaf`
-# branch at the version dioxus-native pins (FORK.md there).
+# page's text, ARIA's states, the click action carried out): diaryx-org's
+# fork of Blitz, its `leaf` branch at the version dioxus-native pins
+# (FORK.md there).
 # Every Blitz crate in the graph comes from the fork: the fork's crates
 # depend on each other by path, so one from crates.io beside them would be
 # a second copy.
