@@ -14,7 +14,7 @@ use dioxus::prelude::*;
 use dioxus_core::{ScopeId, VirtualDom};
 use dioxus_native::DioxusDocument;
 use dioxus_native::winit::window::Window;
-use leaf_dioxus_ui::Layer;
+use unit::Unit;
 
 use crate::offscreen::HostedWindow;
 
@@ -62,26 +62,32 @@ pub fn settle(document: &mut DioxusDocument) {
 }
 
 thread_local! {
-    /// The layer the last page made, for a test to open its menus.
-    pub static LAYER: RefCell<Option<Layer>> = const { RefCell::new(None) };
+    /// The [`Unit`] the last page made, for a test to open its menus.
+    pub static UNIT: RefCell<Option<Unit>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
 mod tests {
-    use leaf_dioxus_ui::{Dialog, Entry, Item, use_layer_provider};
+    use unit::{Dialog, Entry, Item, Keys, UnitRoot, use_unit};
 
     use super::*;
 
     #[allow(non_snake_case)]
-    fn LayerPage() -> Element {
-        let layer = use_layer_provider();
-        use_hook(|| LAYER.with_borrow_mut(|l| *l = Some(layer)));
+    fn UnitPage() -> Element {
         rsx! {
-            style { {leaf_dioxus_ui::CSS} }
-            div { style: "height: 40px", "a toolbar" }
-            p { "Some text under it." }
-            {layer.render()}
+            UnitRoot { keys: Keys::Host,
+                Keep {}
+                div { style: "height: 40px", "a toolbar" }
+                p { "Some text under it." }
+            }
         }
+    }
+
+    #[allow(non_snake_case)]
+    fn Keep() -> Element {
+        let unit = use_unit();
+        use_hook(|| UNIT.with_borrow_mut(|u| *u = Some(unit)));
+        rsx! {}
     }
 
     fn entries() -> Vec<Entry> {
@@ -93,35 +99,35 @@ mod tests {
         ]
     }
 
-    fn layer() -> Layer {
-        LAYER.with_borrow(|l| l.expect("the page made its layer"))
+    fn unit() -> Unit {
+        UNIT.with_borrow(|u| u.expect("the page made its unit"))
     }
 
     #[test]
     fn a_menu_opens_closes_and_opens_again_without_breaking_layout() {
-        let mut doc = page(LayerPage, 600.0, 400.0);
+        let mut doc = page(UnitPage, 600.0, 400.0);
         let rt = doc.vdom.runtime();
         for _ in 0..3 {
             rt.in_scope(ScopeId::ROOT, || {
-                let l = layer();
+                let l = unit();
                 l.set_viewport(600.0, 400.0);
                 l.open_menu(entries(), (20.0, 40.0), 26.0, |_| {});
             });
             settle(&mut doc);
-            rt.in_scope(ScopeId::ROOT, || layer().close());
+            rt.in_scope(ScopeId::ROOT, || unit().close());
             settle(&mut doc);
         }
     }
 
     #[test]
     fn a_dialog_opens_and_closes_without_breaking_layout() {
-        let mut doc = page(LayerPage, 600.0, 400.0);
+        let mut doc = page(UnitPage, 600.0, 400.0);
         let rt = doc.vdom.runtime();
         rt.in_scope(ScopeId::ROOT, || {
-            layer().open_dialog(Dialog::new("Link").field("x", "https://"), |_| {})
+            unit().open_dialog(Dialog::new("Link").field("x", "https://"), |_| {})
         });
         settle(&mut doc);
-        rt.in_scope(ScopeId::ROOT, || layer().close());
+        rt.in_scope(ScopeId::ROOT, || unit().close());
         settle(&mut doc);
     }
 }
@@ -129,8 +135,8 @@ mod tests {
 /// Blitz's own bug, kept as a test: a box shown (`display: none` to
 /// `block`) in the same frame as rows arrive in an absolutely positioned
 /// child of it left blitz-dom 0.3.0-beta.4 a freed node in its layout tree,
-/// and every layout after it panicked. `leaf_dioxus_ui::Layer` keeps its
-/// overlay displayed for this reason. The Blitz fork's `leaf` branch fixes
+/// and every layout after it panicked. `leaf-dioxus-ui`, before unit, kept
+/// its overlay displayed for this reason. The Blitz fork's `leaf` branch fixes
 /// it (a removed node is forgotten by its layout parent), so this now lays
 /// out cleanly, and the overlay may hide again.
 #[cfg(test)]

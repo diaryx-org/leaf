@@ -54,6 +54,26 @@ keep their shapes). What unit does not yet do for the app:
 - **iOS** is unit's open task (unit's `docs/tasks/unit-on-ios.md`); the
   Dioxus app is Mac only, so it does not hold this move up.
 
+**Where it stands, 2026-10-20.** The app is on unit, on unit's
+`claude/leaf-gaps` branch, which fills the first two gaps above: a
+`refuses_keys` button, and `box-sizing` set on unit's own elements only.
+Every page is under `UnitRoot { keys: Keys::Host }`, the toolbar's tools are
+unit buttons that refuse the keys, Settings' rows are unit's `Chips` and
+`MenuButton`, and `crates/leaf-dioxus-ui` is gone. The colours needed no
+bridge beyond the appearance and a transparent page background
+(`page::unit_theme`): unit's palette is the one `leaf-dioxus-ui` had.
+Seen in the app: a pressed Italic leaves Space and letters with the
+editor; a toolbar menu, Escape, the Link prompt typed in and cancelled, the
+context menu, and Settings' Other ▾ menu; and the toolbar's and Settings'
+controls in the accessibility tree, pressed by `AXPress`. What is left:
+
+- The app back on unit's `main` once `claude/leaf-gaps` merges.
+- VoiceOver itself, which was not run: only `AXPress` from an agent.
+- Settings in the controls unit has for it: `Segmented` for the short
+  choices, a `Switch` for line breaks, `Select` for the other faces.
+- A menu opened by assistive tech or a key opens where unit last saw the
+  pointer over its button, or near the page's middle when it never did.
+
 **Done when.** The app's menus, prompt and Settings are unit's, work as they
 do now with the mouse, the keys and VoiceOver, and `crates/leaf-dioxus-ui`
 is gone.

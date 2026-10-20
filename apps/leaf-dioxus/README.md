@@ -35,11 +35,16 @@ Every window is a Dioxus page, the same on every platform:
 | `pdf.rs`, `offscreen.rs` | Export as PDF and Print, laid out by the editor offscreen |
 | `app.rs` | the event loop's handler |
 
-The menus, the dialog and the choice controls are
-[`crates/leaf-dioxus-ui`](../../crates/leaf-dioxus-ui)'s, written to work
-under Blitz: Dioxus's own primitives close through JavaScript `eval`, which
-dioxus-native answers with nothing, and move DOM focus from tasks, which
-panics there. Its README says what it does instead.
+The toolbar's buttons, the menus, the dialog and the choice controls are
+[unit](https://github.com/diaryx-org/unit)'s, diaryx-org's components for
+Dioxus, written to work under Blitz and read by assistive tech: Dioxus's own
+primitives close through JavaScript `eval`, which dioxus-native answers with
+nothing, and move DOM focus from tasks, which panics there. Its README says
+what it does instead. Each page is under unit's root, `UnitRoot`, with
+`Keys::Host`: the app hands a key to the page's `Unit` first, to Blitz while
+a text field of unit's has it, and to the editor otherwise
+(`Page::window_event`). The toolbar's buttons refuse the keys, so the editor
+keeps them when one is pressed.
 
 What each platform does its own way is `platform/`, one module per platform
 under the same names (`platform/mod.rs` lists them):
@@ -415,7 +420,9 @@ widget's `Host`. Where a change goes:
 - **Something drawn in place of rows** (media, a formula, a diagram): a
   variant in the widget's `blocks.rs` and a module of its own for what it
   draws, as `table.rs` is for tables.
-- **A menu, a dialog, a choice control**: `crates/leaf-dioxus-ui`.
+- **A menu, a dialog, a choice control**: unit's, from
+  [diaryx-org/unit](https://github.com/diaryx-org/unit); a control it does
+  not have is added there, not here.
 - **Something the system does**: a function under the same name in every
   `platform/` module.
 - **A display choice**: `settings.rs` and its row in `prefs.rs`, handed to

@@ -71,8 +71,8 @@ job
 > > name = Package isolation
 > > run = cargo xtask package-isolation
 > *
-> > # The Dioxus widget, its menus and dialogs (leaf-dioxus-ui), and the app
-> > # over both (apps/leaf-dioxus, Leaf for the Mac), each a workspace of its
+> > # The Dioxus widget and the app over it (apps/leaf-dioxus, Leaf for the
+> > # Mac, its menus and dialogs from diaryx-org/unit), each a workspace of its
 > > # own (an alpha Dioxus; the app's winit is patched, the others' are not),
 > > # so nothing above reaches them. The widget is linted without
 > > # `system-clipboard` too (its renderer, `vello`, turned back on:
@@ -80,5 +80,5 @@ job
 > > # Last because it compiles Blitz and wgpu: the slowest job, and the least
 > > # likely to be the one that fails.
 > > id = dioxus
-> > name = Dioxus widget, components and app
-> > run = cargo fmt --manifest-path crates/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets --no-default-features --features vello -- -D warnings && cargo test --manifest-path crates/leaf-dioxus/Cargo.toml && cargo fmt --manifest-path crates/leaf-dioxus-ui/Cargo.toml --check && cargo clippy --manifest-path crates/leaf-dioxus-ui/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path crates/leaf-dioxus-ui/Cargo.toml && cargo fmt --manifest-path apps/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path apps/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/leaf-dioxus/Cargo.toml
+> > name = Dioxus widget and app
+> > run = cargo fmt --manifest-path crates/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets --no-default-features --features vello -- -D warnings && cargo test --manifest-path crates/leaf-dioxus/Cargo.toml && cargo fmt --manifest-path apps/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path apps/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/leaf-dioxus/Cargo.toml

@@ -1,5 +1,5 @@
 //! The context menu, and the Link prompt — both drawn in the page's overlay
-//! ([`leaf_dioxus_ui::Layer`]), so they are the same on every platform.
+//! ([`unit::Unit`]), so they are the same on every platform.
 //!
 //! A right-click (or a ⌃-click, or a long press) places the caret unless it
 //! lands in the selection, then asks for the menu (`Host::context_menu`). It
@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use dioxus::html::Code;
 use leaf_dioxus::{Context, Footnote};
-use leaf_dioxus_ui::{Answer, Dialog, Entry, Item};
+use unit::{Answer, Dialog, Entry, Item};
 
 use crate::app::{self, AppEvent};
 use crate::commands::{ALT, CMD, Command, SHIFT};
@@ -90,7 +90,7 @@ fn look_up(page: &Page, cx: &Context) -> Option<(String, Command)> {
 
 /// Open the context menu at the pointer.
 pub fn show(page: &Page, cx: &Context) {
-    let Some(layer) = page.layer() else { return };
+    let Some(unit) = page.unit() else { return };
     let items = items(page, cx);
     let mut commands = Vec::new();
     let entries: Vec<Entry> = items
@@ -108,7 +108,7 @@ pub fn show(page: &Page, cx: &Context) {
     let at = page.pointer().unwrap_or((40.0, 80.0));
     let id = page.window.id();
     page.in_scope(|| {
-        layer.open_menu(entries, at, 0.0, move |i| {
+        unit.open_menu(entries, at, 0.0, move |i| {
             if let Some(c) = commands.get(i).cloned() {
                 app::post(AppEvent::Command(id, c));
             }
@@ -119,7 +119,7 @@ pub fn show(page: &Page, cx: &Context) {
 /// Format ▸ Link…: ask for a destination, seeded with the link at the
 /// caret, and make or change the link.
 pub fn prompt_link(page: &Page) {
-    let Some(layer) = page.layer() else { return };
+    let Some(unit) = page.unit() else { return };
     let current = page
         .with_doc(|d| d.link_destination_at_caret())
         .flatten()
@@ -130,7 +130,7 @@ pub fn prompt_link(page: &Page) {
         .field(current, "https://")
         .buttons("OK", "Cancel");
     page.in_scope(|| {
-        layer.open_dialog(dialog, move |answer| {
+        unit.open_dialog(dialog, move |answer| {
             if let Answer::Ok(dest) = answer
                 && !dest.trim().is_empty()
             {

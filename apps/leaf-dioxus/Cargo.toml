@@ -31,9 +31,12 @@ path = "src/main.rs"
 [dependencies]
 # The editor: everything drawn in a document window but the toolbar.
 leaf-dioxus = { path = "../../crates/leaf-dioxus" }
-# Menus, dialogs and choice controls that work on Blitz: the toolbar's
-# menus, the context menu, the Link prompt, the Settings window.
-leaf-dioxus-ui = { path = "../../crates/leaf-dioxus-ui" }
+# diaryx-org's components for Dioxus, which work on Blitz and are read by
+# assistive tech: the toolbar's buttons and menus, the context menu, the
+# Link prompt, the Settings window. On its `claude/leaf-gaps` branch until
+# that merges (a toolbar's buttons leave the keys with the editor), then
+# `main`.
+unit = { git = "https://github.com/diaryx-org/unit", branch = "claude/leaf-gaps" }
 dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
     "macro",
     "html",

@@ -120,7 +120,7 @@ impl Host for Shell {
 /// The system's clipboard, for a dialog's text field.
 pub struct SystemClipboard;
 
-impl leaf_dioxus_ui::Clipboard for SystemClipboard {
+impl unit::Clipboard for SystemClipboard {
     fn read(&self) -> Option<String> {
         platform::clipboard::read().text
     }

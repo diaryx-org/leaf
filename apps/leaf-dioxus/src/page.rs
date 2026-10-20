@@ -3,8 +3,9 @@
 //! window's events and the menus' commands reach the editor.
 //!
 //! A document's page is the toolbar (`toolbar.rs`) over the editor, whose
-//! box ([`leaf_dioxus::Bounds`]) starts below it, with the page's overlay
-//! ([`leaf_dioxus_ui::Layer`]) over both for its menus and dialogs. Where
+//! box ([`leaf_dioxus::Bounds`]) starts below it, all under unit's root
+//! ([`unit::UnitRoot`]), whose overlay is over both for its menus and
+//! dialogs. Where
 //! the platform's title bar is transparent over the page, the toolbar's
 //! band runs up behind it (`platform::TITLE_BAR`).
 //!
@@ -23,7 +24,7 @@ use dioxus_native::winit::keyboard::ModifiersState;
 use dioxus_native::winit::window::Window;
 use leaf_core::{Doc, InlineMarks, LineFlow, MarkColor, View};
 use leaf_dioxus::{Bounds, Editor, Host, pressed, themed, use_shared_editor};
-use leaf_dioxus_ui::{Layer, use_layer_provider};
+use unit::{Keys, Theme, Unit, UnitRoot, use_unit};
 
 use crate::app::{self, AppEvent};
 use crate::commands::Command;
@@ -86,10 +87,10 @@ impl Chrome {
 }
 
 /// What a page leaves behind for the app once it has made them: its
-/// overlay, and for a document its editor and the signal its toolbar reads.
+/// [`Unit`], and for a document its editor and the signal its toolbar reads.
 #[derive(Clone, Default)]
 pub struct Made {
-    pub layer: Rc<Cell<Option<Layer>>>,
+    pub unit: Rc<Cell<Option<Unit>>>,
     pub editor: Rc<RefCell<Option<Editor>>>,
     pub chrome: Rc<Cell<Option<Signal<Chrome>>>>,
 }
@@ -117,7 +118,6 @@ impl DocInit {
 #[allow(non_snake_case)]
 pub fn DocumentPage() -> Element {
     let init = use_context::<DocInit>();
-    let layer = use_layer_provider();
     let chrome = use_signal(Chrome::default);
     let ed = use_shared_editor(
         || init.doc.clone(),
@@ -127,17 +127,58 @@ pub fn DocumentPage() -> Element {
     use_hook(|| {
         *init.made.editor.borrow_mut() = Some(ed.clone());
         init.made.chrome.set(Some(chrome));
-        init.made.layer.set(Some(layer));
-        layer.set_clipboard(Rc::new(crate::shell::SystemClipboard));
     });
     let appearance = app::settings().appearance;
-    let css = format!("{}{}", crate::toolbar::CSS, leaf_dioxus_ui::CSS);
     rsx! {
-        {ed.render()}
-        style { {themed(&css, appearance)} }
-        {crate::toolbar::render(&ed, &chrome.read())}
-        {layer.render()}
+        UnitRoot { keys: Keys::Host, appearance: unit_appearance(appearance), theme: unit_theme(),
+            KeepUnit { cell: init.made.unit.clone() }
+            {ed.render()}
+            style { {themed(crate::toolbar::CSS, appearance)} }
+            {crate::toolbar::render(&ed, &chrome.read())}
+        }
     }
+}
+
+/// unit's colours, which are Leaf's own, with the page's background left to
+/// the page: the editor's, or the Settings window's.
+pub fn unit_theme() -> Theme {
+    let mut theme = Theme::default();
+    theme.light.bg = "transparent";
+    theme.dark.bg = "transparent";
+    theme
+}
+
+/// The reader's appearance, as unit's root is told it. A forced one cannot
+/// go through `prefers-color-scheme` (`leaf_dioxus::themed` says why).
+pub fn unit_appearance(a: leaf_dioxus::Appearance) -> unit::Appearance {
+    match a {
+        leaf_dioxus::Appearance::System => unit::Appearance::System,
+        leaf_dioxus::Appearance::Light => unit::Appearance::Light,
+        leaf_dioxus::Appearance::Dark => unit::Appearance::Dark,
+    }
+}
+
+#[derive(Props, Clone)]
+pub struct KeepUnitProps {
+    cell: Rc<Cell<Option<Unit>>>,
+}
+
+impl PartialEq for KeepUnitProps {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.cell, &other.cell)
+    }
+}
+
+/// Hands the page's [`Unit`] to the app, which gives it the window's keys
+/// first, and gives it the system's clipboard for a dialog's field.
+#[allow(non_snake_case)]
+pub fn KeepUnit(props: KeepUnitProps) -> Element {
+    let unit = use_unit();
+    use_hook(|| {
+        unit.set_clipboard(Rc::new(crate::shell::SystemClipboard));
+        props.cell.set(Some(unit));
+    });
+    rsx! {}
 }
 
 /// What a window shows.
@@ -203,9 +244,9 @@ impl Page {
         self.init()?.made.editor.borrow().clone()
     }
 
-    /// The page's overlay, once made.
-    pub fn layer(&self) -> Option<Layer> {
-        self.made().layer.get()
+    /// The page's [`Unit`], once made.
+    pub fn unit(&self) -> Option<Unit> {
+        self.made().unit.get()
     }
 
     /// Where the pointer last was over the page, in CSS pixels.
@@ -250,20 +291,27 @@ impl Page {
     }
 
     /// A window event, before Blitz sees it: whether the page took it.
-    /// An open menu or dialog has the keys and the input method's text
-    /// first; then a document's editor, which reads keys from winit rather
-    /// than Blitz (the widget's `keys.rs` says why). The rest the editor
-    /// reads and Blitz has too.
+    /// The page's controls have the keys first — an open menu or dialog,
+    /// then a control the keys were given to by a press or Tab — and the
+    /// input method's text while a menu or dialog is open; a text field of
+    /// the page's own types through Blitz; then a document's editor, which
+    /// reads keys from winit rather than Blitz (the widget's `keys.rs` says
+    /// why). The rest the editor reads and Blitz has too.
     pub fn window_event(&self, event: &WindowEvent, mods: ModifiersState) -> bool {
         match event {
             WindowEvent::KeyboardInput { event: key, .. } => {
                 let Some((k, code, m)) = pressed(key, mods) else {
                     return true;
                 };
-                if let Some(layer) = self.layer().filter(Layer::is_open)
-                    && self.in_scope(|| layer.key(&k, m))
-                {
-                    return true;
+                if let Some(unit) = self.unit() {
+                    if (unit.is_open() || unit.focused().is_some())
+                        && self.in_scope(|| unit.key(&k, m))
+                    {
+                        return true;
+                    }
+                    if unit.typing() {
+                        return false;
+                    }
                 }
                 if self.init().is_none() {
                     return false;
@@ -279,10 +327,13 @@ impl Page {
                 true
             }
             WindowEvent::Ime(ime) => {
-                if let (Ime::Commit(text), Some(layer)) = (ime, self.layer().filter(Layer::is_open))
-                    && self.in_scope(|| layer.text(text))
+                if let (Ime::Commit(text), Some(unit)) = (ime, self.unit().filter(Unit::is_open))
+                    && self.in_scope(|| unit.text(text))
                 {
                     return true;
+                }
+                if self.unit().is_some_and(|u| u.typing()) {
+                    return false;
                 }
                 if self.init().is_none() {
                     return true;
@@ -341,8 +392,8 @@ impl Page {
     /// the overlay the page's size.
     pub fn place(&self) {
         let (w, h) = self.size();
-        if let Some(layer) = self.layer() {
-            self.in_scope(|| layer.set_viewport(w, h));
+        if let Some(unit) = self.unit() {
+            self.in_scope(|| unit.set_viewport(w, h));
         }
         let top = chrome_height();
         self.with_editor(|ed, _| {

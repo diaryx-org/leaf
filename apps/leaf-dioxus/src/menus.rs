@@ -1,13 +1,13 @@
 //! Every menu the app shows, as data: the menu bar's, the toolbar's and the
 //! context menu's. One declaration, drawn two ways — as the system's menu
 //! bar where there is one (the Mac's, `platform/macos/menubar.rs`), and as
-//! a [`leaf_dioxus_ui`] menu in the page ([`entries`]) — with each item's
+//! a [`unit`] menu in the page ([`entries`]) — with each item's
 //! enabled and ticked state from [`commands::status`] either way.
 
 use dioxus::html::{Code, NamedKey};
 use leaf_core::{Alignment, Format, MarkColor};
 use leaf_dioxus::{TableCommand, ZoomCommand};
-use leaf_dioxus_ui::{Entry, Item};
+use unit::{Entry, Item};
 
 use crate::commands::{self, ALT, AppState, CMD, CTRL, Command, SHIFT, Switch, shortcut_label};
 use crate::page::Chrome;
