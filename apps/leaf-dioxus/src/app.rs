@@ -216,6 +216,7 @@ pub fn run() {
         blitz: BlitzApplication::new(proxy, queue),
         ready: false,
         mods: HashMap::new(),
+        frames: HashMap::new(),
     };
     event_loop.run_app(app).expect("the event loop");
 }
@@ -226,6 +227,18 @@ struct App {
     ready: bool,
     /// The modifiers held, per window, for the keys.
     mods: HashMap<WindowId, ModifiersState>,
+    /// What each window has painted, for [`redraw`].
+    frames: HashMap<WindowId, Frame>,
+}
+
+/// What a window has painted, for [`redraw`].
+#[derive(Default)]
+struct Frame {
+    /// The viewport it last painted at — its drawable size, in physical
+    /// pixels, and its scale — if it has painted at all.
+    viewport: Option<((u32, u32), f32)>,
+    /// Whether its page has changed since.
+    changed: bool,
 }
 
 /// A new document window's size, before it has one of its own: US Letter's
@@ -404,6 +417,7 @@ impl App {
     fn close(&mut self, id: WindowId) {
         let page = PAGES.with_borrow_mut(|p| p.remove(&id));
         self.mods.remove(&id);
+        self.frames.remove(&id);
         if let Some(view) = self.blitz.windows.remove(&id) {
             drop(view);
         }
@@ -435,6 +449,50 @@ impl App {
         for p in pages() {
             guard(|| p.sync());
         }
+    }
+}
+
+/// Redraw a window — covered or not, when what it shows has changed.
+///
+/// Blitz paints only a window it believes visible, and believes what
+/// `Occluded` last said, or, before that, the window's visibility when it
+/// was made. A document window is made hidden and shown once it is placed,
+/// and AppKit reports occlusion only as a change: a window shown already
+/// covered — opened while another app is in front, or restored to another
+/// Space — goes from unseen to unseen, and nothing is reported. So it painted
+/// nothing, not its page and not at the frame its document restored, and
+/// stayed blank until it was uncovered: in Mission Control, in the window
+/// switcher, in a capture. (wgpu refused those frames too; the patched
+/// wgpu-hal at leaf's root, `patches/wgpu-hal`, draws them.)
+///
+/// So a window Blitz thinks unseen still paints a frame that shows
+/// something new — a new size or scale, or its page changed — and is left
+/// out only of the frames that change nothing but an animation: a blinking
+/// caret would otherwise keep a window no one sees drawing.
+fn redraw(view: &mut View<Renderer>, frame: &mut Frame) {
+    let (now, blocked) = {
+        let inner = view.doc.inner();
+        let viewport = inner.viewport();
+        (
+            (viewport.window_size, viewport.scale()),
+            inner.has_pending_critical_resources(),
+        )
+    };
+    let owed = !view.is_visible && (frame.changed || frame.viewport != Some(now));
+    if owed {
+        view.is_visible = true;
+    }
+    view.handle_winit_event(WindowEvent::RedrawRequested);
+    if owed {
+        view.is_visible = false;
+    }
+    // Blitz paints nothing while a stylesheet or font the page waits on is
+    // still loading; its arrival asks for another redraw.
+    if (view.is_visible || owed) && !blocked {
+        *frame = Frame {
+            viewport: Some(now),
+            changed: false,
+        };
     }
 }
 
@@ -489,7 +547,12 @@ impl ApplicationHandler for App {
             }
         }
         if let Some(view) = self.blitz.windows.get_mut(&window_id) {
+            let frame = self.frames.entry(window_id).or_default();
             guard(|| {
+                if matches!(event, WindowEvent::RedrawRequested) {
+                    redraw(view, frame);
+                    return;
+                }
                 // A change a poll made to the page is laid out at the next
                 // redraw, and a pointer event before it would hit-test the
                 // tree as it was, through nodes the change removed — a
@@ -516,8 +579,28 @@ impl ApplicationHandler for App {
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         while let Ok(event) = self.blitz.event_queue.try_recv() {
-            if !matches!(event, BlitzShellEvent::Embedder(_)) {
-                guard(|| self.blitz.handle_blitz_shell_event(event_loop, event));
+            match event {
+                BlitzShellEvent::Embedder(_) => {}
+                // Blitz's own handling of these, noting which windows'
+                // pages changed, for `redraw`.
+                BlitzShellEvent::Poll { window_id } => {
+                    if let Some(view) = self.blitz.windows.get_mut(&window_id)
+                        && guard(|| view.poll()).unwrap_or(false)
+                    {
+                        self.frames.entry(window_id).or_default().changed = true;
+                    }
+                }
+                BlitzShellEvent::RequestRedraw { doc_id } => {
+                    for (id, view) in &self.blitz.windows {
+                        if view.doc.id() == doc_id {
+                            self.frames.entry(*id).or_default().changed = true;
+                            view.request_redraw();
+                        }
+                    }
+                }
+                event => {
+                    guard(|| self.blitz.handle_blitz_shell_event(event_loop, event));
+                }
             }
         }
         self.drain(event_loop);

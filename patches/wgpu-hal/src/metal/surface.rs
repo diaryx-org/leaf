@@ -40,6 +40,7 @@ impl super::Surface {
             render_layer: Mutex::new(layer),
             swapchain_format: RwLock::new(None),
             extent: RwLock::new(wgt::Extent3d::default()),
+            in_flight: Default::default(),
         }
     }
 
@@ -361,10 +362,26 @@ impl crate::Surface for super::Surface {
 
             // The CAMetalLayer is typically a sublayer; find the hosting window
             // and skip acquisition while it is occluded.
+            //
+            // leaf patch: ... unless a drawable is free. The hang is
+            // `nextDrawable` waiting for one: drawables presented to an
+            // occluded window can sit unreleased, and once all of them do the
+            // next acquisition blocks for its one-second timeout. Refusing
+            // every frame instead leaves a window that was opened, restored
+            // or changed while covered with nothing in it — blank in Mission
+            // Control, the window switcher and any capture until it is
+            // uncovered. With a drawable free, `nextDrawable` returns at
+            // once, so a frame is refused only when it would wait. Counting
+            // needs presented handlers (macOS 10.15.4); before them every
+            // occluded frame is refused, as upstream.
             if let Some(window) = hosting_window(Retained::into_super(render_layer.clone())) {
                 const NS_WINDOW_OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
                 let occlusion_state: usize = unsafe { objc2::msg_send![&*window, occlusionState] };
-                if occlusion_state & NS_WINDOW_OCCLUSION_STATE_VISIBLE == 0 {
+                if occlusion_state & NS_WINDOW_OCCLUSION_STATE_VISIBLE == 0
+                    && (!available!(macos = 10.15.4)
+                        || self.in_flight.load(core::sync::atomic::Ordering::Acquire)
+                            >= render_layer.maximumDrawableCount())
+                {
                     return Err(crate::SurfaceError::Occluded);
                 }
             }
@@ -378,6 +395,23 @@ impl crate::Surface for super::Surface {
             Some(pair) => pair,
             None => return Err(crate::SurfaceError::Timeout),
         };
+
+        // leaf patch: count the drawable until it is presented. One whose
+        // handler never runs stays counted, which only makes an occluded
+        // window refuse frames sooner — upstream's behaviour, at worst.
+        #[cfg(target_os = "macos")]
+        if available!(macos = 10.15.4) {
+            use core::sync::atomic::Ordering;
+            use objc2_metal::MTLDrawable as _;
+            let in_flight = alloc::sync::Arc::clone(&self.in_flight);
+            in_flight.fetch_add(1, Ordering::AcqRel);
+            let presented = block2::RcBlock::new(
+                move |_: core::ptr::NonNull<ProtocolObject<dyn objc2_metal::MTLDrawable>>| {
+                    in_flight.fetch_sub(1, Ordering::AcqRel);
+                },
+            );
+            unsafe { drawable.addPresentedHandler(block2::RcBlock::as_ptr(&presented)) };
+        }
 
         let swapchain_format = self.swapchain_format.read().unwrap();
         let extent = self.extent.read();

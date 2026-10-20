@@ -644,6 +644,9 @@ pub struct Surface {
     render_layer: Mutex<Retained<CAMetalLayer>>,
     swapchain_format: RwLock<Option<wgt::TextureFormat>>,
     extent: RwLock<wgt::Extent3d>,
+    // leaf patch: the drawables acquired and not yet presented (see
+    // `acquire_texture`).
+    in_flight: Arc<atomic::AtomicUsize>,
 }
 
 unsafe impl Send for Surface {}

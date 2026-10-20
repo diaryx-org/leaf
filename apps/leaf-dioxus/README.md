@@ -89,6 +89,14 @@ to the org's rule granted for this workspace, and only this one has it — a
 the same crate by git. The proposal "A shared, patched winit for the
 Dioxus work" in `docs/proposals/` is the plan for it, and for iOS's.
 
+**wgpu-hal is patched.** wgpu's Metal backend refused every frame for a
+window macOS does not call visible, so a window opened or restored behind
+another app's, minimized or on another Space drew nothing, and showed blank
+until it was uncovered. `patches/wgpu-hal` (its `PATCH.md`) lets such a
+window draw while a drawable is free, and the app's `redraw` (`app.rs`)
+paints a covered window only when its page or size changed, never for the
+caret's blink. The same path exception as winit's.
+
 What the SwiftUI app did and this one does not yet is the task "What the Mac
 app does not do yet" in `docs/tasks/`.
 
@@ -402,5 +410,39 @@ widget's `Host`. Where a change goes:
 
 Pure logic is unit-tested beside it, and pages are laid out by Blitz with no
 window in `headless.rs`; `LEAF_TRACE=1`, `LEAF_OUTLINE=1` and `LEAF_DRIVE` are
-the instruments for the rest. A window covered by others does not paint —
-see `occluded` in the trace.
+the instruments for the rest. A window covered by others paints only what
+changes in it, not its animations — see `occluded` in the trace.
+
+### Driving it in the background
+
+An agent can test the app without taking the screen from whoever is using it
+(set up and checked on 2026-10-19, macOS 27.0.1, Cua Driver 0.36.0):
+
+- **Cua Driver** (`cua-driver`, or its MCP server) acts on one app's windows
+  while another app stays in front. It needs Accessibility and Screen
+  Recording granted to `/Applications/CuaDriver.app` itself, the daemon
+  launchd starts, not to the terminal or the agent's host. Launch the build
+  with `launch_app` and the bundle identifier set by `LEAF_BUNDLE_ID`, never
+  `open`, which brings the app forward; `additional_arguments` passes it
+  arguments.
+- **Reading it.** `get_window_state` captures one window even when it is
+  covered or minimized. The tree holds only the window's own buttons and the
+  menu bar: the page is drawn by Blitz and has no accessibility elements.
+  Read frames with `list_windows` or `System Events` (`position`, `size`).
+- **Acting on it.** Menu items through `invoke_menu`, which does not
+  activate the app; window buttons by their element tokens; text with
+  `type_text` and a point in the page, which reaches the editor in a covered
+  window. A pixel click in the background does not move the caret, and keys
+  to a minimized window are refused. `delivery_mode: "foreground"` brings the
+  app forward and moves the real pointer: not for a screen someone is using.
+  `set_window_frame` moves and sizes a window, between displays too.
+- **DeskPad** makes a second display, shown in a window of its own. A window
+  moved onto it (`set_window_frame` into the display's frame) counts as
+  visible however the DeskPad window is covered, even minimized, so it
+  paints as if in front. No Cua tool moves a window to another Space.
+
+A window opened behind another app's is the check for drawing while covered
+(`patches/wgpu-hal/PATCH.md`): with a document's saved frame inside the front
+app's window, quit Leaf, `launch_app` it on that document, and capture the
+window. It shows the page; before the fix it was blank, toolbar and all.
+

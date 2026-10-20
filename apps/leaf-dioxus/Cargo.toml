@@ -136,3 +136,10 @@ opt-level = 3
 # takes that winit.
 [patch.crates-io]
 winit-appkit = { path = "../../patches/winit-appkit" }
+# wgpu's hardware layer, vendored at the version anyrender_vello's wgpu takes
+# and patched (see /patches/wgpu-hal/PATCH.md): on macOS it refused every
+# frame for a window not marked visible, so a window opened, restored or
+# changed while covered, minimized or on another Space drew nothing and
+# showed blank until it was uncovered. The same exception, granted by Adam on
+# 2026-10-19 for this patch; it goes when wgpu stops refusing those frames.
+wgpu-hal = { path = "../../patches/wgpu-hal" }
