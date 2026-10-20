@@ -1,5 +1,5 @@
 //! The Settings window: the reader's display choices (`settings.rs`) as
-//! one page, every row a [`leaf_dioxus_ui`] control. A choice is stored at
+//! one page, every row a [`unit`] control. A choice is stored at
 //! once and every document window redraws with it.
 //!
 //! The body and code faces are chips for the book and screen faces the
@@ -11,10 +11,10 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 use leaf_dioxus::{Appearance, themed};
-use leaf_dioxus_ui::{Chips, Choice as Pill, Entry, Item, MenuButton, use_layer_provider};
+use unit::{Button, Chips, Choice as Pill, Entry, Item, Keys, MenuButton, UnitRoot};
 
 use crate::app;
-use crate::page::Made;
+use crate::page::{KeepUnit, Made, unit_appearance, unit_theme};
 use crate::platform;
 use crate::settings::{
     BODY_FACES, Choice, ColumnWidth, LineSpacing, MONO_FACES, Paper, Settings, TextSize,
@@ -37,16 +37,12 @@ body { background: var(--prefs-bg); }
 .prefs .pcontrols { flex: 1; }
 .prefs .other { margin-top: 5px; }
 .prefs .foot { display: flex; margin-top: 22px; }
-.prefs .grow { flex: 1; }
-.prefs .btn { height: 22px; line-height: 22px; padding: 0 12px; border-radius: 5px;
-              background: var(--ui-field-bg); border: 1px solid var(--ui-border); }";
+.prefs .grow { flex: 1; }";
 
 /// The Settings window's page.
 #[allow(non_snake_case)]
 pub fn SettingsPage() -> Element {
     let made = use_context::<Made>();
-    let layer = use_layer_provider();
-    use_hook(|| made.layer.set(Some(layer)));
     let mut s = use_signal(app::settings);
     let families = use_hook(|| Rc::new(platform::font_families()));
     // A choice made: the settings copied, changed and stored — the copy
@@ -108,7 +104,9 @@ pub fn SettingsPage() -> Element {
     let mono_other = other_names.clone();
 
     rsx! {
-        style { {themed(&format!("{CSS}{}", leaf_dioxus_ui::CSS), appearance)} }
+        style { {themed(CSS, appearance)} }
+        UnitRoot { keys: Keys::Host, appearance: unit_appearance(appearance), theme: unit_theme(),
+        KeepUnit { cell: made.unit.clone() }
         div { class: "prefs",
             div { class: "section", "TEXT" }
             div { class: "prow",
@@ -118,7 +116,7 @@ pub fn SettingsPage() -> Element {
                         set(&|x| x.body = body_names[i].clone());
                     } }
                     div { class: "other",
-                        MenuButton { class: "ui-select", entries: others.clone(), height: 22.0,
+                        MenuButton { class: "unit-select", entries: others.clone(), height: 22.0,
                             onpick: move |i: usize| {
                                 set(&|x| x.body = other_names[i].clone());
                             },
@@ -134,7 +132,7 @@ pub fn SettingsPage() -> Element {
                         set(&|x| x.mono = mono_names[i].clone());
                     } }
                     div { class: "other",
-                        MenuButton { class: "ui-select", entries: others, height: 22.0,
+                        MenuButton { class: "unit-select", entries: others, height: 22.0,
                             onpick: move |i: usize| {
                                 set(&|x| x.mono = mono_other[i].clone());
                             },
@@ -199,9 +197,8 @@ pub fn SettingsPage() -> Element {
             }
             div { class: "foot",
                 span { class: "grow" }
-                span { class: "btn",
-                    onmousedown: move |e: MouseEvent| {
-                        e.prevent_default();
+                Button {
+                    onpress: move |_| {
                         crate::settings::forget();
                         set(&|x| *x = Settings::default());
                     },
@@ -209,7 +206,7 @@ pub fn SettingsPage() -> Element {
                 }
             }
         }
-        {layer.render()}
+        }
     }
 }
 

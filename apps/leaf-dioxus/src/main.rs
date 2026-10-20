@@ -11,7 +11,7 @@
 //! every platform: a document's toolbar, editor and status line ([`page`],
 //! [`toolbar`]), its context menu and Link prompt ([`context`]), and the
 //! Settings window ([`prefs`]) — their menus and dialogs
-//! [`leaf_dioxus_ui`]'s, drawn in the page. What a platform does its own way
+//! [`unit`]'s, drawn in the page. What a platform does its own way
 //! is [`platform`]'s: the document system, the menu bar, the spelling
 //! checker, Look Up, the clipboard and the print panel.
 //!
