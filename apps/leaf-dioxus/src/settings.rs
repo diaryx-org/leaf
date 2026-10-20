@@ -1,25 +1,23 @@
-//! The reader's display choices — the Swift editor's Settings window
-//! (`apps/leaf-editor/App/SettingsView.swift`, `DisplayChoice.swift`): the
-//! body and code faces, the text size, the line spacing and the column width,
-//! with the same names and the same values — plus an appearance override
-//! and the ⌘+ / ⌘− / ⌘0 text zoom.
+//! The reader's display choices — the body and code faces, the text size,
+//! the line spacing, the column width, the paper a PDF is laid on, whether
+//! a new window keeps soft line breaks, and the appearance — and what
+//! [`Type`] they resolve to, with the ⌘+ / ⌘− / ⌘0 text zoom over them.
 //!
-//! Everything here is pure: the choices, what [`Type`] they resolve to, and
-//! their file. `prefs.rs` draws the panel and carries a change out — a new
-//! [`leaf_dioxus::Look`] for the editor, which relays its rows out for it.
+//! They live in the app's user defaults (`org.diaryx.leaf`) under the keys
+//! the SwiftUI Mac app this one replaced used, and the iOS app uses
+//! (`DisplayChoice.swift`), with the same values — so a reader's choices
+//! carry over. The zoom is not stored, as a browser's does not outlive its
+//! window.
 //!
-//! The choices persist as a few lines of TOML in the user's config directory
-//! (`LEAF_SETTINGS` names another file); the zoom does not, as a browser's
-//! does not outlive its window.
-
-use std::path::PathBuf;
+//! Everything here is pure but [`Settings::load`], [`Settings::store`] and
+//! [`forget`], which go through `platform::defaults`; `prefs.rs` draws the
+//! Settings window and `page.rs` hands each editor the [`leaf_dioxus::Look`] they make.
 
 use leaf_dioxus::{Appearance, Type};
 
-/// The body faces offered, as (name, CSS family list). The Swift editor
-/// offers every installed family; a panel of buttons cannot hold a few
-/// hundred, so these are the book and screen faces macOS ships, and the
-/// panel shows only those installed (`Fonts::has_family`).
+/// The body faces offered as chips, as (name, CSS family list): the book
+/// and screen faces macOS ships. Any other installed family is a pick from
+/// the Settings window's Other… menu.
 pub const BODY_FACES: &[(&str, &str)] = &[
     ("Iowan Old Style", r#""Iowan Old Style", Georgia, serif"#),
     ("System", r#"system-ui, "Helvetica Neue", sans-serif"#),
@@ -34,7 +32,7 @@ pub const BODY_FACES: &[(&str, &str)] = &[
     ("Helvetica Neue", r#""Helvetica Neue", sans-serif"#),
 ];
 
-/// The code faces offered, the same way.
+/// The code faces offered as chips, the same way.
 pub const MONO_FACES: &[(&str, &str)] = &[
     ("Menlo", "Menlo, monospace"),
     ("SF Mono", r#""SF Mono", Menlo, monospace"#),
@@ -42,12 +40,14 @@ pub const MONO_FACES: &[(&str, &str)] = &[
     ("Courier New", r#""Courier New", Menlo, monospace"#),
 ];
 
-/// A face's CSS family list: the table's, or — for a name stored by hand or
-/// by a later version — the name itself, then the generic.
+/// A face's CSS family list: the table's, or — for any other family — the
+/// name itself, then the table's first face, for a family since
+/// uninstalled.
 pub fn family(faces: &[(&str, &str)], name: &str, generic: &str) -> String {
     match faces.iter().find(|(n, _)| *n == name) {
         Some((_, css)) => css.to_string(),
-        None => format!("\"{}\", {generic}", name.replace(['"', '\\'], "")),
+        None if faces.is_empty() => format!("\"{}\", {generic}", name.replace(['"', '\\'], "")),
+        None => format!("\"{}\", {}", name.replace(['"', '\\'], ""), faces[0].1),
     }
 }
 
@@ -94,10 +94,29 @@ choice!(
     /// `ColumnWidth`.
     ColumnWidth { Narrow = "narrow", "Narrow"; Medium = "medium", "Medium"; Wide = "wide", "Wide"; Full = "full", "Full width"; }
 );
-// Light or dark: the system's, or one of them for this app. Not a choice the
-// Swift editor offers — it follows the system — but the only way to see the
-// dark stylesheet without changing the whole Mac's.
+choice!(
+    /// The sheet a PDF is laid on — Swift's `Paper`.
+    Paper { UsLetter = "usLetter", "US Letter"; A4 = "a4", "A4"; }
+);
+// Light or dark: the system's, or one of them for this app. The Swift app
+// followed the system; this is how to see one appearance without changing
+// the whole Mac's.
 choice!(impl Appearance { System = "system", "System"; Light = "light", "Light"; Dark = "dark", "Dark"; });
+
+// `choice!` writes the enum and has no way to mark a variant `#[default]`.
+#[allow(clippy::derivable_impls)]
+impl Default for TextSize {
+    fn default() -> Self {
+        TextSize::Medium
+    }
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for ColumnWidth {
+    fn default() -> Self {
+        ColumnWidth::Medium
+    }
+}
 
 impl TextSize {
     /// In CSS pixels, which the Swift editor's points are on a Mac.
@@ -133,6 +152,16 @@ impl ColumnWidth {
     }
 }
 
+impl Paper {
+    /// Its size, in points.
+    pub fn size(self) -> (f32, f32) {
+        match self {
+            Paper::UsLetter => (612.0, 792.0),
+            Paper::A4 => (595.28, 841.89),
+        }
+    }
+}
+
 /// Every choice, as stored.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -142,10 +171,14 @@ pub struct Settings {
     pub spacing: LineSpacing,
     pub column: ColumnWidth,
     pub appearance: Appearance,
+    /// The sheet Export as PDF lays the document on.
+    pub paper: Paper,
+    /// Whether a new window draws soft line breaks where they were written.
+    pub preserve: bool,
 }
 
 impl Default for Settings {
-    /// What a first launch has, which is the Swift editor's defaults.
+    /// What a first launch has, which is the Swift app's defaults.
     fn default() -> Self {
         Self {
             body: BODY_FACES[0].0.into(),
@@ -154,6 +187,8 @@ impl Default for Settings {
             spacing: LineSpacing::Normal,
             column: ColumnWidth::Medium,
             appearance: Appearance::System,
+            paper: Paper::UsLetter,
+            preserve: false,
         }
     }
 }
@@ -169,96 +204,106 @@ impl Settings {
         }
     }
 
-    /// As the settings file has them.
-    pub fn to_toml(&self) -> String {
-        let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
-        format!(
-            "# leaf-dioxus's display choices; see settings.rs.\n\
-             body_font = {}\ncode_font = {}\ntext_size = {}\nline_spacing = {}\ncolumn_width = {}\nappearance = {}\n",
-            q(&self.body),
-            q(&self.mono),
-            q(self.size.key()),
-            q(self.spacing.key()),
-            q(self.column.key()),
-            q(self.appearance.key()),
-        )
+    /// The choices stored, or a first launch's.
+    pub fn load() -> Self {
+        Self::from_stored(&crate::platform::defaults::string)
     }
 
-    /// From the settings file: the `key = "string"` lines this writes. A key
-    /// it does not know, or a value it cannot read, keeps the default, so a
-    /// file from another version still opens.
-    pub fn from_toml(text: &str) -> Self {
-        let mut s = Self::default();
-        for line in text.lines() {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let Some(value) = string(value.trim()) else {
-                continue;
-            };
-            match key.trim() {
-                "body_font" if !value.is_empty() => s.body = value,
-                "code_font" if !value.is_empty() => s.mono = value,
-                "text_size" => s.size = TextSize::parse(&value).unwrap_or(s.size),
-                "line_spacing" => s.spacing = LineSpacing::parse(&value).unwrap_or(s.spacing),
-                "column_width" => s.column = ColumnWidth::parse(&value).unwrap_or(s.column),
-                "appearance" => s.appearance = Appearance::parse(&value).unwrap_or(s.appearance),
-                _ => {}
+    /// Keep the choices for every window and the next launch.
+    pub fn store(&self) {
+        for (key, value) in self.to_stored() {
+            match key {
+                // `@AppStorage` keeps a Bool as a number.
+                keys::FLOW => crate::platform::defaults::set_bool(key, value == "1"),
+                _ => crate::platform::defaults::set(key, &value),
             }
         }
+    }
+
+    /// As the user defaults spell them: (key, value) pairs.
+    pub fn to_stored(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (keys::BODY, stored_face(&self.body)),
+            (keys::MONO, self.mono.clone()),
+            (keys::SIZE, self.size.key().into()),
+            (keys::SPACING, self.spacing.key().into()),
+            (keys::COLUMN, self.column.key().into()),
+            (keys::APPEARANCE, self.appearance.key().into()),
+            (keys::PAPER, self.paper.key().into()),
+            (keys::FLOW, if self.preserve { "1" } else { "0" }.into()),
+        ]
+    }
+
+    /// From what `read` finds under each key. A value it does not know
+    /// keeps the default, so another version's choices still load.
+    pub fn from_stored(read: &dyn Fn(&str) -> Option<String>) -> Self {
+        let mut s = Self::default();
+        if let Some(v) = read(keys::BODY).filter(|v| !v.is_empty()) {
+            s.body = face_of(&v);
+        }
+        if let Some(v) = read(keys::MONO).filter(|v| !v.is_empty()) {
+            s.mono = v;
+        }
+        let pick = |key| read(key).unwrap_or_default();
+        s.size = TextSize::parse(&pick(keys::SIZE)).unwrap_or(s.size);
+        s.spacing = LineSpacing::parse(&pick(keys::SPACING)).unwrap_or(s.spacing);
+        s.column = ColumnWidth::parse(&pick(keys::COLUMN)).unwrap_or(s.column);
+        s.appearance = Appearance::parse(&pick(keys::APPEARANCE)).unwrap_or(s.appearance);
+        s.paper = Paper::parse(&pick(keys::PAPER)).unwrap_or(s.paper);
+        // `@AppStorage` keeps a Bool as a number.
+        s.preserve = matches!(pick(keys::FLOW).as_str(), "1" | "true" | "YES");
         s
     }
-
-    /// The choices saved last, or the defaults.
-    pub fn load() -> Self {
-        path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|t| Self::from_toml(&t))
-            .unwrap_or_default()
-    }
-
-    /// Keep the choices for the next launch. Written beside and renamed over,
-    /// so a crash mid-write never leaves half a file.
-    pub fn save(&self) -> std::io::Result<()> {
-        let Some(p) = path() else { return Ok(()) };
-        if let Some(dir) = p.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = p.with_extension("toml.tmp");
-        std::fs::write(&tmp, self.to_toml())?;
-        std::fs::rename(tmp, p)
-    }
 }
 
-/// A TOML basic string's contents, its two escapes undone.
-fn string(v: &str) -> Option<String> {
-    let inner = v.strip_prefix('"')?.strip_suffix('"')?;
-    let mut out = String::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => out.push(chars.next()?),
-            c => out.push(c),
-        }
-    }
-    Some(out)
+/// The user-defaults keys, as `DisplayChoice.swift` names them.
+pub mod keys {
+    pub const COLUMN: &str = "display.columnWidth";
+    pub const SIZE: &str = "display.textSize";
+    pub const FLOW: &str = "display.preserveLineBreaks";
+    pub const BODY: &str = "display.bodyFont";
+    pub const MONO: &str = "display.codeFont";
+    pub const SPACING: &str = "display.lineSpacing";
+    pub const PAPER: &str = "display.paper";
+    /// This app's alone: the Swift app followed the system.
+    pub const APPEARANCE: &str = "display.appearance";
+
+    pub const ALL: [&str; 8] = [COLUMN, SIZE, FLOW, BODY, MONO, SPACING, PAPER, APPEARANCE];
 }
 
-/// The settings file: `LEAF_SETTINGS`, or `settings.toml` in the user's
-/// config directory — Application Support on a Mac.
-pub fn path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("LEAF_SETTINGS") {
-        return Some(p.into());
+/// The body faces the Swift app stored by a font's name rather than its
+/// family's: (stored, the face's name here).
+const BODY_NAMES: &[(&str, &str)] = &[
+    ("IowanOldStyle-Roman", "Iowan Old Style"),
+    (".AppleSystemUIFont", "System"),
+];
+
+/// A stored body face as this app names it.
+fn face_of(stored: &str) -> String {
+    BODY_NAMES
+        .iter()
+        .find(|(s, _)| *s == stored)
+        .map_or(stored, |(_, n)| n)
+        .to_string()
+}
+
+/// A body face as the defaults store it: the Swift app's name for one of
+/// its two defaults, else the family.
+fn stored_face(name: &str) -> String {
+    BODY_NAMES
+        .iter()
+        .find(|(_, n)| *n == name)
+        .map_or(name, |(s, _)| s)
+        .to_string()
+}
+
+/// Restore Defaults: the keys removed rather than the defaults written, so
+/// a later release that changes a default reaches a reader who never chose
+/// otherwise.
+pub fn forget() {
+    for key in keys::ALL {
+        crate::platform::defaults::remove(key);
     }
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    let dir = if cfg!(target_os = "macos") {
-        home.join("Library/Application Support")
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".config"))
-    };
-    Some(dir.join("leaf-dioxus/settings.toml"))
 }
 
 /// The text zoom's steps: a browser's, which a reader already knows.
@@ -282,6 +327,8 @@ pub fn zoom_step(z: f32, bigger: bool) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[test]
@@ -316,34 +363,55 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_round_trip_through_their_file() {
+    fn the_settings_round_trip_through_the_defaults() {
         let s = Settings {
-            body: r#"Odd "Quoted" \ Face"#.into(),
+            body: r#"Odd "Quoted" Face"#.into(),
             mono: "Monaco".into(),
             size: TextSize::Small,
             spacing: LineSpacing::Double,
             column: ColumnWidth::Full,
             appearance: Appearance::Dark,
+            paper: Paper::A4,
+            preserve: true,
         };
-        assert_eq!(Settings::from_toml(&s.to_toml()), s);
+        let stored: HashMap<_, _> = s.to_stored().into_iter().collect();
+        assert_eq!(Settings::from_stored(&|k| stored.get(k).cloned()), s);
     }
 
     #[test]
-    fn a_file_from_another_version_keeps_what_it_can() {
-        let s = Settings::from_toml(
-            "# a comment\ntext_size = \"huge\"\nline_spacing = \"compact\"\nfuture = \"x\"\nbody_font = 3\n",
-        );
-        assert_eq!(s.size, TextSize::Medium);
-        assert_eq!(s.spacing, LineSpacing::Compact);
-        assert_eq!(s.body, Settings::default().body);
+    fn the_swift_apps_choices_load_as_they_were_made() {
+        let swift = [
+            ("display.bodyFont", ".AppleSystemUIFont"),
+            ("display.textSize", "large"),
+            ("display.columnWidth", "wide"),
+            ("display.preserveLineBreaks", "1"),
+            ("display.paper", "a4"),
+            ("display.lineSpacing", "huge"),
+        ];
+        let s = Settings::from_stored(&|k| {
+            swift
+                .iter()
+                .find(|(key, _)| *key == k)
+                .map(|(_, v)| v.to_string())
+        });
+        assert_eq!(s.body, "System");
+        assert_eq!(s.size, TextSize::Large);
+        assert_eq!(s.column, ColumnWidth::Wide);
+        assert!(s.preserve);
+        assert_eq!(s.paper, Paper::A4);
+        // A value this version does not know keeps the default.
+        assert_eq!(s.spacing, LineSpacing::Normal);
+        // And they are stored back as the Swift app spells them.
+        let back: HashMap<_, _> = s.to_stored().into_iter().collect();
+        assert_eq!(back["display.bodyFont"], ".AppleSystemUIFont");
     }
 
     #[test]
-    fn an_unknown_face_is_named_with_its_generic_after_it() {
+    fn another_face_is_named_with_the_default_after_it() {
         assert_eq!(family(MONO_FACES, "Menlo", "monospace"), "Menlo, monospace");
         assert_eq!(
             family(BODY_FACES, "Hoefler Text", "serif"),
-            r#""Hoefler Text", serif"#
+            r#""Hoefler Text", "Iowan Old Style", Georgia, serif"#
         );
     }
 

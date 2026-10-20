@@ -63,8 +63,8 @@ let package = Package(
             dependencies: ["leaf_ffiFFI"],
             path: "packages/leaf-swift/uniffi-generated/Sources/LeafFFI"
         ),
-        // The formatting toolbar: SwiftUI only, with no FFI and no Rust, so
-        // apps/leaf-mac (whose editor is leaf-dioxus) links it as LeafUI does.
+        // The formatting toolbar: SwiftUI only, with no FFI and no Rust, so a
+        // host whose editor is not LeafUI — Diaryx's — links it as LeafUI does.
         .target(
             name: "LeafToolbar",
             path: "packages/leaf-swift/Sources/LeafToolbar"

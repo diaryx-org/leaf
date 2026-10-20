@@ -162,9 +162,8 @@ otherwise raises leaf's own field as a sheet.
 
 The controls come from `LeafToolbar`, which knows nothing of `LeafEditorModel`:
 it asks a `LeafToolbarEditor` for one `LeafToolbarState` and sends it
-`LeafToolbarCommand`s. Conform another editor (one over a web view, or the
-Mac app's over leaf-dioxus in `apps/leaf-mac/App/EditorModel.swift`) and it
-gets the same toolbar.
+`LeafToolbarCommand`s. Conform another editor (one over a web view, or
+Diaryx's) and it gets the same toolbar.
 
 **Colouring a highlight.** Highlight has a menu behind it. On the iOS panel a
 press marks the selection and a press-and-hold drops down the seven colours a

@@ -2,7 +2,7 @@
 //!
 //! The keys and the input method come from winit, not from Blitz — see
 //! `keys.rs` and `ime.rs` for why — and a host's menu items are key chords
-//! replayed (as `apps/leaf-dioxus`'s `menu.rs` does), so a command is a key
+//! replayed (as `apps/leaf-dioxus`'s `menus.rs` does), so a command is a key
 //! binding in `input.rs` however it is chosen. This file routes each to the
 //! find bar, the composer, the document, or the host.
 
@@ -167,6 +167,7 @@ impl Editor {
             WindowEvent::ThemeChanged(theme) => {
                 trace(|| format!("theme {theme:?}"));
                 // Formulas and diagrams are inked for the appearance.
+                self.reink();
                 self.repaint();
                 self.st.window.request_redraw();
             }

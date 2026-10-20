@@ -1,11 +1,13 @@
 //! `cargo xtask sync-versions` — write the workspace version into the files no
 //! manifest parser will ever find, and the CI check that they agree.
 //!
-//! Three such files today: `packages/leaf-web/package.json`, and the
-//! `MARKETING_VERSION` of the iOS and Mac apps, in `apps/leaf-editor/` and
-//! `apps/leaf-mac/project.yml`. `ship` moves every
-//! Cargo manifest and the lockfile, and knows nothing about an npm
-//! manifest or an Xcode setting — so the package sat at 0.1.2 through three
+//! Three such files today: `packages/leaf-web/package.json`, the iOS app's
+//! `MARKETING_VERSION` in `apps/leaf-editor/project.yml`, and the Mac app's
+//! manifest, `apps/leaf-dioxus/Cargo.toml` — a workspace of its own, which
+//! `ship`'s bump of the root workspace does not reach; `cargo xtask mac`
+//! stamps that version into the bundle's Info.plist. `ship` moves every
+//! Cargo manifest of the root workspace and the lockfile, and knows nothing
+//! about an npm manifest or an Xcode setting — so the package sat at 0.1.2 through three
 //! releases of the crates it wraps. `.config/ship.figl` names this task as the
 //! bump's `post_bump` and lists the files among `extra_version_files`, so a
 //! release commit carries them. `--check` is the `versions` CI job.
@@ -21,7 +23,7 @@ const FOLLOWERS: &[(&str, &str)] = &[
         "apps/leaf-editor/project.yml",
         "        MARKETING_VERSION: \"",
     ),
-    ("apps/leaf-mac/project.yml", "        MARKETING_VERSION: \""),
+    ("apps/leaf-dioxus/Cargo.toml", "version = \""),
 ];
 
 /// The version `[workspace.package]` states.

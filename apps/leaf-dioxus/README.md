@@ -1,45 +1,110 @@
 # leaf-dioxus
 
-Leaf on Dioxus's native renderer: `dioxus-native` 0.8.0-alpha.3, which draws
-HTML and CSS through Blitz on wgpu, with no webview and no browser engine.
-It edits the same documents as every other frontend through `leaf-core`, and
-works toward the Swift editor (`apps/leaf-editor`) feature for feature. macOS
-is where it has been run.
-
-It began as the native half of the virtual-DOM spike (`spikes/dioxus-widget`),
-whose README holds the measurements that made the case for it: what a
-keystroke costs through a virtual DOM, and the webview against Blitz. The
-editor's `bridge/` — leaf's rows as runs, their classes, the frame delta —
-came from there.
+**Leaf**, the document app, in Rust from `main` up: the leaf-dioxus editor
+(`crates/leaf-dioxus`) in windows drawn by Dioxus's native renderer
+(`dioxus-native` 0.8.0-alpha.3, Blitz on wgpu, no webview), on every platform
+that renderer reaches. The Mac's is `Leaf.app` (`org.diaryx.leaf`), and
+replaced the SwiftUI app that hosted the same editor in an `NSView`; iOS is
+next. It edits the same documents as every other frontend, through
+`leaf-core`.
 
 ```sh
-cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- document.md
+cargo xtask mac                       # Leaf.app, built and launched on a copy of the sample
+cargo xtask mac notes.md              # on a document of your own
+cargo xtask package                   # signed, notarised Leaf.app and .dmg in target/package/
+cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- corpus/document.md
 cargo test --manifest-path apps/leaf-dioxus/Cargo.toml
-cargo test --manifest-path crates/leaf-dioxus/Cargo.toml   # the editor
 ```
 
-**Two crates, as gpui's are.** The editor is a widget,
-[`crates/leaf-dioxus`](../../crates/leaf-dioxus): the rows, keys, input
-method, find bar, source view, tables, pictures, links and the status line —
-everything in the window but the settings panel — over a `Host` it asks for
-what it does not own and a `Look` it draws with. Its README is how to host it.
-This app (package `leaf-dioxus-app`, binary `leaf-dioxus`) is one host: the
-menu bar, the file dialogs, the settings file and panel, and the window
-title, in `src/main.rs`, `shell.rs`, `menu.rs`, `file.rs`, `settings.rs` and
-`prefs.rs`. A module named below that is not one of those is the widget's,
-under `crates/leaf-dioxus/src/`.
+`cargo xtask swift` still builds and launches the Mac app, for the hands
+that type it.
 
-Both are workspaces of their own, like `apps/leaf`: `dioxus-native` is
-published only as an alpha, and its macOS winit backend is vendored and
-patched in `patches/winit-appkit` (`PATCH.md` says what and why; `upstream/`
-is the change prepared for winit). That `[patch]` is an exception to the
-org's rule, granted for this workspace, and only this one has it — a
-`[patch]` reaches no build but its own workspace's, so another host of the
-widget patches winit itself. The proposal "A shared, patched winit for the
-Dioxus work" in `docs/proposals/` is the plan for it and for Diaryx's iOS
-one.
+## How it is put together
 
-## What it does (2026-10-15)
+Every window is a Dioxus page, the same on every platform:
+
+| | |
+|---|---|
+| `page.rs` | a document window: the toolbar over the editor, the page's overlay over both; and the `Page` the app keeps per window, through which its events and the menus' commands reach the editor |
+| `toolbar.rs` | the formatting toolbar — LeafToolbar's tools, in its order — then Source and the display menu |
+| `context.rs` | the context menu, and the Link prompt |
+| `prefs.rs` | the Settings window |
+| `menus.rs`, `commands.rs` | every menu as data, and what each item does and whether it can — drawn as the system's menu bar where there is one, and as the page's own menus |
+| `settings.rs` | the display choices, under the keys the SwiftUI app stored them by |
+| `shell.rs` | the editor's `Host` |
+| `pdf.rs`, `offscreen.rs` | Export as PDF and Print, laid out by the editor offscreen |
+| `app.rs` | the event loop's handler |
+
+The menus, the dialog and the choice controls are
+[`crates/leaf-dioxus-ui`](../../crates/leaf-dioxus-ui)'s, written to work
+under Blitz: Dioxus's own primitives close through JavaScript `eval`, which
+dioxus-native answers with nothing, and move DOM focus from tasks, which
+panics there. Its README says what it does instead.
+
+What each platform does its own way is `platform/`, one module per platform
+under the same names (`platform/mod.rs` lists them):
+
+| | the Mac (`platform/macos`) |
+|---|---|
+| a document | `LeafDocument`, an `NSDocument` subclass defined from Rust: Open, Save, autosave in place, Versions, Duplicate, Rename, Move To, Revert, Open Recent, Finder's Open With, the question an untitled document asks as it closes |
+| the menu bar | `menus::bar()` as `NSMenu`s; AppKit's own items by selector, the rest `leafCommand:` |
+| spelling | `NSSpellChecker`: underlines, guesses, Check Document Now, autocorrect, smart quotes and dashes, text replacement — `Spelling.swift`'s rules |
+| Look Up | the Dictionary's popover, by force click or the context menu |
+| paper | the print panel over `pdf.rs`'s PDF, and Export's save sheet |
+| the rest | the clipboard, the user defaults, opening a URL, the Character Viewer |
+
+**One window per document.** dioxus-native's `launch` makes one window
+before the loop starts and none after. A document app makes one whenever
+the system opens a document, so `app.rs` owns blitz-shell's
+`BlitzApplication` itself and assembles each window's page as `launch`
+would, on the handler's turn. What the platform tells the app — a document
+wanting its window, a menu item, the spelling checker's answer — arrives
+outside that turn and is queued (`app::post`, `app::on_turn`), so the editor
+is only ever touched from the handler. Each window has its own `document`
+context (`head.rs`), which `launch` would provide and keeps private, so a
+`<style>` meant for the page's head is put there.
+
+**Closing.** The close button and File ▸ Close are `performClose:`, and for a
+window with a document AppKit asks the document first — autosaving a titled
+one, asking about an untitled one — and calls the window delegate only once
+it agrees. winit reports that as `CloseRequested`, so the page closes on it
+without asking again; asking again waits on the first question's file
+access, which does not end.
+
+**Under test.** Run a build with `LEAF_BUNDLE_ID` set to another identifier
+(`build.rs` and `cargo xtask mac` both read it), so it keeps its own
+preferences, recents and autosaves apart from the installed Leaf's. A debug
+build reads `LEAF_DRIVE`, a FIFO of pointer and key gestures delivered to a
+window as winit's own events (`drive.rs`) — how a session with no hand on
+the system's pointer clicks in the page. Menu bar items are pressed through
+the accessibility API, which reaches only this app's menus.
+
+**winit is patched.** Its macOS backend is vendored at leaf's root, in
+`patches/winit-appkit` (`PATCH.md` says what and why; `upstream/` is the
+change prepared for winit): the text input client answers from the text
+around the caret, so press-and-hold accents, the Character Viewer and
+dictation work. That `[patch]` takes the crate by local path, an exception
+to the org's rule granted for this workspace, and only this one has it — a
+`[patch]` reaches no build but its own workspace's. Apps outside leaf take
+the same crate by git. The proposal "A shared, patched winit for the
+Dioxus work" in `docs/proposals/` is the plan for it, and for iOS's.
+
+**wgpu-hal is patched.** wgpu's Metal backend refused every frame for a
+window macOS does not call visible, so a window opened or restored behind
+another app's, minimized or on another Space drew nothing, and showed blank
+until it was uncovered. `patches/wgpu-hal` (its `PATCH.md`) lets such a
+window draw while a drawable is free, and the app's `redraw` (`app.rs`)
+paints a covered window only when its page or size changed, never for the
+caret's blink. The same path exception as winit's.
+
+What the SwiftUI app did and this one does not yet is the task "What the Mac
+app does not do yet" in `docs/tasks/`.
+
+## The editor on Blitz (2026-10-15)
+
+The rest of this file is how the editor came to work on Blitz, as the app it
+grew in found out.
+
 
 An editor working toward `apps/leaf-editor`'s feature
 set, run on a Mac with a real GPU — the machine the spike's "What this still does not
@@ -63,6 +128,7 @@ differs from a browser in six ways an editor walks straight into:
 | paint the first frame of an `overflow: hidden` element and not its changes | clips at `body`, never `.leaf` |
 | skip painting a child that hangs past its parent's box | gives `.leaf` no fixed height |
 | lay out an absolutely positioned element on the first paint and not when a later frame inserts it | draws the caret inline, spliced into the run |
+| leave a freed node in its layout tree when a box is shown in the frame rows arrive in an absolutely positioned child of it — every layout after panics (a `should_panic` test in `headless.rs` keeps watch) | keeps the page's overlay displayed, letting the pointer through (`pointer-events: none`), and shows and hides what is in it |
 
 and implements neither `onresize` (the height comes from the winit window) nor
 standard macOS key bindings for app code (it keeps them for its own inputs).
@@ -180,30 +246,6 @@ not Blitz `<input>`s, which depend on the DOM focus the editor gave up on.
 Checked on macOS: ⌘E both ways; find stepping across a view switch; Replace
 All of 5 and its single undo.
 
-## The app shell
-
-A native menu bar (`src/menu.rs`, through muda): the app menu,
-File, Edit, Format, View and Window, laid out as the Swift editor's
-`EditorCommands.swift` is. Every editor item *is* a key binding — given as
-the chord it stands for, shown as its shortcut, and replayed through the same
-key handler when chosen. macOS hands a shortcut that names a menu item to the
-menu before the view sees it, so a chord now arrives once, through the menu,
-and a command is defined in one place. AppKit adds Emoji & Symbols, Start
-Dictation and AutoFill to the menu titled Edit by itself.
-
-New, Open and Save As (`src/file.rs`) are rfd's *async* dialogs —
-sheets on the window, with completion handlers — since a modal dialog's
-nested event loop inside a Dioxus task would hit Blitz's borrowed document.
-Replacing a document with unsaved changes asks the Mac's question first
-(Save / Don't Save / Cancel); ⌘S on an untitled document is Save As; the
-window title is the file's name, and "— Edited" while it has unsaved changes.
-
-Checked on macOS: every menu present; View ▸ Source View and Format ▸ Heading
-2 from the menu; ⌘E arriving once, through the menu; the Save As sheet; New
-on an edited document asking, Don't Save, and an untitled empty document.
-Not handled yet: closing the window with unsaved changes quits without
-asking.
-
 ## Tables as a grid
 
 `table.rs` draws a table from core's `TableInfo` — each
@@ -264,10 +306,9 @@ finds, a URL or an existing file beside the document to `open`
 unless it lands inside the selection, then pops up Go to Note / Back to
 Reference, Open Link and Copy Link when they apply, Cut and Copy with a
 selection, then Paste, Paste and Match Style and Select All — the clipboard
-items replaying the Edit menu's chords. muda shows it over the window's
-NSView, but from the main dispatch queue rather than the click's handler: a
-context menu runs a nested event loop, and winit panics when it is handed an
-event while its handler is still borrowed.
+items replaying the Edit menu's chords. The app adds the spelling checker's
+guesses for a misspelled word and Look Up, and draws it in the page
+(`context.rs`).
 
 A ⌘-click or right-click also takes no drag after it: the hand settling
 between press and release arrives as a drag, which extended a selection from
@@ -307,11 +348,10 @@ its values: font and code font, size (14/16/19), line spacing
 (1.3/1.5/1.75/2), column width (52/68/88 characters, or full) — plus
 Appearance (System/Light/Dark, through `Window::set_theme`), which Swift does
 not have and which is how to see the dark stylesheet without switching the
-whole Mac. They are a panel in the window, not a window of their own:
-dioxus-native's `launch` opens one window. The font menus are a short list of
-installed faces rather than every family. Choices persist in
-`~/Library/Application Support/leaf-dioxus/settings.toml`
-(`LEAF_SETTINGS` names another file).
+whole Mac. They are a window of their own (`prefs.rs`): the book and screen
+faces the system ships as chips, and every other family installed under
+Other ▾, by letter. Choices persist in the app's user defaults, under the
+keys the SwiftUI app used (`settings.rs`), so a reader's carry over.
 
 The faces, size and leading that were `text.rs` constants are one runtime
 `text::Type`, held by `Fonts` and written into the stylesheet by
@@ -333,9 +373,9 @@ and Blitz, which almost certainly zooms the page as well — dioxus-native gives
 the app no handle on Blitz's viewport to undo it. Not verified, since the
 tools here synthesise that chord as `NumpadEqual`.
 
-Checked on macOS: the panel from Leaf ▸ Settings… and ⌘,, closed by Done and
-Escape; Dark, Light and back from the panel, the window's title bar with them;
-Dark kept across a relaunch through the settings file; Charter at Large, and
+Checked on macOS, when Settings was a panel in the window: Dark, Light and
+back, the window's title bar with them; Dark kept across a relaunch; Charter
+at Large, and
 ⌘= / ⌘− / ⌘0 from the keyboard (125%, 150%, back to 100%), each reflowing
 with the column widening by its measure while the status line stays at 12px —
 Blitz's page zoom never acted; a click in the right half of a glyph putting
@@ -345,36 +385,64 @@ checked: a change of the *system's* appearance while the app runs (the
 `prefers-color-scheme` path is the one the launch used, and Blitz's handler
 is above), which needs System Settings changed.
 
-## Working on the native editor
+## Working on it
 
 The editor is `crates/leaf-dioxus`; this app is its wiring. Every event
-source — the window's keys and IME, the menu bar, the pointer, a file
-dialog's task — holds an `Editor` (the widget's `editor.rs`) and calls a
-method on it; what the editor cannot do itself it asks of the app's `Shell`
-(`shell.rs`), the widget's `Host`. Where a change goes:
+source — the window's keys and IME, the menus, the pointer — reaches an
+`Editor` (the widget's `editor.rs`) through the window's `Page`; what the
+editor cannot do itself it asks of the window's `Shell` (`shell.rs`), the
+widget's `Host`. Where a change goes:
 
-- **A command**: a key binding in the widget's `input.rs`, and a menu item in
-  `menu.rs` given as that chord. Nothing else; the menu replays the chord.
-  One with no shortcut is a `menu::Command` variant, run in
-  `Shell::command`. One the editor recognises but the app carries out (Save,
-  the zoom, ⌘,) is a `Request`, answered in `Shell::request`.
+- **A command**: a key binding in the widget's `input.rs`, and an item in
+  `menus.rs` given as that chord. Nothing else; the item replays the chord,
+  and `commands::status` ticks and enables it. One with no shortcut is a
+  `Command` variant, carried out in `Page::command`. One the editor
+  recognises but the app carries out (Save, the zoom, ⌘,) is a `Request`,
+  answered in `Shell::request`.
 - **Something drawn in place of rows** (media, a formula, a diagram): a
-  variant in `blocks.rs` — its builder step, render arm and hit-test — and a
-  module of its own for what it draws, as `table.rs` is for tables. Repaint,
-  scrolling and the pointer go through `blocks.rs` and do not change.
-- **Input handling**: `dispatch.rs`; caret motion and the pointer:
-  `motion.rs`; the page's markup and stylesheet: `view.rs`.
-- **State or something the render reads**: a field of `editor::State` or
-  `editor::Signals`, and a step in `Editor::repaint`.
-- **A display choice**: `settings.rs` and the panel in `prefs.rs`, handed to
+  variant in the widget's `blocks.rs` and a module of its own for what it
+  draws, as `table.rs` is for tables.
+- **A menu, a dialog, a choice control**: `crates/leaf-dioxus-ui`.
+- **Something the system does**: a function under the same name in every
+  `platform/` module.
+- **A display choice**: `settings.rs` and its row in `prefs.rs`, handed to
   the editor as a `Look` (`Shell::look`).
 
-Pure logic is unit-tested beside it (`cargo test` in each crate);
-`LEAF_TRACE=1` and `LEAF_OUTLINE=1` are the instruments for the rest. A window
-covered by others does not paint — see `occluded` in the trace.
+Pure logic is unit-tested beside it, and pages are laid out by Blitz with no
+window in `headless.rs`; `LEAF_TRACE=1`, `LEAF_OUTLINE=1` and `LEAF_DRIVE` are
+the instruments for the rest. A window covered by others paints only what
+changes in it, not its animations — see `occluded` in the trace.
 
-**Still not at parity.** The Mac app is now `apps/leaf-mac`, which hosts this
-editor in a native document app through `crates/leaf-dioxus-embed`; formulas
-and Mermaid diagrams are pictures in the widget (`picture.rs`), and Export as
-PDF and Print are the embedding's (`pdf.rs`). What is still missing against
-the LeafUI Mac app is the task "What the Mac app does not do yet".
+### Driving it in the background
+
+An agent can test the app without taking the screen from whoever is using it
+(set up and checked on 2026-10-19, macOS 27.0.1, Cua Driver 0.36.0):
+
+- **Cua Driver** (`cua-driver`, or its MCP server) acts on one app's windows
+  while another app stays in front. It needs Accessibility and Screen
+  Recording granted to `/Applications/CuaDriver.app` itself, the daemon
+  launchd starts, not to the terminal or the agent's host. Launch the build
+  with `launch_app` and the bundle identifier set by `LEAF_BUNDLE_ID`, never
+  `open`, which brings the app forward; `additional_arguments` passes it
+  arguments.
+- **Reading it.** `get_window_state` captures one window even when it is
+  covered or minimized. The tree holds only the window's own buttons and the
+  menu bar: the page is drawn by Blitz and has no accessibility elements.
+  Read frames with `list_windows` or `System Events` (`position`, `size`).
+- **Acting on it.** Menu items through `invoke_menu`, which does not
+  activate the app; window buttons by their element tokens; text with
+  `type_text` and a point in the page, which reaches the editor in a covered
+  window. A pixel click in the background does not move the caret, and keys
+  to a minimized window are refused. `delivery_mode: "foreground"` brings the
+  app forward and moves the real pointer: not for a screen someone is using.
+  `set_window_frame` moves and sizes a window, between displays too.
+- **DeskPad** makes a second display, shown in a window of its own. A window
+  moved onto it (`set_window_frame` into the display's frame) counts as
+  visible however the DeskPad window is covered, even minimized, so it
+  paints as if in front. No Cua tool moves a window to another Space.
+
+A window opened behind another app's is the check for drawing while covered
+(`patches/wgpu-hal/PATCH.md`): with a document's saved frame inside the front
+app's window, quit Leaf, `launch_app` it on that document, and capture the
+window. It shows the page; before the fix it was blank, toolbar and all.
+

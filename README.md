@@ -33,7 +33,7 @@ clipboard, and file I/O.
 | [`leaf-ratatui`](crates/leaf-ratatui) | the **embeddable terminal widget** (ratatui + crossterm): renders the editing surface into a `Rect` and turns key/mouse events into `Doc` edits, returning an `Outcome` for what the host owns (quit, save, clipboard, dialogs). The terminal peer of `leaf-gpui`. |
 | [`leaf-gpui`](crates/leaf-gpui)       | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. Renders only the editing surface and leaves window chrome, file I/O, and quit to the host.  |
 | [`leaf-dioxus`](crates/leaf-dioxus) | the **embeddable widget on Dioxus's native renderer** (`dioxus-native`, Blitz on wgpu): the editor, its rows, input method, find bar and status line, drawn in the `Look` its host gives it and asking a `Host` for the clipboard, Save, the zoom and the context menu. A standalone workspace, since `dioxus-native` is an alpha. |
-| [`leaf-dioxus-embed`](crates/leaf-dioxus-embed) | the **leaf-dioxus editor in a native view its host owns**, through a C ABI (`include/leaf_dioxus_embed.h`): a winit `Window` answered from an `NSView`, Blitz's wake-ups as main-queue blocks, and the host as first responder and text input client. Also lays a document out offscreen and writes it as a PDF (`pdf.rs`, through krilla). The Rust half of `apps/leaf-mac`; a standalone workspace like the widget's. |
+| [`leaf-dioxus-ui`](crates/leaf-dioxus-ui) | **menus, a dialog with a text field, a select and chips** for a Dioxus page, that work on dioxus-native (Blitz) as on the web: closed by a backdrop and the host's keys rather than JavaScript, navigated without DOM focus, drawn in one overlay mounted at the page's root. Needs only `dioxus`. A standalone workspace like the widget's. |
 | [`leaf-ffi`](crates/leaf-ffi)         | the **UniFFI Rust binding** — wraps the filesystem-free `Doc` behind a C ABI so a native app can drive it: as Swift for the `leaf-swift` package, and as Kotlin for `leaf-android`.                                                                                  |
 | [`leaf-math`](crates/leaf-math)       | TeX to a **self-contained SVG picture** with baseline metrics, through RaTeX with KaTeX's outlines embedded — the one door every frontend draws a formula through, so the picture is byte-identical everywhere.                                                    |
 | [`leaf-wasm`](crates/leaf-wasm)       | the **wasm-bindgen Rust binding** — wraps the `Doc` for the browser (`LeafDoc` + a typed `DocView`). Paired with the `leaf-web` package.                                                                                                                           |
@@ -54,9 +54,8 @@ clipboard, and file I/O.
 | [`leaf-tui`](apps/leaf-tui) | the terminal editor (binary `leaf`) — a thin host around `leaf-ratatui` wiring a terminal, clipboard, and dialogs. The workspace default `cargo run`. |
 | [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. A standalone workspace, like `leaf-ios`. |
 | [`leaf-ios`](apps/leaf-ios) | the gpui iOS host — **archived**; see its [README](apps/leaf-ios/README.md). leaf on iOS is `leaf-swift`. |
-| [`leaf-dioxus`](apps/leaf-dioxus) | Leaf on Dioxus's native renderer alone (`dioxus-native`, Blitz on wgpu, no webview) — a host around `crates/leaf-dioxus` in a winit window, with a muda menu bar, rfd dialogs and a settings panel drawn in the page. Where the widget is developed and measured; the Mac app is `leaf-mac`. A standalone workspace, since `dioxus-native` is an alpha and its macOS winit backend is vendored and patched. |
-| [`leaf-mac`](apps/leaf-mac) | **Leaf** for the Mac (`Leaf.app`, `org.diaryx.leaf`): a SwiftUI document app whose editor is `crates/leaf-dioxus` in an `NSView`, through `crates/leaf-dioxus-embed`. Opens, edits and saves `.md`, `.dj` and `.html` through the document system — Finder's Open With, autosave, Versions, recents — with native menus, a toolbar, a Settings window, Export as PDF and Print. What it does not do yet is the task "What the Mac app does not do yet". |
-| [`leaf-editor`](apps/leaf-editor) | **Leaf** for iOS (`org.diaryx.leaf`), consuming `packages/leaf-swift`. Opens, edits and saves `.md`, `.dj` and `.html` through the document browser and the Files app, with a Settings sheet. It built for the Mac too until `apps/leaf-mac` replaced it there. |
+| [`leaf-dioxus`](apps/leaf-dioxus) | **Leaf**, in Rust from `main` up, for every platform Dioxus's native renderer reaches — the Mac's is `Leaf.app` (`org.diaryx.leaf`). A window per document, each a Dioxus page: the toolbar, `crates/leaf-dioxus`'s editor, the context menu and Settings, their menus and dialogs `leaf-dioxus-ui`'s. What a platform does its own way is `platform/`: on the Mac an `NSDocument` per window (Open, autosave, Versions, Rename, recents, Finder's Open With), the menu bar, the spelling checker, Look Up and the print panel, through objc2. Export as PDF and Print from the editor's own layout. What it does not do yet is the task "What the Mac app does not do yet". A standalone workspace, since `dioxus-native` is an alpha and its macOS winit backend is vendored and patched. |
+| [`leaf-editor`](apps/leaf-editor) | **Leaf** for iOS (`org.diaryx.leaf`), consuming `packages/leaf-swift`. Opens, edits and saves `.md`, `.dj` and `.html` through the document browser and the Files app, with a Settings sheet. It built for the Mac too until `apps/leaf-dioxus` replaced it there. |
 | [`leaf-android`](apps/leaf-android) | **Leaf** for Android (`org.diaryx.leaf`), consuming `packages/leaf-android`. Opens, edits and autosaves `.md`, `.dj` and `.html` through the Storage Access Framework and Open With, with the rendered/source toggle and a formatting bar over the keyboard. |
 | [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. Published from each release tag at **<https://diaryx-org.github.io/leaf/>** by [`pages.yml`](.github/workflows/pages.yml). |
 
@@ -70,15 +69,16 @@ cargo run --manifest-path apps/leaf/Cargo.toml -- path/to/document.md
 cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- path/to/document.md
 ```
 
-The other frontends aren't a `cargo run` away — the Apple app is a Rust
+The other frontends aren't a `cargo run` away — the Mac app is a bundle put
+together around its binary, the iOS app a Rust
 staticlib behind a UniFFI binding behind an Xcode project, the Android app a
 shared library behind the same binding behind Gradle, and the web demo a wasm
 build behind a static server. Each is one word through the task runner in
 [`xtask/`](xtask):
 
 ```sh
-cargo xtask swift            # build + launch Leaf on macOS (apps/leaf-mac), with a copy of the sample open
-cargo xtask swift notes.md   # …with a document of your own
+cargo xtask mac              # build Leaf.app (apps/leaf-dioxus) and launch it, with a copy of the sample open
+cargo xtask mac notes.md     # …with a document of your own
 cargo xtask swift --ios      # Leaf for iOS (apps/leaf-editor) on its own `iPhone 17 (leaf)` simulator (--device for another)
 cargo xtask package          # a signed, notarised Leaf.app in a .dmg, in target/package/
 cargo xtask android        # build + install Leaf on the attached Android device or emulator

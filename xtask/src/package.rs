@@ -2,10 +2,10 @@
 //! Developer ID–signed, notarised and stapled `Leaf.app` inside a signed,
 //! notarised and stapled `.dmg`, written to `target/package/`.
 //!
-//! `project.yml` leaves the Mac build unsigned so that `cargo xtask swift`
-//! works on a machine with no Apple team. Signing is switched on here, from
-//! the command line, and nowhere else: xcodebuild's command-line settings
-//! outrank the project's, SDK-conditional ones included.
+//! The bundle is `cargo xtask mac`'s, built in release and signed ad hoc,
+//! so that a build works on a machine with no Apple team. Signing for other
+//! Macs happens here and nowhere else: the Developer ID identity, the
+//! hardened runtime notarisation requires, and a secure timestamp.
 //!
 //! Two notarisations, not one. A ticket is looked up by the hash of what it
 //! covers, so the app is notarised and stapled before it goes into the image —
@@ -24,10 +24,10 @@
 //!
 //! `.github/workflows/mac-app.yml` runs this on a release tag, from secrets.
 //!
-//! Apple Silicon only, for now: the project's pre-build script builds the Rust
-//! staticlib for `aarch64-apple-darwin` alone, and the file name says so.
+//! Apple Silicon only, for now: cargo builds the host's `aarch64-apple-darwin`
+//! alone, and the file name says so.
 
-use crate::swift::SCHEME;
+use crate::mac::APP as SCHEME;
 use crate::util::{cmd, require_tool, root, run, stdout};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -42,10 +42,6 @@ pub struct Args {
     /// Gatekeeper on another Mac will still refuse.
     #[arg(long)]
     no_notarize: bool,
-
-    /// Let xcodebuild log at full volume.
-    #[arg(long)]
-    verbose: bool,
 }
 
 pub fn run_task(args: Args) -> Result<()> {
@@ -59,51 +55,8 @@ pub fn run_task(args: Args) -> Result<()> {
         Some(Notary::from_env()?)
     };
 
-    // Always regenerated: the project is git-ignored, and one made before a
-    // source file was added builds without it — or, from an older
-    // `project.yml`, for the wrong deployment target — and says nothing.
-    let project = crate::swift::project(true, false)?;
+    let built = crate::mac::bundle(true)?;
     let root = root();
-    // Its own derived data: a signed and an unsigned build of the same
-    // configuration would otherwise take turns invalidating each other.
-    let derived = root.join("apps/leaf-mac/build/DD-package");
-
-    let mut build = cmd("xcodebuild");
-    build
-        .arg("-project")
-        .arg(&project)
-        .args(["-scheme", SCHEME, "-configuration", "Release"])
-        .args(["-destination", "platform=macOS"])
-        .arg("-derivedDataPath")
-        .arg(&derived)
-        .arg("clean")
-        .arg("build")
-        .args([
-            "CODE_SIGNING_ALLOWED=YES",
-            "CODE_SIGNING_REQUIRED=YES",
-            "CODE_SIGN_STYLE=Manual",
-            "PROVISIONING_PROFILE_SPECIFIER=",
-            // Notarisation refuses code without the hardened runtime, and
-            // refuses `get-task-allow`, which Xcode adds for debugging.
-            "ENABLE_HARDENED_RUNTIME=YES",
-            "CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO",
-            "OTHER_CODE_SIGN_FLAGS=--timestamp",
-        ])
-        .arg(format!("CODE_SIGN_IDENTITY={}", identity.hash))
-        .arg(format!("DEVELOPMENT_TEAM={team}"));
-    if !args.verbose {
-        build.arg("-quiet");
-    }
-    run(&mut build)?;
-
-    let built = derived.join(format!("Build/Products/Release/{SCHEME}.app"));
-    if !built.is_dir() {
-        bail!(
-            "xcodebuild reported success but {} is missing",
-            built.display()
-        );
-    }
-
     let out = root.join("target/package");
     if out.exists() {
         std::fs::remove_dir_all(&out)?;
@@ -113,6 +66,12 @@ pub fn run_task(args: Args) -> Result<()> {
     // `ditto`, not a plain copy: it keeps the bundle's symlinks, extended
     // attributes and signature intact.
     run(cmd("ditto").arg(&built).arg(&app))?;
+    // Notarisation refuses code without the hardened runtime, and wants a
+    // secure timestamp on every signature.
+    run(cmd("codesign")
+        .args(["--force", "--options", "runtime", "--timestamp"])
+        .args(["--sign", &identity.hash])
+        .arg(&app))?;
     verify_signature(&app)?;
 
     if let Some(notary) = &notary {

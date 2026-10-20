@@ -7,7 +7,7 @@ options:
 
 # Leaf for iOS, the document app over the `LeafUI` editor: `App/` is chrome
 # only — the document classes, the menus, the settings, and the display
-# choices. Leaf for the Mac is `apps/leaf-mac`, over the leaf-dioxus editor;
+# choices. Leaf for the Mac is `apps/leaf-dioxus`, over the leaf-dioxus editor;
 # the sources here still carry their macOS branches from when this target built
 # for both, compiled out.
 #

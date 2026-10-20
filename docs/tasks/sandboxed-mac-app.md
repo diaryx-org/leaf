@@ -1,19 +1,21 @@
 ---
 status: open
 created: 2026-09-20
-updated: 2026-09-30
+updated: 2026-10-19
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # The Mac app runs unsandboxed
 
-**Where.** `apps/leaf-mac/project.yml`, and `EditorModel.pathForNewView`,
-where the editor learns the document's folder.
+**Where.** `cargo xtask package` (`xtask/src/package.rs`), which would sign
+with the sandbox's entitlement, and `LeafDocument::path`
+(`apps/leaf-dioxus/src/platform/macos/document.rs`), where the editor learns
+the document's folder.
 
-**What.** Leaf is a document app — `DocumentGroup`, declared document types,
-an icon, a marketing version — and `cargo xtask package` now makes a
-Developer ID–signed, notarised and stapled `Leaf.app` in a `.dmg`. But
-`ENABLE_APP_SANDBOX` is off, and turning it on has a consequence the app does
-not answer yet.
+**What.** Leaf is a document app — an `NSDocument` per window, declared
+document types, an icon, a marketing version — and `cargo xtask package`
+makes a Developer ID–signed, notarised and stapled `Leaf.app` in a `.dmg`.
+But it is signed without the App Sandbox entitlement, and turning that on has
+a consequence the app does not answer yet.
 
 The sandbox grants a document app the file it was handed and not its
 siblings, and a Markdown file's images are its siblings. The two known answers

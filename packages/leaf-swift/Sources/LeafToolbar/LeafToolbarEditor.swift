@@ -2,13 +2,13 @@
 //
 //  What a formatting toolbar needs from an editor, and nothing else: what is
 //  in force at the caret, what the document's format can spell, and one
-//  command per control. Two editors answer it. LeafUI's `LeafEditorModel` is
-//  one; the Mac app's model over leaf-dioxus (`apps/leaf-mac`), which turns
-//  each command into the key chord it stands for, is the other.
+//  command per control. LeafUI's `LeafEditorModel` answers it, and any other
+//  editor can.
 //
 //  This target links no Rust, so a host that cannot link LeafUI can still
-//  draw this toolbar. Two Rust staticlibs in one binary carry two Rust
-//  runtimes, which is why the Mac app cannot link LeafUI's: it links its own.
+//  draw this toolbar: two Rust staticlibs in one binary carry two Rust
+//  runtimes, so a host with its own cannot link LeafUI's. (The Mac app,
+//  which drew it over leaf-dioxus, now draws its toolbar in Dioxus.)
 //
 //  The state is a value, read whole by every control on every draw. An
 //  editor computes it from what it publishes. Both editors are `@Observable`,

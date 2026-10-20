@@ -827,10 +827,22 @@ impl Editor {
         // Tables keep their layouts by width alone; a new type is new ones.
         st.block_cache.borrow_mut().clear();
         trace(|| format!("look {look:?}, measures {:?}", st.measures.get()));
+        // A new appearance re-inks the formulas in every row.
+        if self.sig.look.peek().appearance != look.appearance {
+            self.reink();
+        }
         set(self.sig.look, look);
         // A status line shown or hidden is a taller or shorter viewport.
         self.place();
         self.refresh();
+    }
+
+    /// Draw every row again, inked for the appearance as it now stands: an
+    /// inline formula's picture is part of its row's layout, and a row whose
+    /// text has not changed keeps both its layout and its markup.
+    pub(crate) fn reink(&self) {
+        *self.st.layouts.borrow_mut() = Layouts::default();
+        self.st.shown.set(None);
     }
 
     /// Whether this machine has a font family by `name` — for a host's font
