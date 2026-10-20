@@ -1,10 +1,21 @@
 ---
 title: Try Libero again
 part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+status: dropped
 created: 2026-10-19
+updated: 2026-10-20
 ---
 # Try Libero again
+
+**Status: dropped, 2026-10-20.** Adam chose a library of the org's own,
+inspired by Libero rather than built on it:
+[unit](https://github.com/diaryx-org/unit), begun here as `crates/unit`.
+Branch `claude/libero-ui` made Libero work in the Mac app, but only with the app routing keys by where Blitz's
+focus is, sending Blitz an Escape on a press outside, and opening the
+context menu from a one-pixel trigger; Libero's iOS runs are a WebView, not
+Blitz; and it is some 200,000 lines pinned to crates.io's Blitz. unit takes
+Libero's component list and its theme of tokens, and keeps
+`leaf-dioxus-ui`'s way of working under Blitz.
 
 **Where.** `apps/leaf-dioxus` (the toolbar's menus, the context menu, the
 Link prompt, Settings) and `crates/leaf-dioxus-ui`, which Libero would
