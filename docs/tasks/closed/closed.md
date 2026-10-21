@@ -36,7 +36,7 @@ contents:
 - '[Following a fragment lands before its heading](/docs/tasks/closed/fragment-lands-before-heading.md)'
 - '[Split leaf-dioxus into a widget crate and its app](/docs/tasks/closed/split-leaf-dioxus-into-a-widget-crate-and-its-app.md)'
 - '[Place the Dioxus editor in part of a window](/docs/tasks/closed/place-the-dioxus-editor-in-part-of-a-window.md)'
-- '[Heading At Offset](/docs/tasks/closed/heading-at-offset.md)'
+- '[The heading the caret is under is a question `Doc` cannot answer](/docs/tasks/closed/heading-at-offset.md)'
 ---
 
 # Closed tasks
