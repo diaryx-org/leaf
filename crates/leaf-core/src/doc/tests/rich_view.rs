@@ -30,9 +30,9 @@ fn incremental_build_matches_a_fresh_build_across_edits() {
         "\n\nfirst pushed down\n\nsecond\n",
         "---\ntitle: x\n---\n\n\nafter frontmatter\n\nmore\n",
         "<!-- lead -->\n\n\nafter a comment\n\nmore\n",
-        // No `<div>` here yet: an edit that takes the blank line under
-        // `</div>` leaves a map no fresh build draws. See
-        // docs/tasks/text-glued-under-a-closing-div.md.
+        // An edit that takes the blank line under `</div>` glues the next
+        // line into an HTML block that runs to the following blank line.
+        "<div data-line-height=\"1.5\">\n\nI cry\n\nknees\n\n\n\n</div>\n\nafter\n",
     ];
     // A deterministic mix: mostly single characters (which stay inside one
     // block → splice), plus edits that reshape structure (a paragraph break,
@@ -591,4 +591,22 @@ fn source_view_still_reaches_frontmatter() {
     );
     d.move_doc_start(false);
     assert_eq!(d.caret, 0, "source view can reach offset 0");
+}
+
+/// The block cache matches a block by its bytes, and the same bytes can be two
+/// different blocks. Deleting the blank line under `</div>` glues `after` into
+/// an HTML block, which twig leaves at the top level as a bare `str` that draws
+/// nothing — over exactly the bytes the paragraph `after` had a moment before.
+/// Matched by bytes alone, the `str` took the paragraph's cached row, and a
+/// separator above it, and drew both until the next rebuild from scratch.
+#[test]
+fn a_block_reuses_no_rows_cached_for_another_kind_over_the_same_bytes() {
+    let src = "<div data-line-height=\"1.5\">\n\nknees\n\n</div>\n\nafter\n";
+    let mut d = wysiwyg_doc("glued", src);
+    d.build_visual_unwrapped();
+    let blank = src.find("</div>\n").unwrap() + "</div>\n".len();
+    d.edit(blank, blank + 1, "");
+    d.build_visual_unwrapped();
+    wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "after the delete");
+    assert_eq!(drawn_rows(&d), ["knees"]);
 }

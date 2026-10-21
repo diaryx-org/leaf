@@ -283,7 +283,7 @@ pub fn build_cached(
         // the (shifted) `last_off` so the next separator lands right — no marshal.
         // Only shift-safe blocks are ever cached, so a hit is safe by construction.
         let mut has_math = false;
-        if let Some(hit) = cache.reuse(hash, bytes, &rkey) {
+        if let Some(hit) = cache.reuse(hash, &block.kind, bytes, &rkey) {
             faces.merge(&hit.faces);
             has_math = hit.has_math;
             let delta = start as isize - hit.built_start as isize;
@@ -349,6 +349,7 @@ pub fn build_cached(
                     if rows_within(&sub.rows, &block.span) {
                         cache.store(
                             hash,
+                            &block.kind,
                             bytes,
                             start,
                             sub.rows.clone(),

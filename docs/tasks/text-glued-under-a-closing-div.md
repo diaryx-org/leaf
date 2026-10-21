@@ -1,10 +1,24 @@
 ---
-status: open
+status: done
 created: 2026-09-23
-updated: 2026-09-23
+updated: 2026-10-20
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Text glued under a closing `</div>` draws until the next full rebuild
+
+**Status: done.** Not the builders disagreeing about the shape: twig hands
+both the same tree, and a fresh `build_cached` draws what `build` does. The
+block cache matched a block by its bytes and reveal alone, and the bare
+`str` glued under `</div>` covers the very bytes the paragraph `after` had
+before the blank line went. So the `str` took the paragraph's cached row,
+and since it then drew something, a separator above it too. A cache entry
+now carries the block's kind, and a hit has to match it. Both paths draw
+`knees` alone, which is what a fresh build always drew; whether swallowed
+text should draw as its source is still a question for the renderer, and
+no longer one the two paths can answer differently. Pinned by
+`a_block_reuses_no_rows_cached_for_another_kind_over_the_same_bytes` in
+`doc/tests/rich_view.rs`, and the div document is back in
+`incremental_build_matches_a_fresh_build_across_edits`'s corpus.
 
 **Where.** `crates/leaf-core`: `wysiwyg::build_spliced` and `build_cached`
 against `build`, and whatever twig reports for the shape below.
