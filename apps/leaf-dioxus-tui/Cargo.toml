@@ -1,0 +1,67 @@
+# A prototype: the leaf-dioxus editor (crates/leaf-dioxus), the same
+# component the Mac app draws with Blitz on wgpu, drawn in a terminal instead.
+# Blitz still builds the DOM, resolves the styles and lays the page out; a
+# painter here walks the laid-out tree and writes character cells where
+# blitz-paint would draw pixels. Its own workspace for apps/leaf-dioxus's
+# reason: dioxus-native is an alpha, and the Blitz fork is reached by [patch].
+#
+#     cargo run --manifest-path apps/leaf-dioxus-tui/Cargo.toml -- document.md
+[workspace]
+
+[package]
+name = "leaf-dioxus-tui"
+version = "0.5.1"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "leaf-dtui"
+path = "src/main.rs"
+
+[dependencies]
+leaf-dioxus = { path = "../../crates/leaf-dioxus" }
+leaf-core = { path = "../../crates/leaf-core", default-features = false, features = ["fs", "syntax"] }
+dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+] }
+# The document type and Blitz's DOM, with no renderer: nothing here draws
+# pixels. `system-fonts` because the editor and Blitz shape text with parley
+# over the system's fonts, and a monospace face's advance is the cell.
+dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features = ["system-fonts"] }
+dioxus-core = "=0.8.0-alpha.3"
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false }
+blitz-traits = "=0.3.0-beta.4"
+parley = "=0.12.0"
+crossterm = "0.28"
+raw-window-handle = "0.6"
+anyhow = "1"
+libc = "0.2"
+# Stylo's computed values, read for each box's colours and borders, and the
+# taffy layout Blitz puts on each node: the versions the Blitz fork uses.
+style = { version = "0.22.0", package = "stylo" }
+taffy = { version = "0.15", default-features = false, features = ["std"] }
+unicode-width = "0.2"
+unicode-segmentation = "1.13"
+# The editor's timers.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+# Stylo and parley are slow unoptimised; see apps/leaf-dioxus.
+[profile.dev.package."*"]
+opt-level = 3
+
+# The Blitz fork, as apps/leaf-dioxus takes it: every Blitz crate from one
+# source, or the graph holds two copies.
+[patch.crates-io]
+blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
