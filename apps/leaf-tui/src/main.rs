@@ -3511,14 +3511,18 @@ mod tests {
         // status is the assertion rather than the pasteboard itself: `^c` with
         // the bar up used to be swallowed, and "copied" is exactly the report
         // that it no longer is. What lands on the pasteboard is
-        // `copy_publishes_both_flavors`' business.
+        // `copy_publishes_both_flavors`' business. Where there is no
+        // pasteboard (a headless Linux box) the verb still runs, and says so.
         assert_eq!(doc.selected_text(), Some("needle"));
         handle_key(&mut doc, ctrl('c'), &mut app);
         assert!(app.find.is_some(), "the bar stays up over a copy");
-        assert_eq!(
-            doc.status.as_deref().map(|s| s == "copied"),
-            Some(true),
-            "^c must reach the host's clipboard verb, not be eaten by the bar"
+        assert!(
+            matches!(
+                doc.status.as_deref(),
+                Some("copied" | "clipboard unavailable")
+            ),
+            "^c must reach the host's clipboard verb, not be eaten by the bar: {:?}",
+            doc.status
         );
 
         // ^P closes the bar first: the palette can run an editing command over

@@ -1,19 +1,21 @@
 ---
-status: open
+status: done
 created: 2026-09-16
-updated: 2026-10-06
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-10-21
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # The heading the caret is under is a question `Doc` cannot answer
 
-**Status.** Open: the leaf half is in, provui's is not. `feat(core):
-heading_at — the heading a place in the document is under` adds
-`Doc::heading_at` / `heading_at_caret` and the `Heading` type, in the shape
-below, and exposes both through leaf-ffi and the wasm binding as a
-`HeadingView` (`text`, `level`, `start`, `end`). What remains is provui's,
-and it waits on nothing now: provui takes leaf from git, and its lock
-(`17dd988`, 2026-10-06) already carries `heading_at`. `DocumentSession::heading_at_caret`
-delegates to leaf, and `twig` leaves `provui-core`'s manifest.
+**Status: done.** The leaf half is `feat(core): heading_at — the heading a
+place in the document is under` (`d15bbb7`), which adds `Doc::heading_at` /
+`heading_at_caret` and the `Heading` type, in the shape below, and exposes
+both through leaf-ffi and the wasm binding as a `HeadingView` (`text`,
+`level`, `start`, `end`); `heading_at_caret_is_the_nearest_heading_above` in
+`doc/tests/links.rs` is the test the done-when asks for. provui's half is
+`refactor(core)!: ask leaf for the heading under the caret instead of parsing
+the body again` (provui `d512e25`, diaryx-org/provui#5):
+`DocumentSession::heading_at_caret` delegates to leaf, and `twig` has left
+`provui-core`'s manifest.
 
 **Where.** `crates/leaf-core/src/doc/under_caret.rs`, beside `link_destination_at_caret`
 and `locate`.
