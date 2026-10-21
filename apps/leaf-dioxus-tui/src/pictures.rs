@@ -34,13 +34,16 @@ const PROTOCOLS_MAX: usize = 64;
 /// about twice the size of the cell the editor measures in.
 const SVG_SCALE: f32 = 2.0;
 
+/// A source, and the rows and columns of its box in view: `(first, count)`.
+type Crop = (String, (u16, u16), (u16, u16));
+
 pub struct Pictures {
     picker: Picker,
     /// Each source, decoded, or `None` when it would not decode.
     decoded: HashMap<String, Option<DynamicImage>>,
     /// Each crop of a source, encoded for the terminal: keyed by the source,
-    /// the first row in view and how many rows are.
-    encoded: HashMap<(String, u16, u16), StatefulProtocol>,
+    /// and the first row and column in view and how many of each are.
+    encoded: HashMap<Crop, StatefulProtocol>,
 }
 
 impl Pictures {
@@ -77,7 +80,8 @@ impl Pictures {
 
     fn paint_one(&mut self, f: &mut Frame, grid: &Grid, p: &Picture) {
         let (top, bottom) = p.shown;
-        let (left, right) = (p.col.max(0), (p.col + p.cols as i32).min(grid.cols as i32));
+        let (left, right) = p.shown_cols;
+        let (bottom, right) = (bottom.min(grid.rows as i32), right.min(grid.cols as i32));
         if top >= bottom || left >= right {
             return;
         }
@@ -89,22 +93,31 @@ impl Pictures {
         else {
             return;
         };
+        // The part of the box in view, as fractions of the whole box, cut
+        // from the picture in the same proportions.
         let skip = (top - p.row) as u16;
         let shown = (bottom - top) as u16;
-        let key = (p.src.clone(), skip, shown);
+        let skip_cols = (left - p.col) as u16;
+        let shown_cols = (right - left) as u16;
+        let key = (p.src.clone(), (skip, shown), (skip_cols, shown_cols));
         let picker = &self.picker;
         let proto = self.encoded.entry(key).or_insert_with(|| {
-            let img = if shown == p.rows {
+            let img = if (shown, shown_cols) == (p.rows, p.cols) {
                 img.clone()
             } else {
-                let h = img.height() as f32;
-                let y0 = (h * skip as f32 / p.rows as f32).round() as u32;
-                let y1 = (h * (skip + shown) as f32 / p.rows as f32).round() as u32;
-                img.crop_imm(0, y0, img.width(), (y1 - y0).max(1))
+                let cut = |len: u32, from: u16, n: u16, of: u16| {
+                    let len = len as f32;
+                    let a = (len * from as f32 / of as f32).round() as u32;
+                    let b = (len * (from + n) as f32 / of as f32).round() as u32;
+                    (a, (b.saturating_sub(a)).max(1))
+                };
+                let (y, h) = cut(img.height(), skip, shown, p.rows);
+                let (x, w) = cut(img.width(), skip_cols, shown_cols, p.cols);
+                img.crop_imm(x, y, w, h)
             };
             picker.new_resize_protocol(img)
         });
-        let rect = Rect::new(left as u16, top as u16, (right - left) as u16, shown);
+        let rect = Rect::new(left as u16, top as u16, shown_cols, shown);
         f.render_widget(Clear, rect);
         f.render_stateful_widget(StatefulImage::new().resize(Resize::Fit(None)), rect, proto);
     }

@@ -763,4 +763,40 @@ mod tests {
         assert!(f.contains("Written outside."), "{f}");
         assert!(f.contains("reloaded from disk"), "{f}");
     }
+
+    #[test]
+    fn a_menu_opened_over_a_picture_is_not_painted_over() {
+        let png = concat!(env!("CARGO_MANIFEST_DIR"), "/../../leaf-gpui.png");
+        let (dir, path) = scratch(&format!("Top.\n\n![shot]({png})\n"));
+        let mut s = Session::new(path, 80, 24).unwrap();
+        let (key, code, _) = term::char_key('p');
+        s.key(key, code, term::PRIMARY);
+        s.settle();
+        let g = s.paint();
+        std::fs::remove_dir_all(&dir).ok();
+        let [p] = &g.pictures[..] else {
+            panic!("one picture: {:?}", g.pictures)
+        };
+        // Every cell of the menu's labels lies outside what the picture
+        // still paints.
+        let inside = |c: i32, r: i32| {
+            (p.shown_cols.0..p.shown_cols.1).contains(&c) && (p.shown.0..p.shown.1).contains(&r)
+        };
+        let mut seen = 0;
+        for r in 0..g.rows {
+            let line: String = (0..g.cols).map(|c| g.get(c, r).text.clone()).collect();
+            for label in ["File", "Edit", "Paragraph"] {
+                if let Some(at) = line.find(label) {
+                    seen += 1;
+                    let c = line[..at].chars().count() as i32;
+                    assert!(!inside(c, r as i32), "{label} at {c},{r} under {p:?}");
+                }
+            }
+        }
+        assert_eq!(seen, 3, "{}", g.text());
+        assert!(
+            p.shown.0 < p.shown.1,
+            "some of the picture still shows: {p:?}"
+        );
+    }
 }

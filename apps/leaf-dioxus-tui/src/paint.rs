@@ -72,7 +72,9 @@ pub struct Grid {
 }
 
 /// An `img`'s box in cells. Its whole box, which may run off the screen,
-/// and the rows of it in view, which a box drawn later may have covered.
+/// and the part of it in view: a rectangle, since a graphics-protocol
+/// picture is one, cut back by whatever opaque box was drawn over it later
+/// — a menu, a dialog, the status line ([`Picture::cover`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Picture {
     pub src: String,
@@ -82,6 +84,42 @@ pub struct Picture {
     pub rows: u16,
     /// The rows in view, `top..bottom`; empty when none is.
     pub shown: (i32, i32),
+    /// The columns in view, `left..right`.
+    pub shown_cols: (i32, i32),
+}
+
+impl Picture {
+    /// An opaque box over cells `c0..c1` × `r0..r1`, drawn after the
+    /// picture, covers it there. Cells are drawn under a graphics-protocol
+    /// picture, never over it, so the picture keeps the largest rectangle the
+    /// box leaves uncovered — above it, below it, or to either side — and
+    /// what the box covers shows the box.
+    pub fn cover(&mut self, c0: i32, c1: i32, r0: i32, r1: i32) {
+        let (top, bottom) = self.shown;
+        let (left, right) = self.shown_cols;
+        if c1 <= left || c0 >= right || r1 <= top || r0 >= bottom {
+            return;
+        }
+        let rest = [
+            (left, right, top, r0),
+            (left, right, r1, bottom),
+            (left, c0, top, bottom),
+            (c1, right, top, bottom),
+        ];
+        let area = |&(l, r, t, b): &(i32, i32, i32, i32)| (r - l).max(0) * (b - t).max(0);
+        let best = rest
+            .iter()
+            .max_by_key(|x| area(x))
+            .copied()
+            .unwrap_or_default();
+        if area(&best) == 0 {
+            self.shown = (top, top);
+            self.shown_cols = (left, left);
+        } else {
+            self.shown_cols = (best.0, best.1);
+            self.shown = (best.2, best.3);
+        }
+    }
 }
 
 impl Grid {
@@ -431,6 +469,10 @@ impl Painter<'_> {
         let bottom = (row + rows)
             .min((clip.y1 / m.ch).round() as i32)
             .min(self.grid.rows as i32);
+        let left = col.max((clip.x0 / m.cw).round() as i32).max(0);
+        let right = (col + cols)
+            .min((clip.x1 / m.cw).round() as i32)
+            .min(self.grid.cols as i32);
         self.grid.pictures.push(Picture {
             src: src.to_string(),
             col,
@@ -438,6 +480,7 @@ impl Painter<'_> {
             cols: cols as u16,
             rows: rows as u16,
             shown: (top, bottom.max(top)),
+            shown_cols: (left, right.max(left)),
         });
     }
 
@@ -525,19 +568,10 @@ impl Painter<'_> {
         let c1 = (area.x1 / m.cw - 0.5).ceil() as i32;
         let r0 = (area.y0 / m.ch - 0.5).ceil() as i32;
         let r1 = (area.y1 / m.ch - 0.5).ceil() as i32;
-        // An opaque box across a picture's whole width covers the rows of
-        // it that it spans: the status line over a picture at the bottom.
-        if a > 0.5 && r0 < r1 {
+        // An opaque box drawn after a picture covers it where they meet.
+        if a > 0.5 && r0 < r1 && c0 < c1 {
             for p in &mut self.grid.pictures {
-                if c0 > p.col || c1 < p.col + p.cols as i32 {
-                    continue;
-                }
-                let (top, bottom) = p.shown;
-                if r0 <= top && r1 > top {
-                    p.shown.0 = r1.min(bottom);
-                } else if r0 < bottom && r1 >= bottom {
-                    p.shown.1 = r0.max(top);
-                }
+                p.cover(c0, c1, r0, r1);
             }
         }
         for r in r0..r1 {
@@ -750,5 +784,42 @@ impl Painter<'_> {
                 col = Some(c);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn picture() -> Picture {
+        Picture {
+            src: String::new(),
+            col: 0,
+            row: 0,
+            cols: 40,
+            rows: 20,
+            shown: (0, 20),
+            shown_cols: (0, 40),
+        }
+    }
+
+    #[test]
+    fn a_box_over_a_picture_leaves_it_the_largest_part_uncovered() {
+        // A wide menu at the top: more is left below it than beside it.
+        let mut p = picture();
+        p.cover(0, 30, 0, 4);
+        assert_eq!((p.shown, p.shown_cols), ((4, 20), (0, 40)));
+        // A tall narrow one at the left: the right of it is kept.
+        let mut p = picture();
+        p.cover(0, 8, 0, 20);
+        assert_eq!((p.shown, p.shown_cols), ((0, 20), (8, 40)));
+        // One beside the picture leaves it whole.
+        let mut p = picture();
+        p.cover(40, 50, 0, 20);
+        assert_eq!((p.shown, p.shown_cols), ((0, 20), (0, 40)));
+        // One over all of it hides it.
+        let mut p = picture();
+        p.cover(0, 40, 0, 20);
+        assert_eq!(p.shown.0, p.shown.1);
     }
 }
