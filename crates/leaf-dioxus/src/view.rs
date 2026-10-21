@@ -53,6 +53,7 @@ pub fn css(ty: &Type) -> String {
         mono,
         size,
         leading,
+        uniform,
     } = ty;
     let quote = ty.quote_indent();
     let mut css = format!(
@@ -79,6 +80,12 @@ body {{ position: relative; }}
 .leaf .tcell.end {{ text-align: right; }}
 {CHROME}{REST}"
     );
+    // Every run at the body size, as `text.rs` measures them (`Type::uniform`).
+    if *uniform {
+        css.push_str(
+            ".leaf .h1, .leaf .h2, .leaf .h3, .leaf .sup, .leaf .sub { font-size: 1em; vertical-align: baseline; }",
+        );
+    }
     if std::env::var_os("LEAF_OUTLINE").is_some() {
         css.push_str(".leaf .line { outline: 1px solid #f00; } .leaf .line > span { outline: 1px solid #0a0; }");
     }
@@ -379,6 +386,7 @@ mod tests {
             mono: "Monaco, monospace".into(),
             size: 19.0,
             leading: 1.75,
+            uniform: false,
         };
         let css = css(&ty);
         assert!(

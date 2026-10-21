@@ -46,6 +46,11 @@ pub struct Type {
     pub size: f32,
     /// The line box over the size: CSS's unitless `line-height`.
     pub leading: f32,
+    /// Every run at the body size, in every view: a heading bold but no
+    /// larger, a superscript on the line — what the source view always does.
+    /// For a host whose surface is a grid, a terminal's, where text larger
+    /// than a cell cannot be drawn and a click must land where it is drawn.
+    pub uniform: bool,
 }
 
 impl Default for Type {
@@ -56,6 +61,7 @@ impl Default for Type {
             mono: "Menlo, monospace".into(),
             size: 16.0,
             leading: 1.5,
+            uniform: false,
         }
     }
 }
@@ -248,7 +254,7 @@ impl Fonts {
             ty.leading,
         )));
         for (r, range) in runs.iter().zip(&ranges) {
-            for property in style_of(&r.class, kind == Kind::Source, ty) {
+            for property in style_of(&r.class, kind == Kind::Source || ty.uniform, ty) {
                 b.push(property, range.clone());
             }
             // An inline formula: its atom glyph takes no room, and its
@@ -333,6 +339,9 @@ fn style_of(class: &str, uniform: bool, ty: &Type) -> Vec<StyleProperty<'static,
 /// The font size a run is set at, for a formula set inline in it.
 fn run_size(class: &str, ty: &Type) -> f32 {
     let mut size = ty.size;
+    if ty.uniform {
+        return size;
+    }
     for c in class.split(' ') {
         size = match c {
             "h1" => ty.size * 2.0,
@@ -623,6 +632,24 @@ mod tests {
             "{}",
             l.height
         );
+    }
+
+    #[test]
+    fn a_uniform_type_sets_a_heading_at_the_body_size() {
+        let ty = Type {
+            uniform: true,
+            ..Type::default()
+        };
+        let mut f = Fonts::new(ty.clone());
+        let heading = f.layout(&row(vec![run("Title", "g h1 b")]), 600.0, Kind::Prose);
+        let body = f.layout(&row(vec![run("Title", "g b")]), 600.0, Kind::Prose);
+        assert!(
+            (heading.height - ty.line()).abs() < 0.5,
+            "{}",
+            heading.height
+        );
+        assert_eq!(heading.height, body.height);
+        assert!(crate::view::css(&ty).contains(".leaf .h1, .leaf .h2"));
     }
 
     #[test]
