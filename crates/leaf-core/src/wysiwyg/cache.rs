@@ -9,8 +9,8 @@ use super::*;
 /// makes a rebuild after a keystroke cost "re-render the edited block + shift
 /// the rest" instead of re-rendering the whole document.
 ///
-/// A top-level block's rows are a pure function of its source bytes and the wrap
-/// width, so an unchanged block's rows are cloned and their source offsets
+/// A top-level block's rows are a pure function of its kind, its source bytes
+/// and the wrap width, so an unchanged block's rows are cloned and their source offsets
 /// shifted by the edit's byte delta rather than rebuilt glyph by glyph. Two
 /// things make that purity hold: at the top level the render prefix is always
 /// empty (nesting prefixes — a quote gutter, a list indent — exist only *inside*
@@ -95,6 +95,12 @@ pub(super) struct CachedBlock {
     /// The block's exact source bytes, compared on a hash hit so a collision
     /// can never hand back another block's rows.
     bytes: Box<[u8]>,
+    /// The block's kind, compared with `bytes`: the same bytes parse as
+    /// different blocks in different places. A paragraph `after` drawn one
+    /// keystroke, and the same five bytes glued under a `</div>` the next —
+    /// a bare `str` at the top level, which draws nothing — share a hash and
+    /// bytes, and only the kind tells their rows apart.
+    kind: Kind,
     /// The offset the rows were built at (the block's `span.start`).
     pub(super) built_start: usize,
     /// The block's rows, offsets absolute as built.
@@ -173,13 +179,15 @@ impl BlockCache {
             .any(|b| b.has_math && b.span.start <= line.end && line.start <= b.span.end)
     }
 
-    /// Look up a block by hash, verify its bytes and reveal key, and on a hit
-    /// stamp it used this build and hand back a borrow to shift-and-clone from.
-    /// `None` on a miss (unknown hash, a collision whose bytes differ, or the
-    /// same bytes built under a different reveal).
+    /// Look up a block by hash, verify its kind, bytes and reveal key, and on a
+    /// hit stamp it used this build and hand back a borrow to shift-and-clone
+    /// from. `None` on a miss (unknown hash, a collision whose bytes differ,
+    /// the same bytes parsed as another kind of block, or built under a
+    /// different reveal).
     pub(super) fn reuse(
         &mut self,
         hash: u64,
+        kind: &Kind,
         bytes: &[u8],
         reveal: &Option<Range<usize>>,
     ) -> Option<&CachedBlock> {
@@ -187,18 +195,19 @@ impl BlockCache {
         let bucket = self.entries.get_mut(&hash)?;
         let e = bucket
             .iter_mut()
-            .find(|e| &*e.bytes == bytes && &e.reveal == reveal)?;
+            .find(|e| &e.kind == kind && &*e.bytes == bytes && &e.reveal == reveal)?;
         e.generation = g;
         Some(&*e)
     }
 
     /// Cache the rows a freshly-rendered block produced (or refresh an existing
-    /// entry for the same bytes and reveal — an identical block elsewhere, or a
-    /// re-render).
+    /// entry for the same kind, bytes and reveal — an identical block
+    /// elsewhere, or a re-render).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn store(
         &mut self,
         hash: u64,
+        kind: &Kind,
         bytes: &[u8],
         built_start: usize,
         rows: Vec<VRow>,
@@ -212,7 +221,7 @@ impl BlockCache {
         let bucket = self.entries.entry(hash).or_default();
         if let Some(e) = bucket
             .iter_mut()
-            .find(|e| &*e.bytes == bytes && e.reveal == reveal)
+            .find(|e| &e.kind == kind && &*e.bytes == bytes && e.reveal == reveal)
         {
             e.built_start = built_start;
             e.rows = rows;
@@ -224,6 +233,7 @@ impl BlockCache {
         } else {
             bucket.push(CachedBlock {
                 bytes: bytes.into(),
+                kind: kind.clone(),
                 built_start,
                 rows,
                 last_off,

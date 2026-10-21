@@ -146,6 +146,10 @@ fn build_cached_matches_build() {
         "<!-- lead -->\n\n\n\nafter a comment\n",
         // An empty paragraph at the end of a div draws inside it.
         "<div data-line-height=\"1.5\">\n\nI cry\n\nknees\n\n\n\n</div>\n\nafter\n",
+        // Text glued under `</div>` opens an HTML block that runs to the
+        // next blank line: twig leaves the div's opening tag an empty
+        // container and the text a bare `str` at the top level.
+        "<div data-line-height=\"1.5\">\n\nknees\n\n</div>\nafter\n",
     ];
     for wrap in [None, Some(80usize), Some(20)] {
         for src in docs {
