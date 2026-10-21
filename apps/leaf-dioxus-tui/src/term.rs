@@ -2,7 +2,7 @@
 //! as the cells that changed, and the terminal's keys and mouse turned into
 //! what the editor and Blitz take.
 
-use std::io::{Stdout, Write, stdout};
+use std::io::{Stdout, stdout};
 use std::str::FromStr;
 
 use anyhow::Result;
@@ -13,14 +13,14 @@ use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, KeyCode,
     KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
-use crossterm::style::{
-    Attribute, Color, Print, SetAttribute, SetBackgroundColor, SetForegroundColor,
-};
-use crossterm::{cursor, execute, queue, terminal};
+use crossterm::{cursor, execute, terminal};
 use dioxus::html::{Code, Key, Modifiers, NamedKey};
 use dioxus_native::DioxusDocument;
+use ratatui::backend::CrosstermBackend;
+use ratatui::style::{Color, Modifier};
 
-use crate::paint::{Cell, Grid, Metrics};
+use crate::paint::{Grid, Metrics};
+use crate::pictures::Pictures;
 
 /// Dark unless `LEAF_THEME=light` says otherwise; leaf-tui's OSC 11 query
 /// is the real answer, and is for later.
@@ -29,7 +29,8 @@ pub fn dark() -> bool {
 }
 
 pub struct Terminal {
-    out: Stdout,
+    term: ratatui::Terminal<CrosstermBackend<Stdout>>,
+    pictures: Pictures,
 }
 
 impl Terminal {
@@ -41,16 +42,22 @@ impl Terminal {
             terminal::EnterAlternateScreen,
             EnableMouseCapture,
             EnableBracketedPaste,
-            terminal::Clear(terminal::ClearType::All)
+            cursor::SetCursorStyle::SteadyBar,
         )?;
-        Ok(Self { out })
+        let mut pictures = Pictures::new();
+        pictures.query();
+        crate::trace(|| format!("graphics: {:?}", pictures.protocol()));
+        let mut term = ratatui::Terminal::new(CrosstermBackend::new(out))?;
+        term.clear()?;
+        Ok(Self { term, pictures })
     }
 
     pub fn leave(&mut self) -> Result<()> {
         execute!(
-            self.out,
+            self.term.backend_mut(),
             DisableBracketedPaste,
             DisableMouseCapture,
+            cursor::SetCursorStyle::DefaultUserShape,
             cursor::Show,
             terminal::LeaveAlternateScreen
         )?;
@@ -58,78 +65,44 @@ impl Terminal {
         Ok(())
     }
 
+    /// Draw `g`: its cells, then its pictures over them. ratatui writes only
+    /// the cells that changed since the last frame.
     pub fn draw(&mut self, g: &Grid) -> Result<()> {
-        queue!(self.out, cursor::Hide)?;
-        for r in 0..g.rows {
-            queue!(self.out, cursor::MoveTo(0, r))?;
-            for c in 0..g.cols {
-                self.cell(g.get(c, r))?;
-            }
-        }
-        self.finish(g)
-    }
-
-    pub fn draw_diff(&mut self, old: &Grid, new: &Grid) -> Result<()> {
-        if old.cols != new.cols || old.rows != new.rows {
-            return self.draw(new);
-        }
-        queue!(self.out, cursor::Hide)?;
-        for r in 0..new.rows {
-            let mut at = None;
-            for c in 0..new.cols {
-                let cell = new.get(c, r);
-                if cell == old.get(c, r) {
-                    at = None;
-                    continue;
+        let pictures = &mut self.pictures;
+        self.term.draw(|f| {
+            let area = f.area();
+            let buf = f.buffer_mut();
+            for r in 0..g.rows.min(area.height) {
+                for c in 0..g.cols.min(area.width) {
+                    let cell = g.get(c, r);
+                    let out = &mut buf[(c, r)];
+                    // The second half of a wide character: its first half
+                    // drew it, and ratatui skips this cell.
+                    out.set_symbol(if cell.text.is_empty() {
+                        " "
+                    } else {
+                        &cell.text
+                    });
+                    out.set_fg(rgb(cell.fg));
+                    out.set_bg(rgb(cell.bg));
+                    let mut m = Modifier::empty();
+                    m.set(Modifier::BOLD, cell.bold);
+                    m.set(Modifier::ITALIC, cell.italic);
+                    m.set(Modifier::UNDERLINED, cell.underline);
+                    out.modifier = m;
                 }
-                if at != Some(c) {
-                    queue!(self.out, cursor::MoveTo(c, r))?;
-                }
-                self.cell(cell)?;
-                at = Some(c + 1);
             }
-        }
-        self.finish(new)
-    }
-
-    fn cell(&mut self, cell: &Cell) -> Result<()> {
-        // The second half of a wide character: its first half drew it.
-        if cell.text.is_empty() {
-            return Ok(());
-        }
-        let rgb = |(r, g, b): (u8, u8, u8)| Color::Rgb { r, g, b };
-        queue!(
-            self.out,
-            SetAttribute(Attribute::Reset),
-            SetForegroundColor(rgb(cell.fg)),
-            SetBackgroundColor(rgb(cell.bg)),
-        )?;
-        if cell.bold {
-            queue!(self.out, SetAttribute(Attribute::Bold))?;
-        }
-        if cell.italic {
-            queue!(self.out, SetAttribute(Attribute::Italic))?;
-        }
-        if cell.underline {
-            queue!(self.out, SetAttribute(Attribute::Underlined))?;
-        }
-        queue!(self.out, Print(&cell.text))?;
+            pictures.paint(f, g);
+            if let Some((c, r)) = g.cursor {
+                f.set_cursor_position((c, r));
+            }
+        })?;
         Ok(())
     }
+}
 
-    fn finish(&mut self, g: &Grid) -> Result<()> {
-        queue!(self.out, SetAttribute(Attribute::Reset))?;
-        if let Some((c, r)) = g.cursor {
-            queue!(
-                self.out,
-                cursor::MoveTo(c, r),
-                cursor::SetCursorStyle::SteadyBar,
-                cursor::Show
-            )?;
-        }
-        self.out.flush()?;
-        Ok(())
-    }
+fn rgb((r, g, b): (u8, u8, u8)) -> Color {
+    Color::Rgb(r, g, b)
 }
 
 pub fn is_quit(k: &KeyEvent) -> bool {

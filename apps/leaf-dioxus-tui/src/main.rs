@@ -15,6 +15,7 @@
 //! sees ⌘), so ⌃S saves, ⌃B is bold, ⌃Z undoes.
 
 mod paint;
+mod pictures;
 mod term;
 mod window;
 
@@ -34,7 +35,9 @@ use dioxus_core::{ScopeId, VirtualDom};
 use dioxus_native::DioxusDocument;
 use dioxus_native::winit::window::Window;
 use leaf_core::Doc;
-use leaf_dioxus::{Appearance, Editor, Host, Look, Request, Status, Type, use_shared_editor};
+use leaf_dioxus::{
+    Appearance, Editor, Host, Look, Request, Status, Type, trace, use_shared_editor,
+};
 
 use crate::paint::Metrics;
 use crate::window::TermWindow;
@@ -329,9 +332,9 @@ fn run(s: &mut Session, out: &mut term::Terminal) -> Result<()> {
         if acted || s.window.take_dirty() {
             let t1 = std::time::Instant::now();
             let next = s.paint();
-            leaf_dioxus::trace(|| format!("frame: settle {:.1?} paint {:.1?}", t1 - t0, t1.elapsed()));
+            trace(|| format!("frame: settle {:.1?} paint {:.1?}", t1 - t0, t1.elapsed()));
             if next != grid {
-                out.draw_diff(&grid, &next)?;
+                out.draw(&next)?;
                 grid = next;
             }
         }
@@ -408,5 +411,22 @@ mod tests {
         let f = s.paint().text();
         std::fs::remove_dir_all(&dir).ok();
         assert!(f.lines().any(|l| l.trim() == "Hi ▏Text."), "{f}");
+    }
+
+    #[test]
+    fn a_picture_is_recorded_and_the_status_line_covers_its_last_row() {
+        let png = concat!(env!("CARGO_MANIFEST_DIR"), "/../../leaf-gpui.png");
+        let (dir, path) = scratch(&format!("Top.\n\n![shot]({png})\n"));
+        let s = Session::new(path, 80, 12).unwrap();
+        let g = s.paint();
+        std::fs::remove_dir_all(&dir).ok();
+        let [p] = &g.pictures[..] else {
+            panic!("one picture: {:?}", g.pictures)
+        };
+        assert!(p.src.starts_with("file://"), "{p:?}");
+        // Taller than the screen: shown from its top down to the status
+        // line, the last row.
+        assert!(p.row + p.rows as i32 > 12, "{p:?}");
+        assert_eq!(p.shown, (p.row, 11), "{p:?}");
     }
 }

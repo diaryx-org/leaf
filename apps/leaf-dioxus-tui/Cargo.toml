@@ -35,7 +35,14 @@ dioxus-core = "=0.8.0-alpha.3"
 blitz-dom = { version = "=0.3.0-beta.4", default-features = false }
 blitz-traits = "=0.3.0-beta.4"
 parley = "=0.12.0"
+# The terminal: ratatui's cell buffer and its diff, on crossterm — the
+# versions leaf-tui uses, which ratatui-image 9 is built for.
 crossterm = "0.28"
+ratatui = "0.29"
+# Pictures, formulas and diagrams through kitty, iTerm2 or sixel, or
+# half-blocks; decoded and rasterised by leaf-raster, as leaf-tui does.
+ratatui-image = { version = "9", default-features = false, features = ["crossterm"] }
+leaf-raster = { path = "../../crates/leaf-raster" }
 raw-window-handle = "0.6"
 anyhow = "1"
 libc = "0.2"

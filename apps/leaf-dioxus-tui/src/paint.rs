@@ -64,6 +64,22 @@ pub struct Grid {
     pub cells: Vec<Cell>,
     /// Where the caret is, if it is on screen.
     pub cursor: Option<(u16, u16)>,
+    /// The pictures, formulas and diagrams, for `pictures.rs` to paint over
+    /// the frames drawn for them.
+    pub pictures: Vec<Picture>,
+}
+
+/// An `img`'s box in cells. Its whole box, which may run off the screen,
+/// and the rows of it in view, which a box drawn later may have covered.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picture {
+    pub src: String,
+    pub col: i32,
+    pub row: i32,
+    pub cols: u16,
+    pub rows: u16,
+    /// The rows in view, `top..bottom`; empty when none is.
+    pub shown: (i32, i32),
 }
 
 impl Grid {
@@ -73,6 +89,7 @@ impl Grid {
             rows,
             cells: vec![Cell::blank(fg, bg); cols as usize * rows as usize],
             cursor: None,
+            pictures: Vec::new(),
         }
     }
 
@@ -323,9 +340,17 @@ impl Painter<'_> {
             .is_element_with_tag_name(&blitz_dom::local_name!("img"))
         {
             let src = node.attr(blitz_dom::local_name!("src")).unwrap_or("");
-            let name = src.rsplit('/').next().unwrap_or(src);
+            // A file by its name; a formula or diagram (an SVG `data:` URL)
+            // by its alt text, if it has one.
+            let name = match src.strip_prefix("data:") {
+                Some(_) => node
+                    .attr(blitz_dom::local_name!("alt"))
+                    .unwrap_or("picture"),
+                None => src.rsplit('/').next().unwrap_or(src),
+            };
             let fg = rgb(&styles.clone_color()).0;
             self.frame(bbox, clip, fg, &format!("🖼 {name}"));
+            self.picture(src, bbox, clip);
         }
 
         let ov = styles.get_box();
@@ -385,6 +410,27 @@ impl Painter<'_> {
                 self.render(h.node_id, (base.0 + p.x, base.1 + p.y), inner_clip);
             }
         }
+    }
+
+    /// Record an `img` at `b`, drawn to cells as [`Self::frame`] does.
+    fn picture(&mut self, src: &str, b: Rect, clip: Rect) {
+        let m = self.m;
+        let col = (b.x0 / m.cw).round() as i32;
+        let row = (b.y0 / m.ch).round() as i32;
+        let cols = ((b.x1 / m.cw).round() as i32 - col).max(1);
+        let rows = ((b.y1 / m.ch).round() as i32 - row).max(1);
+        let top = row.max((clip.y0 / m.ch).round() as i32).max(0);
+        let bottom = (row + rows)
+            .min((clip.y1 / m.ch).round() as i32)
+            .min(self.grid.rows as i32);
+        self.grid.pictures.push(Picture {
+            src: src.to_string(),
+            col,
+            row,
+            cols: cols as u16,
+            rows: rows as u16,
+            shown: (top, bottom.max(top)),
+        });
     }
 
     /// A placeholder for what cells cannot show: a box drawn round `b`,
@@ -453,6 +499,21 @@ impl Painter<'_> {
         let c1 = (area.x1 / m.cw - 0.5).ceil() as i32;
         let r0 = (area.y0 / m.ch - 0.5).ceil() as i32;
         let r1 = (area.y1 / m.ch - 0.5).ceil() as i32;
+        // An opaque box across a picture's whole width covers the rows of
+        // it that it spans: the status line over a picture at the bottom.
+        if a > 0.5 && r0 < r1 {
+            for p in &mut self.grid.pictures {
+                if c0 > p.col || c1 < p.col + p.cols as i32 {
+                    continue;
+                }
+                let (top, bottom) = p.shown;
+                if r0 <= top && r1 > top {
+                    p.shown.0 = r1.min(bottom);
+                } else if r0 < bottom && r1 >= bottom {
+                    p.shown.1 = r0.max(top);
+                }
+            }
+        }
         for r in r0..r1 {
             for col in c0..c1 {
                 if a > 0.5 && self.grid.cursor == Some((col as u16, r as u16)) {
