@@ -11,7 +11,7 @@ use blitz_traits::events::{
 };
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, KeyCode,
-    KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::{cursor, execute, terminal};
 use dioxus::html::{Code, Key, Modifiers, NamedKey};
@@ -22,10 +22,28 @@ use ratatui::style::{Color, Modifier};
 use crate::paint::{Grid, Metrics};
 use crate::pictures::Pictures;
 
-/// Dark unless `LEAF_THEME=light` says otherwise; leaf-tui's OSC 11 query
-/// is the real answer, and is for later.
+thread_local! {
+    static DARK: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether the terminal is dark: `LEAF_THEME=light|dark` if set, else the
+/// answer [`ask_theme`] got, else dark — leaf-tui's order.
 pub fn dark() -> bool {
-    std::env::var("LEAF_THEME").map_or(true, |t| t != "light")
+    match std::env::var("LEAF_THEME").as_deref() {
+        Ok("light") => false,
+        Ok("dark") => true,
+        _ => DARK.get().unwrap_or(true),
+    }
+}
+
+/// Ask the terminal whether it is light or dark (an `OSC 11` query, with a
+/// timeout, which terminal-colorsaurus answers from the controlling tty
+/// without stealing a keystroke), before anything is drawn to its colours.
+pub fn ask_theme() {
+    if let Ok(palette) = terminal_colorsaurus::color_palette(Default::default()) {
+        let dark = palette.theme_mode() == terminal_colorsaurus::ThemeMode::Dark;
+        DARK.set(Some(dark));
+    }
 }
 
 pub struct Terminal {
@@ -62,6 +80,12 @@ impl Terminal {
             terminal::LeaveAlternateScreen
         )?;
         terminal::disable_raw_mode()?;
+        Ok(())
+    }
+
+    /// Forget what is on screen: the next draw writes every cell.
+    pub fn clear(&mut self) -> Result<()> {
+        self.term.clear()?;
         Ok(())
     }
 
@@ -105,15 +129,9 @@ fn rgb((r, g, b): (u8, u8, u8)) -> Color {
     Color::Rgb(r, g, b)
 }
 
-pub fn is_quit(k: &KeyEvent) -> bool {
-    k.kind != KeyEventKind::Release
-        && k.modifiers.contains(KeyModifiers::CONTROL)
-        && k.code == KeyCode::Char('q')
-}
-
 /// The editor's primary modifier: ⌘ on macOS, where a terminal hands over ⌃
 /// instead, and ⌃ everywhere else.
-const PRIMARY: Modifiers = if cfg!(target_os = "macos") {
+pub const PRIMARY: Modifiers = if cfg!(target_os = "macos") {
     Modifiers::META
 } else {
     Modifiers::CONTROL
@@ -129,6 +147,11 @@ pub fn key(k: &KeyEvent) -> Option<(Key, Code, Modifiers)> {
     mods.set(Modifiers::SHIFT, k.modifiers.contains(KeyModifiers::SHIFT));
     mods.set(Modifiers::ALT, k.modifiers.contains(KeyModifiers::ALT));
     mods.set(PRIMARY, k.modifiers.contains(KeyModifiers::CONTROL));
+    // ⌃K is the editor's own ⌃ chord on Apple (delete to the line's end),
+    // as in leaf-tui; ⌘K has nothing to lose to it.
+    if k.code == KeyCode::Char('k') && k.modifiers == KeyModifiers::CONTROL {
+        mods = Modifiers::CONTROL;
+    }
     if k.code == KeyCode::BackTab {
         mods.insert(Modifiers::SHIFT);
     }
@@ -161,6 +184,9 @@ pub fn key(k: &KeyEvent) -> Option<(Key, Code, Modifiers)> {
         KeyCode::End => named(NamedKey::End),
         KeyCode::PageUp => named(NamedKey::PageUp),
         KeyCode::PageDown => named(NamedKey::PageDown),
+        KeyCode::F(n) => Key::from_str(&format!("F{n}"))
+            .ok()
+            .map(|k| (k, Code::Unidentified, mods)),
         _ => None,
     }
 }
@@ -182,16 +208,34 @@ pub fn char_key(c: char) -> (Key, Code, Modifiers) {
     (Key::Character(c.to_string()), code, Modifiers::empty())
 }
 
-/// A left-button press, drag or release, as Blitz's pointer events in the
+/// A press, a drag, a release or a move, as Blitz's pointer events in the
 /// cell it fell in: in its left part, so a click on a character puts the
-/// caret before it, as a terminal's block cursor reads.
+/// caret before it, as a terminal's block cursor reads. A move with no
+/// button down is the hover a menu highlights its items by.
 pub fn pointer(doc: &mut DioxusDocument, m: Metrics, me: &MouseEvent) {
-    let x = (me.column as f32 + 0.3) * m.cw;
+    // The editor's text starts `PAD` in, which the painter rounds to a
+    // whole cell; a click is shifted the same way, so it lands on the
+    // character drawn under it.
+    let pad = leaf_dioxus::PAD as f32;
+    let shift = pad - (pad / m.cw).round() * m.cw;
+    let x = (me.column as f32 + 0.3) * m.cw + shift;
     let y = (me.row as f32 + 0.5) * m.ch;
     let scroll = doc.inner.borrow().viewport_scroll();
     let mut mods = Modifiers::empty();
     mods.set(Modifiers::SHIFT, me.modifiers.contains(KeyModifiers::SHIFT));
-    let held = !matches!(me.kind, MouseEventKind::Up(_));
+    let button = match me.kind {
+        MouseEventKind::Down(b) | MouseEventKind::Up(b) | MouseEventKind::Drag(b) => b,
+        _ => MouseButton::Left,
+    };
+    let (button, held) = match button {
+        MouseButton::Left => (MouseEventButton::Main, MouseEventButtons::Primary),
+        MouseButton::Right => (MouseEventButton::Secondary, MouseEventButtons::Secondary),
+        MouseButton::Middle => (MouseEventButton::Auxiliary, MouseEventButtons::Auxiliary),
+    };
+    let buttons = match me.kind {
+        MouseEventKind::Down(_) | MouseEventKind::Drag(_) => held,
+        _ => MouseEventButtons::None,
+    };
     let event = BlitzPointerEvent {
         id: BlitzPointerId::Mouse,
         is_primary: true,
@@ -203,12 +247,8 @@ pub fn pointer(doc: &mut DioxusDocument, m: Metrics, me: &MouseEvent) {
             client_x: x,
             client_y: y,
         },
-        button: MouseEventButton::Main,
-        buttons: if held {
-            MouseEventButtons::Primary
-        } else {
-            MouseEventButtons::None
-        },
+        button,
+        buttons,
         mods,
         details: Default::default(),
         element: Default::default(),

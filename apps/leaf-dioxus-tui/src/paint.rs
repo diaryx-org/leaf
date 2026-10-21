@@ -10,9 +10,11 @@
 //! rounds to. With a monospace face whose advance is [`Metrics::cw`], every
 //! glyph lands in a cell of its own.
 //!
-//! The one element read by name is the editor's caret, `.caret-in`, a
-//! zero-width box with a 2px border: drawn as cells it would be nothing or a
-//! whole column, so it becomes the terminal's own cursor instead.
+//! The elements read by name are the carets — the editor's `.caret-in`, a
+//! zero-width box with a 2px border, and unit's `.unit-caret` in a dialog's
+//! field, a 1px box: drawn as cells either would be nothing or a whole
+//! column, so each becomes the terminal's own cursor instead, the one
+//! painted last (a dialog's, over the editor) winning.
 
 use std::collections::HashMap;
 
@@ -313,10 +315,10 @@ impl Painter<'_> {
             y1: y + l.size.height,
         };
 
-        if node
-            .attr(blitz_dom::local_name!("class"))
-            .is_some_and(|c| c.split_ascii_whitespace().any(|c| c == "caret-in"))
-        {
+        if node.attr(blitz_dom::local_name!("class")).is_some_and(|c| {
+            c.split_ascii_whitespace()
+                .any(|c| c == "caret-in" || c == "unit-caret")
+        }) {
             let (cx, cy) = (x, y + l.size.height / 2.0);
             if clip.contains(cx, cy) {
                 let (c, r) = match self.inline_cells.get(&id) {
@@ -334,7 +336,6 @@ impl Painter<'_> {
         }
 
         self.background(styles, bbox.intersect(clip));
-        self.borders(styles, bbox, l, clip);
         if node
             .data
             .is_element_with_tag_name(&blitz_dom::local_name!("img"))
@@ -409,6 +410,13 @@ impl Painter<'_> {
                 let p = h.position(node.tree(), id);
                 self.render(h.node_id, (base.0 + p.x, base.1 + p.y), inner_clip);
             }
+        }
+        // The border last, over the children: in pixels a child stays inside
+        // its parent's border, but rounded to cells a child's background can
+        // reach the border's cells — a menu's highlighted item would rub out
+        // the menu's sides.
+        if l.border.left + l.border.right + l.border.top + l.border.bottom > 0.0 {
+            self.borders(styles, bbox, l, clip);
         }
     }
 
@@ -490,6 +498,24 @@ impl Painter<'_> {
         if a < 0.05 {
             return;
         }
+        // A box too thin to cover a cell's centre but a cell wide — a menu's
+        // separator, a rule — is a line through the row it sits in, drawn
+        // only over cells nothing else is drawn in.
+        let m = self.m;
+        if area.y1 - area.y0 < m.ch / 2.0 && area.x1 - area.x0 >= m.cw {
+            let r = ((area.y0 + area.y1) / 2.0 / m.ch).floor() as i32;
+            let c0 = (area.x0 / m.cw).round() as i32;
+            let c1 = (area.x1 / m.cw).round() as i32;
+            for col in c0..c1 {
+                if let Some(cell) = self.grid.at(col, r)
+                    && cell.text == " "
+                {
+                    cell.text = "─".into();
+                    cell.fg = blend(c, a, cell.bg);
+                }
+            }
+            return;
+        }
         self.fill(area, c, a);
     }
 
@@ -558,41 +584,61 @@ impl Painter<'_> {
                 cell.fg = blend(fg, a, cell.bg);
             }
         };
-        // A horizontal border gets a row only when the box is tall enough to
-        // give it one: a table cell a line high keeps its text, not a rule
-        // drawn through it.
-        let content_top = row_of(b.y0 + l.border.top + l.padding.top + 0.01);
-        let content_bottom = row_of((b.y1 - l.border.bottom - l.padding.bottom - 0.01).max(b.y0));
-        if let Some(fg) = side(l.border.top, bs.border_top_style, &bs.border_top_color)
-            .filter(|_| r0 < content_top)
-        {
-            for c in c0..=c1 {
-                put(self.grid, c, r0, "─", fg);
-            }
-        }
-        if let Some(fg) = side(
+        // A horizontal side gets its row only when nothing is written in it
+        // between the sides: a table cell a line high, or a button, keeps
+        // its text rather than a rule drawn through it.
+        let free = |g: &Grid, r: i32| {
+            r0 < r1
+                && (c0 + 1..c1).all(|c| {
+                    c < 0 || r < 0 || c >= g.cols as i32 || r >= g.rows as i32 || {
+                        let t = &g.get(c as u16, r as u16).text;
+                        t == " " || t == "─"
+                    }
+                })
+        };
+        // And only in a row the box owns: its top edge in the row's upper
+        // half, its bottom edge in the lower. A table cell's bottom border
+        // a few pixels into the next row's text is not that row's.
+        let frac = |y: f32| y / m.ch - (y / m.ch).floor();
+        let top_free = free(self.grid, r0) && frac(b.y0) < 0.5;
+        let bottom_free = free(self.grid, r1) && frac((b.y1 - 0.01).max(b.y0)) >= 0.5;
+        let top =
+            side(l.border.top, bs.border_top_style, &bs.border_top_color).filter(|_| top_free);
+        let bottom = side(
             l.border.bottom,
             bs.border_bottom_style,
             &bs.border_bottom_color,
         )
-        .filter(|_| r1 > content_bottom)
-        {
-            for c in c0..=c1 {
-                put(self.grid, c, r1, "─", fg);
-            }
-        }
-        if let Some(fg) = side(l.border.left, bs.border_left_style, &bs.border_left_color) {
-            for r in r0..=r1 {
-                put(self.grid, c0, r, "│", fg);
-            }
-        }
-        if let Some(fg) = side(
+        .filter(|_| bottom_free);
+        let left = side(l.border.left, bs.border_left_style, &bs.border_left_color);
+        let right = side(
             l.border.right,
             bs.border_right_style,
             &bs.border_right_color,
-        ) {
-            for r in r0..=r1 {
-                put(self.grid, c1, r, "│", fg);
+        );
+        for (fg, r) in [(top, r0), (bottom, r1)] {
+            if let Some(fg) = fg {
+                for c in c0..=c1 {
+                    put(self.grid, c, r, "─", fg);
+                }
+            }
+        }
+        for (fg, c) in [(left, c0), (right, c1)] {
+            if let Some(fg) = fg {
+                for r in r0..=r1 {
+                    put(self.grid, c, r, "│", fg);
+                }
+            }
+        }
+        // Where two drawn sides meet, a corner.
+        for (h, v, c, r, ch) in [
+            (top, left, c0, r0, "┌"),
+            (top, right, c1, r0, "┐"),
+            (bottom, left, c0, r1, "└"),
+            (bottom, right, c1, r1, "┘"),
+        ] {
+            if let (Some(fg), Some(_)) = (h, v) {
+                put(self.grid, c, r, ch, fg);
             }
         }
     }

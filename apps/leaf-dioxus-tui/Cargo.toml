@@ -43,6 +43,11 @@ ratatui = "0.29"
 # half-blocks; decoded and rasterised by leaf-raster, as leaf-tui does.
 ratatui-image = { version = "9", default-features = false, features = ["crossterm"] }
 leaf-raster = { path = "../../crates/leaf-raster" }
+# The menus and dialogs round the editor, as the Mac app draws them. On its
+# `dioxus-tui` branch, which adds the cell density, until that merges.
+# "Is this terminal dark or light?", asked as leaf-tui asks it.
+terminal-colorsaurus = "1"
+unit = { git = "https://github.com/diaryx-org/unit", branch = "dioxus-tui" }
 raw-window-handle = "0.6"
 anyhow = "1"
 libc = "0.2"

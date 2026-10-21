@@ -11,9 +11,17 @@
 //! parley layout — wrapping, caret motion, hit-testing — counts in cells
 //! without knowing it.
 //!
-//! ⌃Q quits. On macOS the editor's ⌘ shortcuts are ⌃ here (a terminal never
-//! sees ⌘), so ⌃S saves, ⌃B is bold, ⌃Z undoes.
+//! Round the editor is unit's root, in its cell density: the context menu,
+//! the command menu and the dialogs are unit's (`chrome.rs`), as the Mac
+//! app's are, and every key reaches unit before the editor.
+//!
+//! ⌃Q quits; ⌃P or F10 opens the command menu. On macOS the editor's ⌘
+//! shortcuts are ⌃ here (a terminal never sees ⌘), so ⌃S saves, ⌃B is bold,
+//! ⌃Z undoes.
 
+mod chrome;
+mod commands;
+mod files;
 mod paint;
 mod pictures;
 mod term;
@@ -29,15 +37,17 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use blitz_dom::DocumentConfig;
 use blitz_traits::shell::{ColorScheme, Viewport};
-use crossterm::event::{self, Event, MouseButton, MouseEventKind};
+use crossterm::event::{self, Event, MouseEventKind};
 use dioxus::prelude::*;
 use dioxus_core::{ScopeId, VirtualDom};
 use dioxus_native::DioxusDocument;
 use dioxus_native::winit::window::Window;
 use leaf_core::Doc;
-use leaf_dioxus::{
-    Appearance, Editor, Host, Look, Request, Status, Type, trace, use_shared_editor,
-};
+use leaf_dioxus::{Appearance, Editor, Host, Look, Status, Type, trace, use_shared_editor};
+use unit::{Density, Keys, Theme, UnitRoot, use_unit};
+
+use crate::chrome::{Pending, TermHost};
+use crate::commands::Command;
 
 use crate::paint::Metrics;
 use crate::window::TermWindow;
@@ -51,25 +61,42 @@ const SIZE: f32 = 16.0;
 const LEADING: f32 = 1.5;
 
 /// Pixel chrome the editor sizes for a window, recut to whole cells.
+///
+/// And each visual line's box reaches into the column's right padding. The
+/// editor breaks the lines itself and hangs a trailing space past the
+/// column, as parley does; Blitz, though, broke a quote's line between its
+/// bar (an inline box) and its text when the space did not fit, `white-space:
+/// pre` notwithstanding — a line of the column's exact width, which cells
+/// make common, came out as two rows. The room keeps it one.
 const TERM_CSS: &str = "
 .status { font: 16px Menlo, monospace; border-top: 0; }
 .find { font: 16px Menlo, monospace; }
+.leaf .line { margin-right: -16px; }
 ";
 
-thread_local! {
-    static EDITOR: RefCell<Option<Editor>> = const { RefCell::new(None) };
-    static DOC: RefCell<Option<Rc<RefCell<Doc>>>> = const { RefCell::new(None) };
+/// What the command line asked for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Options {
+    read_only: bool,
+    /// The column's width in characters; `None` fills the terminal.
+    measure: Option<f32>,
 }
 
-struct TermHost;
-
-impl Host for TermHost {
-    fn request(&self, ed: &Editor, request: Request) {
-        if let Request::Save = request {
-            ed.doc().save();
-            ed.refresh();
+impl Default for Options {
+    /// leaf-tui's: an 80-character column, editable.
+    fn default() -> Self {
+        Self {
+            read_only: false,
+            measure: Some(80.0),
         }
     }
+}
+
+thread_local! {
+    static OPTIONS: std::cell::Cell<Options> = std::cell::Cell::new(Options::default());
+    static QUIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static EDITOR: RefCell<Option<Editor>> = const { RefCell::new(None) };
+    static DOC: RefCell<Option<Rc<RefCell<Doc>>>> = const { RefCell::new(None) };
 }
 
 #[allow(non_snake_case)]
@@ -84,8 +111,9 @@ fn App() -> Element {
                 mono: FACE.into(),
                 size: SIZE,
                 leading: LEADING,
+                uniform: true,
             },
-            measure: None,
+            measure: OPTIONS.get().measure,
             appearance: if dark {
                 Appearance::Dark
             } else {
@@ -99,10 +127,34 @@ fn App() -> Element {
         let ed = ed.clone();
         move || EDITOR.with_borrow_mut(|e| *e = Some(ed))
     });
+    // unit in the editor's face, its page background left to the editor's.
+    let mut theme = Theme {
+        font: FACE,
+        heading_font: FACE,
+        ..Theme::default()
+    };
+    theme.light.bg = "transparent";
+    theme.dark.bg = "transparent";
+    let appearance = if dark {
+        unit::Appearance::Dark
+    } else {
+        unit::Appearance::Light
+    };
     rsx! {
-        {ed.render()}
-        style { {TERM_CSS} }
+        UnitRoot { keys: Keys::Host, density: Density::Cell, appearance, theme,
+            KeepUnit {}
+            {ed.render()}
+            style { {TERM_CSS} }
+        }
     }
+}
+
+/// Hands the page's unit to the chrome, which gives it every key first.
+#[allow(non_snake_case)]
+fn KeepUnit() -> Element {
+    let unit = use_unit();
+    use_hook(|| chrome::set_unit(unit));
+    rsx! {}
 }
 
 /// One cell's size: the face's advance, and the line box.
@@ -127,6 +179,7 @@ fn metrics() -> Metrics {
 struct Session {
     doc: DioxusDocument,
     window: Arc<TermWindow>,
+    watch: RefCell<files::Watch>,
     m: Metrics,
     cols: u16,
     rows: u16,
@@ -135,8 +188,13 @@ struct Session {
 impl Session {
     fn new(path: PathBuf, cols: u16, rows: u16) -> Result<Self> {
         enter_runtime();
-        let source = Doc::open_or_create(path.clone())
+        let mut source = Doc::open_or_create(path.clone())
             .with_context(|| format!("opening {}", path.display()))?;
+        if OPTIONS.get().read_only {
+            source.set_read_only(true);
+            source.status = Some("read-only".into());
+        }
+        let watch = RefCell::new(files::Watch::new(&source));
         DOC.with_borrow_mut(|d| *d = Some(Rc::new(RefCell::new(source))));
         let m = metrics();
         let (w, h) = px(m, cols, rows);
@@ -147,9 +205,14 @@ impl Session {
             .in_scope(ScopeId::ROOT, move || provide_context(as_dyn));
         doc.inner.borrow_mut().set_viewport(viewport(w, h));
         doc.initial_build();
+        if let Some(unit) = chrome::unit() {
+            doc.vdom
+                .in_scope(ScopeId::ROOT, || unit.set_viewport(w as f64, h as f64));
+        }
         let mut s = Self {
             doc,
             window,
+            watch,
             m,
             cols,
             rows,
@@ -158,16 +221,21 @@ impl Session {
         Ok(s)
     }
 
-    /// Poll the virtual DOM and lay the page out until it holds still.
-    fn settle(&mut self) {
+    /// Poll the virtual DOM and lay the page out until it holds still:
+    /// whether anything changed — a timer's work, such as the word count,
+    /// changes the page with no input to show for it.
+    fn settle(&mut self) -> bool {
+        let mut any = false;
         for _ in 0..3 {
             let changed =
                 blitz_dom::Document::poll(&mut self.doc, Some(Context::from_waker(Waker::noop())));
             self.doc.inner.borrow_mut().resolve(0.0);
+            any |= changed;
             if !changed {
                 break;
             }
         }
+        any
     }
 
     fn with_editor(&self, f: impl FnOnce(&Editor)) {
@@ -184,6 +252,149 @@ impl Session {
         self.window.resize(w, h);
         self.doc.inner.borrow_mut().set_viewport(viewport(w, h));
         self.with_editor(|ed| ed.resize(w, h));
+        self.with_unit(|u| u.set_viewport(w as f64, h as f64));
+    }
+
+    fn with_unit<T>(&self, f: impl FnOnce(&unit::Unit) -> T) -> Option<T> {
+        let unit = chrome::unit()?;
+        Some(self.doc.vdom.in_scope(ScopeId::ROOT, || f(&unit)))
+    }
+
+    /// A key, to unit first — an open menu or dialog takes it, and a dialog's
+    /// field takes typed text — then the command menu and Quit, then the
+    /// editor.
+    fn key(&self, key: dioxus::html::Key, code: dioxus::html::Code, mods: dioxus::html::Modifiers) {
+        use dioxus::html::{Key, Modifiers, NamedKey};
+        let typed = match &key {
+            Key::Character(t) if !mods.intersects(Modifiers::META | Modifiers::CONTROL) => {
+                Some(t.clone())
+            }
+            _ => None,
+        };
+        trace(|| format!("host key {key:?} {code:?} {mods:?}"));
+        let taken = self
+            .with_unit(|u| match &typed {
+                Some(t) if u.is_open() => u.text(t),
+                _ => u.key(&key, mods),
+            })
+            .unwrap_or(false);
+        if taken {
+            return;
+        }
+        let primary = mods.contains(term::PRIMARY);
+        let letter = |c: &str| matches!(&key, Key::Character(k) if k.eq_ignore_ascii_case(c));
+        if matches!(key, Key::Named(NamedKey::F10)) || (primary && letter("p")) {
+            self.with_unit(chrome::command_menu);
+        } else if primary && letter("q") {
+            self.run_pending(Pending::Command(Command::Quit));
+        } else {
+            self.with_editor(|ed| ed.key(key, code, mods));
+        }
+    }
+
+    /// Carry out a choice; `true` to quit.
+    fn run_pending(&self, p: Pending) -> bool {
+        let mut quit = false;
+        match p {
+            Pending::Command(Command::Chord(k, c, m)) => self.with_editor(|ed| ed.key(k, c, m)),
+            Pending::Command(Command::Link) => {
+                let current = editor()
+                    .and_then(|ed| ed.doc().link_destination_at_caret())
+                    .unwrap_or_default();
+                self.with_unit(|u| chrome::prompt_link(u, current));
+            }
+            Pending::Command(Command::Quit) => {
+                let (dirty, name) = editor()
+                    .map(|ed| {
+                        let d = ed.doc();
+                        (d.dirty, d.file_name())
+                    })
+                    .unwrap_or((false, String::new()));
+                if dirty {
+                    self.with_unit(|u| chrome::confirm_quit(u, &name));
+                } else {
+                    quit = true;
+                }
+            }
+            Pending::FollowFootnote => self.with_editor(|ed| {
+                ed.follow_footnote();
+            }),
+            Pending::OpenLink => self.with_editor(|ed| {
+                ed.open_link();
+            }),
+            Pending::CopyLink => self.with_editor(|ed| ed.copy_link()),
+            Pending::InsertLink(dest) => self.with_editor(|ed| {
+                ed.doc().insert_link(&dest);
+                ed.refresh();
+            }),
+            Pending::Save => {
+                self.save();
+            }
+            Pending::Command(Command::SaveAs) => {
+                let current = editor().map(|ed| ed.doc().path.display().to_string());
+                self.with_unit(|u| files::prompt_save_as(u, current.unwrap_or_default()));
+            }
+            Pending::SaveTo(path) => self.with_editor(|ed| {
+                ed.doc().save_as(path);
+                self.watch.borrow_mut().saw_save(&ed.doc());
+                ed.refresh();
+            }),
+            Pending::Overwrite => self.with_editor(|ed| {
+                ed.doc().save();
+                self.watch.borrow_mut().saw_save(&ed.doc());
+                ed.refresh();
+            }),
+            Pending::Reload => self.with_editor(|ed| {
+                ed.doc().reload();
+                self.watch.borrow_mut().saw_save(&ed.doc());
+                ed.refresh();
+            }),
+            // Quit only once the save has gone through without a question;
+            // one that asks (where to, or whether to overwrite) stays.
+            Pending::SaveAndQuit => {
+                quit = self.save() && !editor().is_some_and(|ed| ed.doc().dirty)
+            }
+            Pending::QuitNow => quit = true,
+        }
+        if quit {
+            QUIT.set(true);
+        }
+        quit
+    }
+
+    /// Save, or ask what the save needs first: whether it wrote.
+    fn save(&self) -> bool {
+        let Some(ed) = editor() else { return false };
+        let plan = files::plan(&ed.doc());
+        match plan {
+            files::Save::Write => {
+                self.with_editor(|ed| {
+                    ed.doc().save();
+                    self.watch.borrow_mut().saw_save(&ed.doc());
+                    ed.refresh();
+                });
+                return true;
+            }
+            files::Save::AskWhere => {
+                self.with_unit(|u| files::prompt_save_as(u, String::new()));
+            }
+            files::Save::AskOverwrite => {
+                let name = ed.doc().file_name();
+                self.with_unit(|u| files::confirm_overwrite(u, &name));
+            }
+            files::Save::ReadOnly => self.with_editor(|ed| {
+                ed.doc().status = Some("read-only".into());
+                ed.refresh();
+            }),
+        }
+        false
+    }
+
+    /// One look at the file, when it is time: whether the page changed.
+    fn tick_watch(&self) -> bool {
+        let mut changed = false;
+        self.with_editor(|ed| changed = self.watch.borrow_mut().tick(ed));
+        changed
     }
 
     fn paint(&self) -> paint::Grid {
@@ -212,6 +423,10 @@ fn enter_runtime() {
     ENTERED.set(true);
 }
 
+fn editor() -> Option<Editor> {
+    EDITOR.with_borrow(|e| e.clone())
+}
+
 fn px(m: Metrics, cols: u16, rows: u16) -> (u32, u32) {
     (
         (cols as f32 * m.cw).round() as u32,
@@ -230,6 +445,28 @@ fn viewport(w: u32, h: u32) -> Viewport {
 
 fn main() -> Result<()> {
     let mut args: Vec<_> = std::env::args_os().skip(1).collect();
+    // leaf-tui's flags: `-r` reads only, `-w N` sets the column to N
+    // characters (0 fills the terminal).
+    let mut opts = Options::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].to_str() {
+            Some("-r" | "--read-only") => {
+                opts.read_only = true;
+                args.remove(i);
+            }
+            Some("-w" | "--width") if i + 1 < args.len() => {
+                let n: f32 = args[i + 1]
+                    .to_str()
+                    .and_then(|n| n.parse().ok())
+                    .context("-w takes a number of characters")?;
+                opts.measure = (n > 0.0).then_some(n);
+                args.drain(i..i + 2);
+            }
+            _ => i += 1,
+        }
+    }
+    OPTIONS.set(opts);
     // `--dump`: one frame, 80 × 24, printed as text — what a test or a
     // reader without a terminal to hand can look at. `--dump-html`: the same
     // frame as a `<pre>`, in its colours.
@@ -243,7 +480,7 @@ fn main() -> Result<()> {
     let path = args
         .first()
         .map(PathBuf::from)
-        .context("usage: leaf-dtui [--dump | --dump-html] <file>")?;
+        .context("usage: leaf-dtui [--dump | --dump-html] [-r] [-w N] <file>")?;
 
     if dump {
         let mut s = Session::new(path, 80, 24)?;
@@ -264,6 +501,7 @@ fn main() -> Result<()> {
     }
     // Anything written to stderr would land on the screen among the cells.
     quiet_stderr();
+    term::ask_theme();
     let (cols, rows) = crossterm::terminal::size()?;
     let mut s = Session::new(path, cols, rows)?;
     let mut out = term::Terminal::enter()?;
@@ -294,16 +532,20 @@ fn run(s: &mut Session, out: &mut term::Terminal) -> Result<()> {
         if event::poll(Duration::from_millis(50))? {
             while {
                 match event::read()? {
-                    Event::Key(k) if term::is_quit(&k) => return Ok(()),
                     Event::Key(k) => {
                         if let Some((key, code, mods)) = term::key(&k) {
-                            s.with_editor(|ed| ed.key(key, code, mods));
+                            s.key(key, code, mods);
                         }
                     }
                     Event::Paste(text) => {
-                        for c in text.chars() {
-                            let (key, code, mods) = term::char_key(c);
-                            s.with_editor(|ed| ed.key(key, code, mods));
+                        if !s
+                            .with_unit(|u| u.is_open() && u.text(&text))
+                            .unwrap_or(false)
+                        {
+                            for c in text.chars() {
+                                let (key, code, mods) = term::char_key(c);
+                                s.with_editor(|ed| ed.key(key, code, mods));
+                            }
                         }
                     }
                     Event::Mouse(me) => match me.kind {
@@ -313,22 +555,53 @@ fn run(s: &mut Session, out: &mut term::Terminal) -> Result<()> {
                         MouseEventKind::ScrollUp => {
                             s.with_editor(|ed| ed.scroll(3.0 * s.m.ch as f64))
                         }
-                        MouseEventKind::Down(MouseButton::Left)
-                        | MouseEventKind::Up(MouseButton::Left)
-                        | MouseEventKind::Drag(MouseButton::Left) => {
+                        _ => {
+                            if let MouseEventKind::Down(_) = me.kind {
+                                chrome::set_pointer((
+                                    me.column as f64 * s.m.cw as f64,
+                                    me.row as f64 * s.m.ch as f64,
+                                ));
+                            }
                             term::pointer(&mut s.doc, s.m, &me);
                         }
-                        _ => {}
                     },
-                    Event::Resize(c, r) => s.resize(c, r),
+                    // Asked below, every turn.
+                    Event::Resize(..) => {}
                     _ => {}
                 }
                 event::poll(Duration::ZERO)?
             } {}
             acted = true;
         }
+        // The terminal's size, asked each turn rather than trusted to its
+        // resize events: one that arrives while the start-up queries read
+        // stdin is lost, and a window that grows just after it opens (a new
+        // terminal window settling) would keep the old frame.
+        let (c, r) = crossterm::terminal::size()?;
+        if (c, r) != (s.cols, s.rows) {
+            s.resize(c, r);
+            out.clear()?;
+            acted = true;
+        }
+        if s.tick_watch() {
+            acted = true;
+        }
         let t0 = std::time::Instant::now();
-        s.settle();
+        if s.settle() {
+            acted = true;
+        }
+        // What the menus and dialogs chose, now the events are over.
+        let chosen = chrome::take();
+        if !chosen.is_empty() {
+            for p in chosen {
+                s.run_pending(p);
+            }
+            s.settle();
+            acted = true;
+        }
+        if QUIT.get() {
+            return Ok(());
+        }
         if acted || s.window.take_dirty() {
             let t1 = std::time::Instant::now();
             let next = s.paint();
@@ -428,5 +701,66 @@ mod tests {
         // line, the last row.
         assert!(p.row + p.rows as i32 > 12, "{p:?}");
         assert_eq!(p.shown, (p.row, 11), "{p:?}");
+    }
+
+    #[test]
+    fn the_command_menu_opens_over_the_page() {
+        let (dir, path) = scratch("Text.\n");
+        let mut s = Session::new(path, 80, 24).unwrap();
+        let (key, code, _) = term::char_key('p');
+        s.key(key, code, term::PRIMARY);
+        s.settle();
+        let open = s.with_unit(|u| u.is_open()).unwrap();
+        let f = s.paint().text();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(open, "the menu opened");
+        assert!(f.contains("File") && f.contains("Paragraph"), "{f}");
+    }
+
+    #[test]
+    fn quitting_with_unsaved_changes_asks_and_the_keys_answer() {
+        use dioxus::html::{Code, Key, Modifiers, NamedKey};
+        let (dir, path) = scratch("Text.\n");
+        let mut s = Session::new(path, 80, 24).unwrap();
+        let (key, code, mods) = term::char_key('x');
+        s.key(key, code, mods);
+        s.settle();
+        let (key, code, _) = term::char_key('q');
+        s.key(key, code, term::PRIMARY);
+        s.settle();
+        assert!(s.with_unit(|u| u.is_open()).unwrap(), "the sheet is open");
+        assert!(s.paint().text().contains("Save the changes to doc.md?"));
+        let down = || {
+            (
+                Key::Named(NamedKey::ArrowDown),
+                Code::ArrowDown,
+                Modifiers::empty(),
+            )
+        };
+        for (k, c, m) in [down(), down()] {
+            s.key(k, c, m);
+        }
+        s.key(Key::Named(NamedKey::Enter), Code::Enter, Modifiers::empty());
+        s.settle();
+        let chosen = chrome::take();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(chosen, vec![Pending::QuitNow]);
+    }
+
+    #[test]
+    fn a_clean_document_takes_an_outside_write_once_it_stands_still() {
+        let (dir, path) = scratch("First.\n");
+        let mut s = Session::new(path.clone(), 80, 24).unwrap();
+        std::fs::write(&path, "First.\n\nWritten outside.\n").unwrap();
+        // The look that notices waits; the next takes it.
+        for _ in 0..2 {
+            std::thread::sleep(files::POLL + Duration::from_millis(50));
+            s.tick_watch();
+        }
+        s.settle();
+        let f = s.paint().text();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(f.contains("Written outside."), "{f}");
+        assert!(f.contains("reloaded from disk"), "{f}");
     }
 }
