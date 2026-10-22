@@ -62,6 +62,9 @@ impl Doc {
         if self.view != View::Source && self.backspace_verse() {
             return;
         }
+        if self.view != View::Source && self.backspace_html_empty_paragraph() {
+            return;
+        }
         if self.view != View::Source && self.backspace_joins_block() {
             return;
         }
@@ -351,6 +354,58 @@ impl Doc {
                 true
             }
         }
+    }
+
+    /// Backspace in an HTML document in an empty `<p></p>`, or at the start of
+    /// a block under one: the empty paragraph goes whole, with the whitespace
+    /// that parts it from its neighbour, which is the inverse of the Enter
+    /// that opened it (`html_newline`). twig's join reads the two as
+    /// paragraphs of text and joins them on a newline, and that newline stayed
+    /// in the element: a space in HTML, and a line in Preserve flow.
+    ///
+    /// Returns whether it acted.
+    fn backspace_html_empty_paragraph(&mut self) -> bool {
+        if self.format != Format::Html {
+            return false;
+        }
+        let caret = self.caret;
+        let blocks: Vec<FlatNode> = self
+            .nodes()
+            .into_iter()
+            .filter(|n| matches!(n.kind, Kind::Para | Kind::Heading))
+            .collect();
+        let content = |n: &FlatNode| n.content_span.clone().unwrap_or_else(|| n.span.clone());
+        let Some(here) = blocks.iter().find(|n| content(n).start == caret) else {
+            return false;
+        };
+        let Some(above) = blocks
+            .iter()
+            .filter(|n| n.span.end <= here.span.start)
+            .max_by_key(|n| n.span.end)
+        else {
+            return false;
+        };
+        if !self.source[above.span.end..here.span.start]
+            .trim()
+            .is_empty()
+        {
+            return false;
+        }
+        let empty =
+            |n: &FlatNode| n.kind == Kind::Para && self.source[content(n)].trim().is_empty();
+        let (range, land) = if empty(here) {
+            (above.span.end..here.span.end, content(above).end)
+        } else if empty(above) {
+            let range = above.span.start..here.span.start;
+            (range.clone(), caret - range.len())
+        } else {
+            return false;
+        };
+        if self.splice(range.start, range.end, "", EditKind::Delete) {
+            self.caret = land.min(self.source.len());
+            self.record_caret();
+        }
+        true
     }
 
     /// Delete at the end of a block's content: join the block after it into

@@ -829,9 +829,28 @@ impl Builder<'_> {
                     let pres = self.presentation.under(&node.attrs, &self.faces);
                     let glyphs =
                         self.inline_children_with_trailing(id, pres.over(Style::default()));
-                    if !glyphs.is_empty() {
+                    // An empty `<p></p>` is an empty paragraph on the page,
+                    // and the one HTML's Enter opens: one glyphless row, its
+                    // home between the tags, as an empty heading's is past
+                    // its `#`. A paragraph is that shape when markup opens
+                    // and closes it around no content. Elsewhere a block
+                    // with nothing to draw draws no row.
+                    let home = if !glyphs.is_empty() {
+                        Some(node.span.start)
+                    } else {
+                        node.content_span
+                            .as_ref()
+                            .filter(|c| {
+                                node.kind == Kind::Para
+                                    && c.is_empty()
+                                    && node.span.start < c.start
+                                    && c.end < node.span.end
+                            })
+                            .map(|c| c.start)
+                    };
+                    if let Some(home) = home {
                         let first = self.rows.len();
-                        self.emit_wrapped(glyphs, node.span.start, pf, pc);
+                        self.emit_wrapped(glyphs, home, pf, pc);
                         for row in &mut self.rows[first..] {
                             row.align = pres.align;
                             row.line_height = pres.line_height;

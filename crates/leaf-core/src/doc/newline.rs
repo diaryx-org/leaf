@@ -83,6 +83,23 @@ impl Doc {
             self.verse_newline();
             return;
         }
+        // HTML keeps neither a blank line nor a newline in running text, so
+        // the whitespace the branches below write is whitespace its page does
+        // not have. In prose Enter writes elements instead; a list, a quote
+        // and a table keep the branches below. See `html_newline`.
+        if self.format == Format::Html
+            && ![
+                Kind::ListItem,
+                Kind::TaskListItem,
+                Kind::BlockQuote,
+                Kind::Table,
+            ]
+            .into_iter()
+            .any(has)
+        {
+            self.html_newline();
+            return;
+        }
         // An *empty* list item exits the list — the standard double-Enter — which
         // `split_block` reports as an error rather than a split (there is no
         // content to part), so it stays leaf's. `list_marker_on_line` is itself
@@ -171,6 +188,157 @@ impl Doc {
             return;
         }
         self.split_block_here();
+    }
+
+    /// Enter in an HTML document's prose, which writes elements where
+    /// Markdown writes whitespace.
+    ///
+    ///   - at the end of a paragraph or heading, or in an empty one → an
+    ///     empty `<p></p>` after it, the caret inside
+    ///   - at the start of one → an empty `<p></p>` before it, the caret
+    ///     staying with the text
+    ///   - between two blocks, on the whitespace that separates them → an
+    ///     empty `<p></p>` there
+    ///   - inside a paragraph in [`LineFlow::Preserve`] → a `<br>`, the soft
+    ///     line that flow's Enter makes
+    ///   - inside one otherwise → two elements, parted at the caret
+    ///     ([`split_html_block`](Self::split_html_block))
+    ///
+    /// At a paragraph's end Preserve flow opens a paragraph too: a `<br>`
+    /// with nothing after it in its block draws no line in a browser.
+    ///
+    /// The paragraph break Markdown writes at a block's edge went inside the
+    /// element, `<p>I cry\n\n</p>`, which the view drew as an empty paragraph
+    /// and a browser does not draw at all; Preserve flow's lone `\n` drew
+    /// nothing anywhere.
+    fn html_newline(&mut self) {
+        let caret = self.caret.min(self.source.len());
+        let block = self.editor.nodes().ok().and_then(|nodes| {
+            nodes
+                .iter()
+                .filter(|n| matches!(n.kind, Kind::Para | Kind::Heading))
+                .filter(|n| {
+                    let content = n.content_span.clone().unwrap_or_else(|| n.span.clone());
+                    content.start <= caret && caret <= content.end
+                })
+                .min_by_key(|n| n.span.len())
+                .cloned()
+        });
+        let Some(block) = block else {
+            let at_line_start = caret == 0 || self.source.as_bytes()[caret - 1] == b'\n';
+            let (text, inside) = if at_line_start {
+                ("<p></p>\n", "<p>".len())
+            } else {
+                ("\n<p></p>", "\n<p>".len())
+            };
+            self.open_html_paragraph(caret, text, caret + inside);
+            return;
+        };
+        let drawn: Vec<Range<usize>> = self
+            .editor
+            .subtree(block.id)
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter(|n| {
+                        matches!(n.kind, Kind::Image | Kind::HardBreak)
+                            || n.text.as_deref().is_some_and(|t| !t.trim().is_empty())
+                    })
+                    .map(|n| n.span.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let before = drawn.iter().any(|s| s.start < caret);
+        let after = drawn.iter().any(|s| s.end > caret);
+        if !after {
+            let at = block.span.end;
+            self.open_html_paragraph(at, "\n<p></p>", at + "\n<p>".len());
+        } else if !before {
+            let text = "<p></p>\n";
+            self.open_html_paragraph(block.span.start, text, caret + text.len());
+        } else if self.line_flow == LineFlow::Preserve && block.kind == Kind::Para {
+            self.splice(caret, caret, "<br>", EditKind::Other);
+        } else {
+            self.split_html_block(&block);
+        }
+    }
+
+    /// Part the HTML paragraph or heading `block` at the caret, which has text
+    /// on both sides of it: each element open there is closed and opened
+    /// again, so `<p>a <b>bo|ld</b></p>` becomes `<p>a <b>bo</b></p>` over
+    /// `<p><b>ld</b></p>`, each paragraph keeping the tag it was written
+    /// with. A heading's second half is a paragraph, as in every format.
+    ///
+    /// twig's split wrote a Markdown paragraph break, `\n\n`, inside the
+    /// element, which HTML reads as one space.
+    fn split_html_block(&mut self, block: &FlatNode) {
+        let caret = self.caret.min(self.source.len());
+        let Some(content) = block.content_span.clone() else {
+            return;
+        };
+        // The inline elements around the caret, outermost first. At one's
+        // edge the caret is outside it, and the split goes outside it too.
+        let mut inline: Vec<FlatNode> = self
+            .editor
+            .subtree(block.id)
+            .map(|nodes| {
+                nodes
+                    .into_iter()
+                    .filter(|n| n.span != block.span)
+                    .filter(|n| {
+                        n.content_span
+                            .as_ref()
+                            .is_some_and(|c| c.start <= caret && caret <= c.end && *c != n.span)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        inline.sort_by_key(|n| (n.span.start, std::cmp::Reverse(n.span.end)));
+        let mut at = caret;
+        let mut open = Vec::new();
+        for n in inline {
+            let c = n.content_span.clone().unwrap_or_else(|| n.span.clone());
+            if caret == c.start {
+                at = n.span.start;
+                break;
+            }
+            if caret == c.end {
+                at = n.span.end;
+                break;
+            }
+            open.push(n);
+        }
+        let tag = |r: Range<usize>| self.source.get(r).unwrap_or("").to_string();
+        let opening =
+            |n: &FlatNode| n.span.start..n.content_span.as_ref().map_or(n.span.start, |c| c.start);
+        let closing =
+            |n: &FlatNode| n.content_span.as_ref().map_or(n.span.end, |c| c.end)..n.span.end;
+        let (second_open, second_close) = if block.kind == Kind::Heading {
+            ("<p>".to_string(), "</p>".to_string())
+        } else {
+            (tag(opening(block)), tag(closing(block)))
+        };
+        let mut text: String = open.iter().rev().map(|n| tag(closing(n))).collect();
+        text += &tag(closing(block));
+        text.push('\n');
+        text += &second_open;
+        text.extend(open.iter().map(|n| tag(opening(n))));
+        let caret = at + text.len();
+        text += &self.source[at..content.end];
+        text += &second_close;
+        if self.splice(at, block.span.end, &text, EditKind::Other) {
+            self.caret = caret.min(self.source.len());
+            self.record_caret();
+        }
+    }
+
+    /// Write `text` at `at` and stand the caret at `caret`, an offset in the
+    /// edited source.
+    fn open_html_paragraph(&mut self, at: usize, text: &str, caret: usize) {
+        if self.splice(at, at, text, EditKind::Other) {
+            self.caret = caret.min(self.source.len());
+            self.record_caret();
+        }
     }
 
     /// Where Enter writes to open an empty paragraph above the paragraph or
