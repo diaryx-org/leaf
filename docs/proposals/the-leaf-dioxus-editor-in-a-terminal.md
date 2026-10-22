@@ -16,6 +16,11 @@ pictures, then unit's menus and dialogs, then the file features. All three
 rounds are in; "What it does not do yet" is what is left. leaf-tui is
 untouched; replacing it is still Adam's call.
 
+Also decided by Adam, 2026-10-21: the renderer goes in the Blitz fork. It is
+now `blitz-tui`, a package on the fork's `tui` branch beside blitz-paint and
+blitz-shell, which runs any Blitz document, a Dioxus app included; the
+prototype here is what leaf adds to it ([Where the renderer lives](#where-the-renderer-lives)).
+
 ## Does Dioxus have a TUI renderer?
 
 Not any more. Dioxus had one, `dioxus-tui`, on a core called rink (later
@@ -50,8 +55,10 @@ everything above the painter already existed:
   hit-testing count in cells without any change to the editor.
 
 The first prototype was about 1,500 lines in four files and needed no change
-to leaf-dioxus or unit. With pictures, chrome and files it is about 2,700
-lines in eight, with tests, and two small changes outside it:
+to leaf-dioxus or unit. With pictures, chrome and files it came to about
+2,700 lines in eight, with tests. The painter, the terminal and the input are
+now blitz-tui's (about 2,000 lines with its tests); what stays here is about
+1,500. Two small changes outside it:
 
 - **leaf-dioxus:** `Type::uniform`, which sets every run at the body size, as
   the source view already does. Without it the editor lays a heading out at
@@ -62,6 +69,33 @@ lines in eight, with tests, and two small changes outside it:
   overlap per density so it stays on the grid; `Unit::hot_first` made public;
   and keyboard choice for an action sheet (↑/↓/Tab, Return), which is useful
   on a desktop too.
+
+## Where the renderer lives
+
+In the Blitz fork, `diaryx-org/blitz`, as `packages/blitz-tui` on the `tui`
+branch (from `leaf`). It is a renderer in Blitz's terms, not an engine: it
+replaces blitz-paint and blitz-shell, and keeps the DOM, Stylo and taffy, so
+it changes with Blitz's paint tree in the same repository. It is not an
+anyrender backend, which would get only shapes and glyph runs: drawing text
+a cell to a character and borders only on free rows needs the boxes and
+lines.
+
+- **Generic:** the painter, a `Grid` of cells; the terminal, with pictures
+  from the image data Blitz loaded, an SVG `data:` URL, or the host's decoder;
+  the terminal's keys and mouse as Blitz's events, with a key's text, so a
+  focused element's handlers get it; `run`, which drives any
+  `blitz_dom::Document`; and `TermWindow` (the `winit` feature).
+  `examples/tui_counter` is a Dioxus counter whose clicks and keys work
+  through it, tested headlessly.
+- **Leaf's, here:** the editor and unit's chrome, the command table, the file
+  rules, ⌃ as ⌘ for the editor's shortcuts, the caret classes, the shift of a
+  click by the editor's padding, and leaf-raster as the picture decoder.
+- **Not done for other apps:** the text and caret of `<input>` and
+  `<textarea>`, `::marker` list markers, outlines, shadows, gradients,
+  transforms and scrollbars.
+
+The move changed one rule: a horizontal border takes the row boundary nearest
+it, so a table now gets its bottom rule, which it lacked.
 
 ## What the prototype does
 
@@ -94,8 +128,9 @@ build:
   sets the column (80 by default, 0 fills), as in leaf-tui.
 - **Cost:** a frame (settle, layout, paint) takes 1–3 ms on a 400-paragraph
   document. The process holds about 55 MB resident.
-- **Tests:** 14 in the prototype, painting documents headlessly and checking
-  the grid, the pictures, the menus, the quit question and the file watch.
+- **Tests:** 15 in the prototype, painting documents headlessly and checking
+  the grid, the pictures, the menus, the quit question and the file watch;
+  13 in blitz-tui and its example.
 
 ## What it does not do yet
 
@@ -157,3 +192,6 @@ unit's cell density is a third way unit draws, to be kept working.
 4. Whether the prototype stays its own workspace, like `apps/leaf-dioxus`, or
    joins it, and whether CI builds and tests it.
 5. Only after it matches leaf-tui: whether it replaces leaf-tui.
+6. Whether the fork's `tui` branch merges into its `leaf` branch, after
+   which the prototype takes Blitz from `leaf` like the Mac app; and whether
+   blitz-tui is offered to DioxusLabs/blitz.
