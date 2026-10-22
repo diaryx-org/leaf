@@ -4,7 +4,7 @@ A prototype: the leaf-dioxus editor (`crates/leaf-dioxus`), the component the
 Mac app draws, drawn in a terminal, with unit's menus and dialogs round it as
 the Mac app has them. Blitz builds the DOM, resolves the styles and lays the
 page out as it does for a window; blitz-tui, a package in the Blitz fork
-(`diaryx-org/blitz`, branch `tui`), walks the laid-out tree and writes
+(`diaryx-org/blitz`, branch `leaf`), walks the laid-out tree and writes
 character cells where blitz-paint would draw pixels. This app is what leaf
 adds to it.
 

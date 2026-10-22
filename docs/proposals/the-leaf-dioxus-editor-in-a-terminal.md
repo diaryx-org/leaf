@@ -17,7 +17,7 @@ rounds are in; "What it does not do yet" is what is left. leaf-tui is
 untouched; replacing it is still Adam's call.
 
 Also decided by Adam, 2026-10-21: the renderer goes in the Blitz fork. It is
-now `blitz-tui`, a package on the fork's `tui` branch beside blitz-paint and
+now `blitz-tui`, a package on the fork's `leaf` branch beside blitz-paint and
 blitz-shell, which runs any Blitz document, a Dioxus app included; the
 prototype here is what leaf adds to it ([Where the renderer lives](#where-the-renderer-lives)).
 
@@ -72,8 +72,8 @@ now blitz-tui's (about 2,000 lines with its tests); what stays here is about
 
 ## Where the renderer lives
 
-In the Blitz fork, `diaryx-org/blitz`, as `packages/blitz-tui` on the `tui`
-branch (from `leaf`). It is a renderer in Blitz's terms, not an engine: it
+In the Blitz fork, `diaryx-org/blitz`, as `packages/blitz-tui` on the `leaf`
+branch (merged from `tui`, diaryx-org/blitz#12). It is a renderer in Blitz's terms, not an engine: it
 replaces blitz-paint and blitz-shell, and keeps the DOM, Stylo and taffy, so
 it changes with Blitz's paint tree in the same repository. It is not an
 anyrender backend, which would get only shapes and glyph runs: drawing text
@@ -192,6 +192,6 @@ unit's cell density is a third way unit draws, to be kept working.
 4. Whether the prototype stays its own workspace, like `apps/leaf-dioxus`, or
    joins it, and whether CI builds and tests it.
 5. Only after it matches leaf-tui: whether it replaces leaf-tui.
-6. Whether the fork's `tui` branch merges into its `leaf` branch, after
-   which the prototype takes Blitz from `leaf` like the Mac app; and whether
-   blitz-tui is offered to DioxusLabs/blitz.
+6. ~~Whether the fork's `tui` branch merges into its `leaf` branch~~: merged
+   (diaryx-org/blitz#12); the prototype takes Blitz from `leaf`, like the Mac
+   app. Still open: whether blitz-tui is offered to DioxusLabs/blitz.
