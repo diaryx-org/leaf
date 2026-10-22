@@ -44,9 +44,9 @@ Here:
   mouse goes to Blitz as pointer events, the wheel to `Editor::scroll`. Each
   turn is a poll and a `resolve`, then a paint.
   A cell is one advance of a monospace face (Menlo, 16px) wide and one line
-  (1.5 leading, 24px) high, and the editor's `Type::uniform` sets every run
-  at that size, so the editor's own parley layout counts in cells without
-  knowing it. The editor's caret and unit's are named to the painter by
+  (1.5 leading, 24px) high. The editor is given that cell as `Type::grid`:
+  it sets every run at the body size, so its own parley layout counts in
+  cells, and sizes its find bar, status line and tables in whole cells. The editor's caret and unit's are named to the painter by
   class, and become the terminal's cursor.
 - `pictures.rs`: pictures, formulas and diagrams read by leaf-raster, as
   leaf-tui reads them, for blitz-tui to draw.

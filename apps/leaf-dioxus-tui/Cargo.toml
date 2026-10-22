@@ -36,8 +36,9 @@ dioxus-core = "=0.8.0-alpha.3"
 blitz-dom = { version = "=0.3.0-beta.4", default-features = false }
 blitz-traits = "=0.3.0-beta.4"
 # The painter, the terminal and its input: Blitz's page as character cells,
-# pictures through the graphics protocol, from the fork's `leaf` branch.
-blitz-tui = { git = "https://github.com/diaryx-org/blitz", branch = "leaf", features = ["winit"] }
+# pictures through the graphics protocol. From the fork's `tui-junctions`
+# branch until diaryx-org/blitz#14 merges into `leaf`.
+blitz-tui = { git = "https://github.com/diaryx-org/blitz", branch = "tui-junctions", features = ["winit"] }
 # The terminal's events, as blitz-tui reads them.
 crossterm = "0.28"
 # Pictures, formulas and diagrams decoded and rasterised by leaf-raster, as
@@ -59,12 +60,12 @@ debug = "line-tables-only"
 opt-level = 3
 
 # The Blitz fork, every Blitz crate from one source, or the graph holds two
-# copies: the `leaf` branch, as apps/leaf-dioxus takes it.
+# copies: `tui-junctions`, which is `leaf` and the joined borders.
 [patch.crates-io]
-blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "tui-junctions" }
+blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "tui-junctions" }
+blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "tui-junctions" }
+blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "tui-junctions" }
+blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "tui-junctions" }
+stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "tui-junctions" }
+debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "tui-junctions" }

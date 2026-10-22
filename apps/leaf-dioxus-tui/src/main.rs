@@ -42,7 +42,7 @@ use dioxus_core::{ScopeId, VirtualDom};
 use dioxus_native::DioxusDocument;
 use dioxus_native::winit::window::Window;
 use leaf_core::Doc;
-use leaf_dioxus::{Appearance, Editor, Host, Look, Status, Type, trace, use_shared_editor};
+use leaf_dioxus::{Appearance, Editor, Grid, Host, Look, Status, Type, trace, use_shared_editor};
 use unit::{Density, Keys, Theme, UnitRoot, use_unit};
 
 use crate::chrome::{Pending, TermHost};
@@ -53,23 +53,20 @@ use blitz_tui::{Metrics, PaintOptions, TermWindow};
 /// The face every cell is set in, and its size in CSS pixels.
 const FACE: &str = "Menlo, \"DejaVu Sans Mono\", monospace";
 const SIZE: f32 = 16.0;
-/// The line box over the size: one cell high. 1.5, the editor's own
-/// leading, makes a cell 24px — the height of its status line, which is then
-/// exactly a row.
+/// The line box over the size: one cell high.
 const LEADING: f32 = 1.5;
 
-/// Pixel chrome the editor sizes for a window, recut to whole cells.
-///
-/// And each visual line's box reaches into the column's right padding. The
+/// Each visual line's box reaches into the column's right padding. The
 /// editor breaks the lines itself and hangs a trailing space past the
 /// column, as parley does; Blitz, though, broke a quote's line between its
 /// bar (an inline box) and its text when the space did not fit, `white-space:
 /// pre` notwithstanding — a line of the column's exact width, which cells
-/// make common, came out as two rows. The room keeps it one.
+/// make common, came out as two rows. The room keeps it one. Not a table
+/// cell's line, which the editor aligns in its cell: the room would move
+/// right-aligned text off its padding.
 const TERM_CSS: &str = "
-.status { font: 16px Menlo, monospace; border-top: 0; }
-.find { font: 16px Menlo, monospace; }
 .leaf .line { margin-right: -16px; }
+.leaf .tcell .line { margin-right: 0; }
 ";
 
 /// What the command line asked for.
@@ -109,7 +106,7 @@ fn App() -> Element {
                 mono: FACE.into(),
                 size: SIZE,
                 leading: LEADING,
-                uniform: true,
+                grid: Some(grid()),
             },
             measure: OPTIONS.get().measure,
             appearance: if dark {
@@ -155,11 +152,25 @@ fn KeepUnit() -> Element {
     rsx! {}
 }
 
+/// One cell of the editor's face.
+fn cell() -> Metrics {
+    Metrics::measure(FACE, SIZE, LEADING)
+}
+
+/// The cell, as the editor sizes its chrome and tables in it.
+fn grid() -> Grid {
+    let m = cell();
+    Grid {
+        width: m.cw,
+        height: m.ch,
+    }
+}
+
 /// How the page is painted: a cell of the editor's face, and the carets
 /// that are the terminal's cursor — the editor's `.caret-in` and unit's
 /// `.unit-caret` in a dialog's field.
 fn paint_options() -> PaintOptions {
-    let mut opts = PaintOptions::new(Metrics::measure(FACE, SIZE, LEADING));
+    let mut opts = PaintOptions::new(cell());
     opts.cursor_classes = vec!["caret-in".into(), "unit-caret".into()];
     opts
 }
@@ -649,6 +660,97 @@ mod tests {
         let a = f.lines().find(|l| l.contains('a')).unwrap();
         assert!(a.contains('b'), "{f}");
         assert!(f.lines().any(|l| l.contains('1') && l.contains('2')), "{f}");
+    }
+
+    #[test]
+    fn a_table_is_ruled_as_leaf_tui_rules_it() {
+        let f = frame("Top.\n\n| Name | Qty |\n|---|---:|\n| Pear | 3 |\n| Fig | 12 |\n");
+        let table: Vec<&str> = f
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with(['┌', '│', '├', '└']))
+            .collect();
+        assert_eq!(
+            table,
+            [
+                "┌──────┬─────┐",
+                "│ Name │ Qty │",
+                "├──────┼─────┤",
+                "│ Pear │   3 │",
+                "│ Fig  │  12 │",
+                "└──────┴─────┘",
+            ],
+            "{f}"
+        );
+    }
+
+    #[test]
+    fn a_click_in_a_table_cell_lands_on_the_character_under_it() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent};
+        let (dir, path) = scratch("Top.\n\n| Name | Qty |\n|---|---:|\n| Fig | 12 |\n");
+        let mut s = Session::new(path, 80, 24).unwrap();
+        let f = s.paint().text();
+        let (row, line) = f
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("12"))
+            .unwrap();
+        // The cell of the `2`.
+        let column = line[..line.find("12").unwrap()].chars().count() as u16 + 1;
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            let me = MouseEvent {
+                kind,
+                column,
+                row: row as u16,
+                modifiers: KeyModifiers::NONE,
+            };
+            term::pointer(&mut s.doc, s.m, &me);
+        }
+        s.settle();
+        let (key, code, mods) = term::char_key('x');
+        s.with_editor(|ed| ed.key(key, code, mods));
+        s.settle();
+        let f = s.paint().text();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(f.contains("1x▏2"), "{f}");
+    }
+
+    #[test]
+    fn the_find_bar_is_one_row_and_replace_another() {
+        let (dir, path) = scratch("Text.\n");
+        let mut s = Session::new(path, 80, 24).unwrap();
+        let rows = |s: &Session| {
+            let mut h = 0.0;
+            s.with_editor(|ed| h = ed.bar_height());
+            h / s.m.ch as f64
+        };
+        let (key, code, _) = term::char_key('f');
+        s.key(key.clone(), code, term::PRIMARY);
+        s.settle();
+        let find = rows(&s);
+        let f = s.paint().text();
+        s.key(key, code, term::PRIMARY | dioxus::html::Modifiers::ALT);
+        s.settle();
+        let replace = rows(&s);
+        let g = s.paint().text();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!((find, replace), (1.0, 2.0));
+        assert!(
+            f.lines().next().unwrap().trim_start().starts_with("Find"),
+            "{f}"
+        );
+        assert!(
+            g.lines()
+                .nth(1)
+                .unwrap()
+                .trim_start()
+                .starts_with("Replace"),
+            "{g}"
+        );
+        assert!(g.lines().nth(2).unwrap().contains("Text."), "{g}");
     }
 
     #[test]

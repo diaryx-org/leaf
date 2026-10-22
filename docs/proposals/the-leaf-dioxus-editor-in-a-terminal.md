@@ -60,10 +60,14 @@ to leaf-dioxus or unit. With pictures, chrome and files it came to about
 now blitz-tui's (about 2,000 lines with its tests); what stays here is about
 1,500. Two small changes outside it:
 
-- **leaf-dioxus:** `Type::uniform`, which sets every run at the body size, as
-  the source view already does. Without it the editor lays a heading out at
-  twice the size the painter can draw it, and a click on a heading lands on
-  the wrong character.
+- **leaf-dioxus:** `Type::grid`, the host's cell, for a surface of character
+  cells. On a grid every run is set at the body size, as the source view
+  already does: without it the editor lays a heading out at twice the size
+  the painter can draw it, and a click on a heading lands on the wrong
+  character. And the editor's own chrome is sized in whole cells: the find
+  bar and the status line are a row each, and a table is padded a cell
+  either side, its rules a cell wide or a row high, ruled under the head and
+  the last row only, as core's picture of a table is (decision 2).
 - **unit (merged into `main`, unit#10):** `Density::Cell`, a density whose menu rows,
   separators and controls are each one cell high, with the menu's margin and
   overlap per density so it stays on the grid; `Unit::hot_first` made public;
@@ -95,7 +99,10 @@ lines.
   transforms and scrollbars.
 
 The move changed one rule: a horizontal border takes the row boundary nearest
-it, so a table now gets its bottom rule, which it lacked.
+it, so a table now gets its bottom rule, which it lacked. Since then
+(diaryx-org/blitz#14) a vertical side takes the nearest column boundary too,
+and borders that meet in one layer are joined, `┬`, `┼`, `├`, so a table's
+cells, each ruled on its own, read as one grid.
 
 ## What the prototype does
 
@@ -128,17 +135,18 @@ build:
   sets the column (80 by default, 0 fills), as in leaf-tui.
 - **Cost:** a frame (settle, layout, paint) takes 1–3 ms on a 400-paragraph
   document. The process holds about 55 MB resident.
-- **Tests:** 15 in the prototype, painting documents headlessly and checking
-  the grid, the pictures, the menus, the quit question and the file watch;
-  13 in blitz-tui and its example.
+- **Tests:** 18 in the prototype, painting documents headlessly and checking
+  the grid, a table's rules and a click in its cell, the find bar, the
+  pictures, the menus, the quit question and the file watch; 16 in blitz-tui
+  and its example.
 
 ## What it does not do yet
 
 Against the [leaf-tui inventory](#what-leaf-tui-does) below:
 
-- **Pixel chrome in the editor.** The find bar's rows are a Rust constant of
-  34px, so the bar takes two terminal rows; table cells are padded in pixels,
-  so a table gets its column rules but not its row rules. Decision 2 below.
+- **The column's side padding** is still 16px, a cell and two thirds: the
+  painter rounds it to a whole cell, and a click is shifted to match
+  (`term.rs`). `Type::grid` could make it a cell, as it does a table's.
 - **What leaf-tui adds that leaf-dioxus has no part of:** New, the scrollbar,
   hover previews, the large-heading rasters, the `::embed` directive card,
   the table commands in a menu, and a fuzzy palette (the command menu is a
@@ -184,9 +192,9 @@ unit's cell density is a third way unit draws, to be kept working.
 
 1. ~~Whether to keep going~~: yes (Adam, 2026-10-21). The three rounds are
    done; what is left is listed above.
-2. Whether the editor should size its chrome in lines when a host asks (a
-   `Look` option), so the find bar and table padding fit the grid. The
-   `uniform` type is the first piece of it.
+2. ~~Whether the editor should size its chrome in lines when a host asks~~:
+   yes (Adam, 2026-10-21), as `Type::grid`, part of the `Look`, which
+   replaces `Type::uniform`.
 3. ~~Whether unit's `dioxus-tui` branch merges into unit's main~~: merged
    (diaryx-org/unit#10); the prototype takes unit from `main`.
 4. Whether the prototype stays its own workspace, like `apps/leaf-dioxus`, or
