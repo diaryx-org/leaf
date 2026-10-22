@@ -201,9 +201,8 @@ fn enter_and_backspace_anywhere_show_what_they_write_and_undo_in_one_step() {
             "{data-line-height=\"2\"}\nI cry\n\n{data-line-height=\"2\"}\nknees to nose\n",
         ),
         (Format::Djot, "# Title\n\na\n\n* * *\n\nb\n"),
-        // HTML is not here: Enter writes blank lines there, which the
-        // view draws and HTML does not keep. See
-        // docs/tasks/enter-in-html-writes-whitespace.md.
+        (Format::Html, "<p>I talk to myself</p>\n<p>I cry</p>\n"),
+        (Format::Html, "<h1>Title</h1>\n<p>a <b>bold</b> b</p>\n"),
     ];
     let mut failures = Vec::new();
     for &(format, body) in cases {
@@ -850,4 +849,125 @@ fn insert_thematic_break_in_a_blockquote_stays_in_the_quote() {
             .any(|n| n.kind == Kind::BlockQuote && n.span.start <= rule_at && rule_at < n.span.end),
         "the rule belongs to the quote it was asked for"
     );
+}
+
+#[test]
+fn enter_in_html_writes_elements_and_backspace_takes_them_back() {
+    // HTML keeps neither a blank line nor a newline in running text. Enter
+    // wrote them anyway, `<p>I cry\n\n</p>`, which the view drew as an empty
+    // paragraph a browser does not have, and Preserve flow's lone `\n`,
+    // which nothing drew. Enter writes elements instead.
+    let src = "<p>I cry</p>\n<p>knees</p>\n";
+    let after_cry = src.find("</p>").unwrap();
+    let at_knees = src.find("knees").unwrap();
+    let mid = src.find("cry").unwrap();
+    let opened = "<p>I cry</p>\n<p></p>\n<p>knees</p>\n";
+    let cases = [
+        // At a paragraph's end, an empty paragraph after it, in both flows:
+        // a `<br>` with nothing after it draws no line in a browser.
+        (
+            LineFlow::Fold,
+            src,
+            after_cry,
+            opened,
+            opened.find("</p>\n<p>k").unwrap(),
+        ),
+        (
+            LineFlow::Preserve,
+            src,
+            after_cry,
+            opened,
+            opened.find("</p>\n<p>k").unwrap(),
+        ),
+        // At its start, an empty paragraph before it, the caret staying
+        // with the text.
+        (
+            LineFlow::Fold,
+            src,
+            at_knees,
+            opened,
+            opened.find("knees").unwrap(),
+        ),
+        // Inside it, Preserve flow's soft line is a `<br>`.
+        (
+            LineFlow::Preserve,
+            src,
+            mid,
+            "<p>I <br>cry</p>\n<p>knees</p>\n",
+            mid + 4,
+        ),
+    ];
+    for (flow, body, at, want, caret) in cases {
+        let mut d = Doc::from_source(body.into(), Format::Html).unwrap();
+        d.view = View::Wysiwyg;
+        d.set_line_flow(flow);
+        d.build_visual(80);
+        d.caret = at;
+        d.newline();
+        assert_eq!(d.source, want, "{flow:?} at {at}");
+        assert_eq!(d.caret, caret, "{flow:?} at {at}: {:?}", d.source);
+        d.build_visual(80);
+        let (row, _) = d.vmap.pos_of_offset(d.caret);
+        assert!(
+            !d.vmap.rows[row].decoration,
+            "{flow:?} at {at}: the caret's row is a line"
+        );
+        // One Backspace takes back what Enter wrote.
+        d.backspace();
+        assert_eq!(d.source, body, "{flow:?} at {at}: backspace");
+        assert_eq!(d.caret, at, "{flow:?} at {at}: backspace");
+    }
+
+    // Fold parts the element. Backspace there is twig's join, which spells
+    // the join as a newline, a space to HTML; one Undo takes the split back.
+    let mut d = Doc::from_source(src.into(), Format::Html).unwrap();
+    d.view = View::Wysiwyg;
+    d.build_visual(80);
+    d.caret = mid;
+    d.newline();
+    assert_eq!(d.source, "<p>I </p>\n<p>cry</p>\n<p>knees</p>\n");
+    assert_eq!(d.caret, mid + "</p>\n<p>".len());
+    d.undo();
+    assert_eq!(d.source, src);
+
+    // The empty paragraph draws, and what is typed there is its text.
+    let mut d = Doc::from_source(src.into(), Format::Html).unwrap();
+    d.view = View::Wysiwyg;
+    d.build_visual(80);
+    d.caret = after_cry;
+    d.newline();
+    d.build_visual(80);
+    let (row, _) = d.vmap.pos_of_offset(d.caret);
+    assert!(d.vmap.rows[row].glyphs.is_empty(), "{:?}", drawn(&d));
+    d.insert("x");
+    assert_eq!(d.source, "<p>I cry</p>\n<p>x</p>\n<p>knees</p>\n");
+
+    // A split closes and reopens the inline elements around the caret, and
+    // a heading's second half is a paragraph.
+    for (body, at, want) in [
+        (
+            "<p>a <b>bold</b> b</p>\n",
+            "<p>a <b>bo".len(),
+            "<p>a <b>bo</b></p>\n<p><b>ld</b> b</p>\n",
+        ),
+        (
+            "<h1>Title</h1>\n",
+            "<h1>Ti".len(),
+            "<h1>Ti</h1>\n<p>tle</p>\n",
+        ),
+    ] {
+        let mut d = Doc::from_source(body.into(), Format::Html).unwrap();
+        d.view = View::Wysiwyg;
+        d.build_visual(80);
+        d.caret = at;
+        d.newline();
+        assert_eq!(d.source, want);
+        assert!(
+            d.source[d.caret..].starts_with(&body[at..at + 2]),
+            "{:?}",
+            d.caret
+        );
+        d.undo();
+        assert_eq!(d.source, body);
+    }
 }
