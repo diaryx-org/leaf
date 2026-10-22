@@ -1,9 +1,10 @@
 # A prototype: the leaf-dioxus editor (crates/leaf-dioxus), the same
 # component the Mac app draws with Blitz on wgpu, drawn in a terminal instead.
-# Blitz still builds the DOM, resolves the styles and lays the page out; a
-# painter here walks the laid-out tree and writes character cells where
-# blitz-paint would draw pixels. Its own workspace for apps/leaf-dioxus's
-# reason: dioxus-native is an alpha, and the Blitz fork is reached by [patch].
+# Blitz still builds the DOM, resolves the styles and lays the page out;
+# blitz-tui, in the Blitz fork, walks the laid-out tree and writes character
+# cells where blitz-paint would draw pixels. Its own workspace for
+# apps/leaf-dioxus's reason: dioxus-native is an alpha, and the Blitz fork is
+# reached by [patch].
 #
 #     cargo run --manifest-path apps/leaf-dioxus-tui/Cargo.toml -- document.md
 [workspace]
@@ -34,29 +35,20 @@ dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features 
 dioxus-core = "=0.8.0-alpha.3"
 blitz-dom = { version = "=0.3.0-beta.4", default-features = false }
 blitz-traits = "=0.3.0-beta.4"
-parley = "=0.12.0"
-# The terminal: ratatui's cell buffer and its diff, on crossterm — the
-# versions leaf-tui uses, which ratatui-image 9 is built for.
+# The painter, the terminal and its input: Blitz's page as character cells,
+# pictures through the graphics protocol. On the fork's `tui` branch, until
+# it merges into `leaf`.
+blitz-tui = { git = "https://github.com/diaryx-org/blitz", branch = "tui", features = ["winit"] }
+# The terminal's events, as blitz-tui reads them.
 crossterm = "0.28"
-ratatui = "0.29"
-# Pictures, formulas and diagrams through kitty, iTerm2 or sixel, or
-# half-blocks; decoded and rasterised by leaf-raster, as leaf-tui does.
-ratatui-image = { version = "9", default-features = false, features = ["crossterm"] }
+# Pictures, formulas and diagrams decoded and rasterised by leaf-raster, as
+# leaf-tui does, for blitz-tui to draw.
 leaf-raster = { path = "../../crates/leaf-raster" }
 # The menus and dialogs round the editor, as the Mac app draws them. On its
 # `dioxus-tui` branch, which adds the cell density, until that merges.
-# "Is this terminal dark or light?", asked as leaf-tui asks it.
-terminal-colorsaurus = "1"
 unit = { git = "https://github.com/diaryx-org/unit", branch = "dioxus-tui" }
-raw-window-handle = "0.6"
 anyhow = "1"
 libc = "0.2"
-# Stylo's computed values, read for each box's colours and borders, and the
-# taffy layout Blitz puts on each node: the versions the Blitz fork uses.
-style = { version = "0.22.0", package = "stylo" }
-taffy = { version = "0.15", default-features = false, features = ["std"] }
-unicode-width = "0.2"
-unicode-segmentation = "1.13"
 # The editor's timers.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
 
@@ -67,13 +59,13 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 3
 
-# The Blitz fork, as apps/leaf-dioxus takes it: every Blitz crate from one
-# source, or the graph holds two copies.
+# The Blitz fork, every Blitz crate from one source, or the graph holds two
+# copies. The `tui` branch: `leaf`, and blitz-tui on it.
 [patch.crates-io]
-blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "tui" }
+blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "tui" }
+blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "tui" }
+blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "tui" }
+blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "tui" }
+stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "tui" }
+debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "tui" }

@@ -4,7 +4,8 @@
 //! window: a [`TermWindow`] answers its questions about size and theme, the
 //! terminal's keys are handed to [`Editor::key`] as the app hands winit's,
 //! clicks and the wheel go to Blitz as pointer events, and each turn the page
-//! is resolved and painted into cells ([`paint`]) instead of pixels.
+//! is resolved and painted into cells (blitz-tui's `paint`) instead of
+//! pixels.
 //!
 //! The text is set in one monospace face at a size whose advance is one cell
 //! wide, and a cell is that advance by one line high, so the editor's own
@@ -22,10 +23,8 @@
 mod chrome;
 mod commands;
 mod files;
-mod paint;
 mod pictures;
 mod term;
-mod window;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -49,8 +48,7 @@ use unit::{Density, Keys, Theme, UnitRoot, use_unit};
 use crate::chrome::{Pending, TermHost};
 use crate::commands::Command;
 
-use crate::paint::Metrics;
-use crate::window::TermWindow;
+use blitz_tui::{Metrics, PaintOptions, TermWindow};
 
 /// The face every cell is set in, and its size in CSS pixels.
 const FACE: &str = "Menlo, \"DejaVu Sans Mono\", monospace";
@@ -157,29 +155,20 @@ fn KeepUnit() -> Element {
     rsx! {}
 }
 
-/// One cell's size: the face's advance, and the line box.
-fn metrics() -> Metrics {
-    use parley::{FontContext, LayoutContext, StyleProperty};
-    let mut fcx = FontContext::default();
-    let mut lcx: LayoutContext<()> = LayoutContext::new();
-    let probe = "0".repeat(100);
-    let mut b = lcx.ranged_builder(&mut fcx, &probe, 1.0, true);
-    b.push_default(StyleProperty::FontFamily(parley::FontFamily::Source(
-        FACE.into(),
-    )));
-    b.push_default(StyleProperty::FontSize(SIZE));
-    let mut layout = b.build(&probe);
-    layout.break_all_lines(None);
-    Metrics {
-        cw: layout.width() / 100.0,
-        ch: SIZE * LEADING,
-    }
+/// How the page is painted: a cell of the editor's face, and the carets
+/// that are the terminal's cursor — the editor's `.caret-in` and unit's
+/// `.unit-caret` in a dialog's field.
+fn paint_options() -> PaintOptions {
+    let mut opts = PaintOptions::new(Metrics::measure(FACE, SIZE, LEADING));
+    opts.cursor_classes = vec!["caret-in".into(), "unit-caret".into()];
+    opts
 }
 
 struct Session {
     doc: DioxusDocument,
     window: Arc<TermWindow>,
     watch: RefCell<files::Watch>,
+    look: PaintOptions,
     m: Metrics,
     cols: u16,
     rows: u16,
@@ -196,8 +185,9 @@ impl Session {
         }
         let watch = RefCell::new(files::Watch::new(&source));
         DOC.with_borrow_mut(|d| *d = Some(Rc::new(RefCell::new(source))));
-        let m = metrics();
-        let (w, h) = px(m, cols, rows);
+        let look = paint_options();
+        let m = look.metrics;
+        let (w, h) = m.px(cols, rows);
         let window = Arc::new(TermWindow::new(w, h, term::dark()));
         let as_dyn: Arc<dyn Window> = window.clone();
         let mut doc = DioxusDocument::new(VirtualDom::new(App), DocumentConfig::default());
@@ -213,6 +203,7 @@ impl Session {
             doc,
             window,
             watch,
+            look,
             m,
             cols,
             rows,
@@ -248,7 +239,7 @@ impl Session {
     fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
-        let (w, h) = px(self.m, cols, rows);
+        let (w, h) = self.m.px(cols, rows);
         self.window.resize(w, h);
         self.doc.inner.borrow_mut().set_viewport(viewport(w, h));
         self.with_editor(|ed| ed.resize(w, h));
@@ -397,8 +388,13 @@ impl Session {
         changed
     }
 
-    fn paint(&self) -> paint::Grid {
-        paint::paint(&self.doc.inner.borrow(), self.m, self.cols, self.rows)
+    fn paint(&self) -> blitz_tui::Grid {
+        blitz_tui::paint(&self.doc.inner.borrow(), &self.look, self.cols, self.rows)
+    }
+
+    fn draw(&self, out: &mut blitz_tui::Terminal, grid: &blitz_tui::Grid) -> Result<()> {
+        out.draw(grid, &self.doc.inner.borrow())?;
+        Ok(())
     }
 }
 
@@ -425,13 +421,6 @@ fn enter_runtime() {
 
 fn editor() -> Option<Editor> {
     EDITOR.with_borrow(|e| e.clone())
-}
-
-fn px(m: Metrics, cols: u16, rows: u16) -> (u32, u32) {
-    (
-        (cols as f32 * m.cw).round() as u32,
-        (rows as f32 * m.ch).round() as u32,
-    )
 }
 
 fn viewport(w: u32, h: u32) -> Viewport {
@@ -504,7 +493,7 @@ fn main() -> Result<()> {
     term::ask_theme();
     let (cols, rows) = crossterm::terminal::size()?;
     let mut s = Session::new(path, cols, rows)?;
-    let mut out = term::Terminal::enter()?;
+    let mut out = term::enter()?;
     let result = run(&mut s, &mut out);
     out.leave()?;
     result
@@ -524,9 +513,9 @@ fn quiet_stderr() {
     }
 }
 
-fn run(s: &mut Session, out: &mut term::Terminal) -> Result<()> {
+fn run(s: &mut Session, out: &mut blitz_tui::Terminal) -> Result<()> {
     let mut grid = s.paint();
-    out.draw(&grid)?;
+    s.draw(out, &grid)?;
     loop {
         let mut acted = false;
         if event::poll(Duration::from_millis(50))? {
@@ -607,7 +596,7 @@ fn run(s: &mut Session, out: &mut term::Terminal) -> Result<()> {
             let next = s.paint();
             trace(|| format!("frame: settle {:.1?} paint {:.1?}", t1 - t0, t1.elapsed()));
             if next != grid {
-                out.draw(&next)?;
+                s.draw(out, &next)?;
                 grid = next;
             }
         }
