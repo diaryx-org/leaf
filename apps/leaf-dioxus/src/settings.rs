@@ -201,7 +201,7 @@ impl Settings {
             mono: family(MONO_FACES, &self.mono, "monospace"),
             size: self.size.px() * zoom,
             leading: self.spacing.ratio(),
-            uniform: false,
+            grid: None,
         }
     }
 

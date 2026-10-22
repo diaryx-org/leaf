@@ -241,11 +241,14 @@ pub struct BarView {
     pub query: Field,
     pub replacement: Field,
     pub count: String,
+    /// One row's height: [`ROW`], or a cell's on a grid.
+    pub row: f64,
 }
 
 impl BarView {
-    pub fn of(find: &mut Find, doc: &Doc) -> Self {
+    pub fn of(find: &mut Find, doc: &Doc, row: f64) -> Self {
         Self {
+            row,
             open: find.open,
             replacing: find.replacing,
             focus: find.focus,
@@ -264,8 +267,8 @@ impl BarView {
     pub fn height(&self) -> f64 {
         match (self.open, self.replacing) {
             (false, _) => 0.0,
-            (true, false) => ROW,
-            (true, true) => 2.0 * ROW,
+            (true, false) => self.row,
+            (true, true) => 2.0 * self.row,
         }
     }
 }

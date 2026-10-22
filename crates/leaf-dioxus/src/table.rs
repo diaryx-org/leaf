@@ -22,7 +22,7 @@ use crate::bridge::rows::{RowView, Run};
 use crate::bridge::style::class_of;
 use leaf_core::{Alignment as Align, Glyph, Style, TableInfo};
 
-use crate::text::{Alignment, Fonts, Kind, RowLayout, cols};
+use crate::text::{Alignment, Fonts, Grid, Kind, RowLayout, Type, cols};
 
 /// Space inside a cell, either side of its text, and below and above it.
 pub const PAD_X: f32 = 8.0;
@@ -32,6 +32,70 @@ pub const PAD_Y: f32 = 3.0;
 pub const BORDER: f32 = 1.0;
 /// The narrowest a squeezed column's text gets.
 const MIN_TEXT: f32 = 40.0;
+
+/// A table's chrome, in CSS pixels: [`PAD_X`], [`PAD_Y`] and [`BORDER`] in a
+/// window, whole cells on a grid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rules {
+    /// Space inside a cell, either side of its text.
+    pub pad_x: f32,
+    /// Space inside a cell, below and above its text.
+    pub pad_y: f32,
+    /// A column rule's width.
+    pub across: f32,
+    /// A row rule's height.
+    pub down: f32,
+    /// The grid the table is drawn on, if it is drawn on one.
+    pub grid: Option<Grid>,
+}
+
+impl Rules {
+    /// In a window, a hairline under every row. On a grid a rule is a cell
+    /// wide or a row high, so it is drawn in a row of its own; leaf-tui's
+    /// tables rule only the head and the bottom, which keeps a table of
+    /// many rows from doubling in height.
+    pub fn of(ty: &Type) -> Self {
+        match ty.grid {
+            None => Self {
+                pad_x: PAD_X,
+                pad_y: PAD_Y,
+                across: BORDER,
+                down: BORDER,
+                grid: None,
+            },
+            Some(g) => Self {
+                pad_x: g.width,
+                pad_y: 0.0,
+                across: g.width,
+                down: g.height,
+                grid: Some(g),
+            },
+        }
+    }
+
+    /// Whether row `r` of `rows` has a rule under it: every row in a window;
+    /// on a grid only the head and the last, as core's picture of a table.
+    pub fn ruled(&self, r: usize, rows: &[GridRow]) -> bool {
+        self.grid.is_none() || rows[r].head || r + 1 == rows.len()
+    }
+
+    /// A text width rounded up: to a whole pixel, or on a grid to a whole
+    /// cell, so that every column, and every rule after it, starts on one.
+    fn up(&self, w: f32) -> f32 {
+        match self.grid {
+            None => w.ceil(),
+            Some(g) => (w / g.width - 0.001).ceil() * g.width,
+        }
+    }
+
+    /// A squeezed text width, on a grid rounded down to a whole cell.
+    fn down_to(&self, w: f32) -> f32 {
+        match self.grid {
+            None => w,
+            Some(g) => ((w / g.width + 0.001).floor() * g.width).max(g.width),
+        }
+    }
+}
 
 /// A table as it draws: its rows' cells, as views, and its block prefix.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -195,13 +259,15 @@ pub struct TableLayout {
     pub prefix: RowLayout,
     /// Each column's outer width: text, padding and its right border.
     pub cols: Vec<f32>,
+    pub rules: Rules,
     pub rows: Vec<RowGeom>,
     /// The whole table, borders included.
     pub height: f32,
 }
 
 pub struct RowGeom {
-    /// Outer height: the tallest cell's text, padding and the bottom border.
+    /// Outer height: the tallest cell's text, padding and the bottom border,
+    /// where the row has one.
     pub height: f32,
     /// Each cell's lines, where the row has that cell.
     pub cells: Vec<Option<RowLayout>>,
@@ -210,7 +276,7 @@ pub struct RowGeom {
 impl TableLayout {
     /// How far into the table's row column `c`'s text starts.
     pub fn text_left(&self, c: usize) -> f32 {
-        self.indent + BORDER + self.cols[..c].iter().sum::<f32>() + PAD_X
+        self.indent + self.rules.across + self.cols[..c].iter().sum::<f32>() + self.rules.pad_x
     }
 }
 
@@ -223,23 +289,28 @@ pub fn layout(fonts: &mut Fonts, view: &TableView, avail: f32) -> TableLayout {
         prefix.width
     };
     let n = view.rows.iter().map(|r| r.cells.len()).max().unwrap_or(0);
+    let rules = Rules::of(fonts.ty());
 
     // Every column at its widest cell, unwrapped.
     let mut want = vec![0f32; n];
     for row in &view.rows {
         for (c, cell) in row.cells.iter().enumerate() {
             let w = fonts.layout(&cell.view, f32::INFINITY, Kind::Prose).width;
-            want[c] = want[c].max(w.ceil());
+            want[c] = want[c].max(rules.up(w));
         }
     }
-    let chrome = PAD_X * 2.0 + BORDER;
-    let room = (avail - indent - BORDER - chrome * n as f32).max(MIN_TEXT * n as f32);
-    let text = fit(&want, room);
+    let chrome = rules.pad_x * 2.0 + rules.across;
+    let room = (avail - indent - rules.across - chrome * n as f32).max(MIN_TEXT * n as f32);
+    let text: Vec<f32> = fit(&want, room)
+        .into_iter()
+        .map(|t| rules.down_to(t))
+        .collect();
 
     let rows: Vec<RowGeom> = view
         .rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(r, row)| {
             let cells: Vec<Option<RowLayout>> = (0..n)
                 .map(|c| {
                     row.cells.get(c).map(|cell| {
@@ -248,17 +319,23 @@ pub fn layout(fonts: &mut Fonts, view: &TableView, avail: f32) -> TableLayout {
                 })
                 .collect();
             let tallest = cells.iter().flatten().map(|l| l.height).fold(0.0, f32::max);
+            let rule = if rules.ruled(r, &view.rows) {
+                rules.down
+            } else {
+                0.0
+            };
             RowGeom {
-                height: tallest + PAD_Y * 2.0 + BORDER,
+                height: tallest + rules.pad_y * 2.0 + rule,
                 cells,
             }
         })
         .collect();
-    let height = BORDER + rows.iter().map(|r| r.height).sum::<f32>();
+    let height = rules.down + rows.iter().map(|r| r.height).sum::<f32>();
     TableLayout {
         indent,
         prefix,
         cols: text.iter().map(|t| t + chrome).collect(),
+        rules,
         rows,
         height,
     }
@@ -391,5 +468,49 @@ mod tests {
         assert_eq!(l.cols.len(), 2);
         assert_eq!(l.rows.len(), 3);
         assert!(l.height > 3.0 * crate::viewport::LINE as f32);
+    }
+
+    #[test]
+    fn a_narrow_right_aligned_cell_is_hit_where_it_is_drawn() {
+        let d = doc("| Qty |\n|--:|\n| 12 |\n");
+        let v = view_of(&d.vmap.tables[0], usize::MAX, None, None);
+        let l = layout(&mut Fonts::new(Type::default()), &v, 600.0);
+        let cell = l.rows[1].cells[0].as_ref().unwrap();
+        let text = l.cols[0] - 2.0 * l.rules.pad_x - l.rules.across;
+        // The text's last pixel, at the right of its column: after the `1`.
+        assert_eq!(cell.col_at(0, text - 1.0), 2);
+    }
+
+    #[test]
+    fn on_a_grid_a_table_is_whole_cells_ruled_under_its_head_and_last_row() {
+        let g = Grid {
+            width: 9.6,
+            height: 24.0,
+        };
+        let ty = Type {
+            body: "Menlo, monospace".into(),
+            mono: "Menlo, monospace".into(),
+            grid: Some(g),
+            ..Type::default()
+        };
+        let d = doc("| Name | Notes |\n|---|---|\n| one | a |\n| two | b |\n| six | c |\n");
+        let v = view_of(&d.vmap.tables[0], usize::MAX, None, None);
+        let l = layout(&mut Fonts::new(ty), &v, 600.0);
+        let cells = |w: f32| w / g.width;
+        for (c, w) in l.cols.iter().enumerate() {
+            assert!(
+                (cells(*w) - cells(*w).round()).abs() < 0.01,
+                "column {c} is {w}px"
+            );
+        }
+        // The head: a line and its rule; the body's rows a line each, and
+        // the last its rule too; the table's top rule above them all.
+        let heights: Vec<f32> = l.rows.iter().map(|r| r.height).collect();
+        assert_eq!(heights, [48.0, 24.0, 24.0, 48.0]);
+        assert_eq!(l.height, 24.0 * 7.0);
+        assert!(
+            (l.text_left(1) - l.cols[0] - 2.0 * g.width).abs() < 0.01,
+            "past the left rule, the first column and its padding"
+        );
     }
 }

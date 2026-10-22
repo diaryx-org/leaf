@@ -80,6 +80,6 @@ pub use input::{TableCommand, ZoomCommand};
 pub use keys::pressed;
 pub use link::{Context, Footnote};
 pub use row::{PAD, Pointer, PressMode, Target};
-pub use text::Type;
+pub use text::{Grid, Type};
 pub use trace::trace;
 pub use view::{Appearance, Palette, stylesheet, themed};

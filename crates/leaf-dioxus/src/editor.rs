@@ -704,13 +704,24 @@ impl Editor {
         self.max_top() + *self.sig.height.peek() + self.status_height()
     }
 
-    /// How tall the status line is: [`STATUS`], or nothing when the look
-    /// hides it.
+    /// How tall the status line is: [`STATUS`], or a row on a grid, or
+    /// nothing when the look hides it.
     pub fn status_height(&self) -> f64 {
         match self.sig.look.peek().status {
             Status::Hidden => 0.0,
-            Status::Full | Status::Words => STATUS,
+            Status::Full | Status::Words => self.chrome_row(STATUS),
         }
+    }
+
+    /// How tall a row of the editor's own chrome is: `pixels` in a window,
+    /// one cell on a grid ([`Type::grid`](crate::Type::grid)).
+    fn chrome_row(&self, pixels: f64) -> f64 {
+        self.sig
+            .look
+            .peek()
+            .ty
+            .grid
+            .map_or(pixels, |g| g.height as f64)
     }
 
     /// Where the text starts in the window, in CSS pixels: past the box's
@@ -803,7 +814,8 @@ impl Editor {
 
     /// Refresh what the find bar draws from its state.
     pub fn sync_bar(&self) {
-        let bar = BarView::of(&mut self.st.find.borrow_mut(), &self.st.doc.borrow());
+        let row = self.chrome_row(crate::find::ROW);
+        let bar = BarView::of(&mut self.st.find.borrow_mut(), &self.st.doc.borrow(), row);
         set(self.sig.bar, bar);
     }
 

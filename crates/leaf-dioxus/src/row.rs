@@ -11,7 +11,7 @@ use dioxus::html::Modifiers;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::table::{AlignKind, BORDER, Block};
+use crate::table::{AlignKind, Block};
 use crate::text::{Kind, QUOTE_BAR, RowLayout, byte_of_col};
 
 /// The column's side padding, in CSS pixels: the document's left edge in a
@@ -643,7 +643,15 @@ pub fn TableBlock(block: Block) -> Element {
         .rows
         .iter()
         .enumerate()
-        .map(|(r, g)| g.height + if r == 0 { BORDER } else { 0.0 })
+        .map(|(r, g)| g.height + if r == 0 { l.rules.down } else { 0.0 })
+        .collect();
+    // The first column's cells draw the table's left rule too, inside their
+    // boxes, past which `text_left` starts the text.
+    let widths: Vec<f32> = l
+        .cols
+        .iter()
+        .enumerate()
+        .map(|(c, w)| w + if c == 0 { l.rules.across } else { 0.0 })
         .collect();
     rsx! {
         div { class: "table", style: "height: {l.height}px",
@@ -664,7 +672,7 @@ pub fn TableBlock(block: Block) -> Element {
                                 Some(AlignKind::End) => "tcell end",
                                 _ => "tcell",
                             },
-                            style: "width: {l.cols[c]}px",
+                            style: "width: {widths[c]}px",
                             if let (Some(cell), Some(Some(cl))) = (row.cells.get(c), l.rows[r].cells.get(c)) {
                                 for (n, segs) in lines(&cell.view, cl).into_iter().enumerate() {
                                     Line {
