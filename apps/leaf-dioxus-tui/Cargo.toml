@@ -44,9 +44,9 @@ crossterm = "0.28"
 # Pictures, formulas and diagrams decoded and rasterised by leaf-raster, as
 # leaf-tui does, for blitz-tui to draw.
 leaf-raster = { path = "../../crates/leaf-raster" }
-# The menus and dialogs round the editor, as the Mac app draws them. On its
-# `dioxus-tui` branch, which adds the cell density, until that merges.
-unit = { git = "https://github.com/diaryx-org/unit", branch = "dioxus-tui" }
+# The menus and dialogs round the editor, as the Mac app draws them, in
+# their cell density.
+unit = { git = "https://github.com/diaryx-org/unit", branch = "main" }
 anyhow = "1"
 libc = "0.2"
 # The editor's timers.

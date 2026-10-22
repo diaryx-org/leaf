@@ -64,7 +64,7 @@ now blitz-tui's (about 2,000 lines with its tests); what stays here is about
   the source view already does. Without it the editor lays a heading out at
   twice the size the painter can draw it, and a click on a heading lands on
   the wrong character.
-- **unit (branch `dioxus-tui`):** `Density::Cell`, a density whose menu rows,
+- **unit (merged into `main`, unit#10):** `Density::Cell`, a density whose menu rows,
   separators and controls are each one cell high, with the menu's margin and
   overlap per density so it stays on the grid; `Unit::hot_first` made public;
   and keyboard choice for an action sheet (↑/↓/Tab, Return), which is useful
@@ -187,8 +187,8 @@ unit's cell density is a third way unit draws, to be kept working.
 2. Whether the editor should size its chrome in lines when a host asks (a
    `Look` option), so the find bar and table padding fit the grid. The
    `uniform` type is the first piece of it.
-3. Whether unit's `dioxus-tui` branch (the cell density, keyboard choice on
-   an action sheet) merges into unit's main.
+3. ~~Whether unit's `dioxus-tui` branch merges into unit's main~~: merged
+   (diaryx-org/unit#10); the prototype takes unit from `main`.
 4. Whether the prototype stays its own workspace, like `apps/leaf-dioxus`, or
    joins it, and whether CI builds and tests it.
 5. Only after it matches leaf-tui: whether it replaces leaf-tui.
