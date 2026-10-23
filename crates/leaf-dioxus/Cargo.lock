@@ -2339,6 +2339,7 @@ dependencies = [
 name = "leaf-dioxus"
 version = "0.0.0"
 dependencies = [
+ "accesskit",
  "arboard",
  "dioxus",
  "dioxus-native",

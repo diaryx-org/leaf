@@ -238,6 +238,9 @@ pub struct State {
     /// The runtime and the component the editor was made in, where a glide
     /// runs: it ends with them.
     pub home: Option<(Rc<dioxus::core::Runtime>, dioxus::core::ScopeId)>,
+    /// The text as assistive tech was last given it, whose positions its
+    /// requests name; see `access.rs`.
+    pub(crate) described: RefCell<Option<Rc<crate::access::Cached>>>,
 }
 
 /// What the render reads. Each is a signal, so the page re-renders when an
@@ -430,6 +433,7 @@ impl Editor {
             caught: Cell::new(false),
             home: dioxus::core::Runtime::try_current()
                 .and_then(|rt| rt.try_current_scope_id().map(|id| (rt, id))),
+            described: RefCell::default(),
         };
         Self {
             st: Rc::new(st),

@@ -165,7 +165,7 @@ impl Editor {
         self.sig.lays.peek().get(row)?.0.font_at(col)
     }
 
-    fn in_block(&self, row: usize) -> bool {
+    pub(crate) fn in_block(&self, row: usize) -> bool {
         self.sig
             .blocks
             .peek()

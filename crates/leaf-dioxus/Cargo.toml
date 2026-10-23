@@ -87,6 +87,9 @@ parley = "=0.12.0"
 unicode-width = "0.2"
 # Grapheme clusters, the unit a column advances by, as core walks them.
 unicode-segmentation = "1.13"
+# The document as assistive tech reads and edits it (`access.rs`): the
+# AccessKit Blitz's accessibility tree is made of, at the version it uses.
+accesskit = "0.25"
 
 # Block pictures (`media.rs`): a picture's size off its header, an SVG's off
 # its canvas, so the block's height is known before Blitz has decoded it. Both
