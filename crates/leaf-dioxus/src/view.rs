@@ -11,8 +11,8 @@ use crate::blocks::{self, Block};
 use crate::editor::{Editor, Status};
 use crate::findbar;
 use crate::row::{self, Row};
-use crate::table::{PAD_X, PAD_Y};
-use crate::text::Type;
+use crate::table::Rules;
+use crate::text::{Grid, Type};
 use crate::trace::trace;
 
 /// Light or dark: the system's, or one of the two whatever the system says.
@@ -53,8 +53,16 @@ pub fn css(ty: &Type) -> String {
         mono,
         size,
         leading,
+        grid,
     } = ty;
     let quote = ty.quote_indent();
+    let Rules {
+        pad_x,
+        pad_y,
+        across,
+        down,
+        ..
+    } = Rules::of(ty);
     let mut css = format!(
         "html, body {{ margin: 0; overflow: hidden; height: 100vh; background: var(--leaf-bg); }}
 body {{ position: relative; }}
@@ -70,15 +78,38 @@ body {{ position: relative; }}
 .leaf .table {{ box-sizing: border-box; }}
 .leaf .trow {{ display: flex; box-sizing: border-box; }}
 .leaf .trow.head .tcell {{ background: var(--leaf-table-head); }}
-.leaf .trow:first-child .tcell {{ border-top: 1px solid var(--leaf-separator); }}
+.leaf .trow:first-child .tcell {{ border-top: {down}px solid var(--leaf-separator); }}
 .leaf .tprefix {{ flex: none; white-space: pre; }}
-.leaf .tcell {{ flex: none; box-sizing: border-box; padding: {PAD_Y}px {PAD_X}px;
-                border-right: 1px solid var(--leaf-separator); border-bottom: 1px solid var(--leaf-separator); }}
-.leaf .tprefix + .tcell {{ border-left: 1px solid var(--leaf-separator); }}
+.leaf .tcell {{ flex: none; box-sizing: border-box; padding: {pad_y}px {pad_x}px;
+                border-right: {across}px solid var(--leaf-separator); border-bottom: {down}px solid var(--leaf-separator); }}
+.leaf .tprefix + .tcell {{ border-left: {across}px solid var(--leaf-separator); }}
 .leaf .tcell.center {{ text-align: center; }}
 .leaf .tcell.end {{ text-align: right; }}
 {CHROME}{REST}"
     );
+    if let Some(Grid {
+        width: w,
+        height: h,
+    }) = grid
+    {
+        // Every run at the body size, as `text.rs` measures them; a rule
+        // under a table's head and its last row only (`Rules::ruled`); and
+        // the find bar and the status line in whole cells, a row each, in the
+        // body's face, with no hairline, which would take a row of its own.
+        let label = 7.0 * w;
+        let count = 8.0 * w;
+        css.push_str(&format!(
+            ".leaf .h1, .leaf .h2, .leaf .h3, .leaf .sup, .leaf .sub {{ font-size: 1em; vertical-align: baseline; }}
+.leaf .tcell {{ border-bottom-width: 0; }}
+.leaf .trow.head .tcell, .leaf .trow:last-child .tcell {{ border-bottom-width: {down}px; }}
+.status {{ height: {h}px; line-height: {h}px; padding: 0 {w}px; gap: {w}px; font: {size}px {mono}; border-top: 0; }}
+.find {{ padding: 0 {w}px; font: {size}px {mono}; border-bottom: 0; }}
+.find .find-row {{ height: {h}px; gap: {w}px; }}
+.find .label {{ width: {label}px; }}
+.find .count {{ min-width: {count}px; }}
+.find .field, .find .btn {{ height: {h}px; line-height: {h}px; padding: 0 {w}px; border: 0; border-radius: 0; }}"
+        ));
+    }
     if std::env::var_os("LEAF_OUTLINE").is_some() {
         css.push_str(".leaf .line { outline: 1px solid #f00; } .leaf .line > span { outline: 1px solid #0a0; }");
     }
@@ -379,6 +410,7 @@ mod tests {
             mono: "Monaco, monospace".into(),
             size: 19.0,
             leading: 1.75,
+            grid: None,
         };
         let css = css(&ty);
         assert!(

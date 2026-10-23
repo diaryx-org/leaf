@@ -46,6 +46,22 @@ pub struct Type {
     pub size: f32,
     /// The line box over the size: CSS's unitless `line-height`.
     pub leading: f32,
+    /// A surface of character cells, a terminal's, or `None` for pixels.
+    /// On a grid every run is set at the body size, in every view: a heading
+    /// bold but no larger, a superscript on the line — what the source view
+    /// always does — since text larger than a cell cannot be drawn and a
+    /// click must land where it is drawn. And the editor's own chrome, the
+    /// find bar, the status line and a table's padding and rules, is sized
+    /// in whole cells.
+    pub grid: Option<Grid>,
+}
+
+/// One character cell of a grid surface, in CSS pixels: the monospace
+/// face's advance wide and one line box high.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Grid {
+    pub width: f32,
+    pub height: f32,
 }
 
 impl Default for Type {
@@ -56,6 +72,7 @@ impl Default for Type {
             mono: "Menlo, monospace".into(),
             size: 16.0,
             leading: 1.5,
+            grid: None,
         }
     }
 }
@@ -148,17 +165,33 @@ impl Fonts {
 
     /// Lay one row out `width` pixels wide.
     pub fn layout(&mut self, v: &RowView, width: f32, kind: Kind) -> RowLayout {
-        self.layout_aligned(v, width, kind, Alignment::Start)
+        let narrowest = self.ty.size * 4.0;
+        self.lay(v, width, kind, Alignment::Start, narrowest)
     }
 
     /// The same, with its lines aligned within `width` — a table cell's
     /// `:-:` or `--:`.
+    /// A table cell's width is the table's to choose, so it is kept as
+    /// given: laid out any wider, its aligned text would be hit-tested
+    /// further right than it is drawn.
     pub fn layout_aligned(
         &mut self,
         v: &RowView,
         width: f32,
         kind: Kind,
         align: Alignment,
+    ) -> RowLayout {
+        self.lay(v, width, kind, align, 0.0)
+    }
+
+    /// A row's lines, broken no narrower than `narrowest` pixels.
+    fn lay(
+        &mut self,
+        v: &RowView,
+        width: f32,
+        kind: Kind,
+        align: Alignment,
+        narrowest: f32,
     ) -> RowLayout {
         let split = v.runs.iter().take_while(|r| is_prefix(r)).count();
         let (prefix, body) = v.runs.split_at(split);
@@ -174,7 +207,7 @@ impl Fonts {
             pre.layout.width()
         };
         let line = self.ty.line();
-        let max = (kind != Kind::Cells).then(|| (width - prefix_w).max(self.ty.size * 4.0));
+        let max = (kind != Kind::Cells).then(|| (width - prefix_w).max(narrowest));
         let mut body = self.build(body, kind, max);
         if align != Alignment::Start && max.is_some() {
             body.layout.align(align, AlignmentOptions::default());
@@ -248,7 +281,7 @@ impl Fonts {
             ty.leading,
         )));
         for (r, range) in runs.iter().zip(&ranges) {
-            for property in style_of(&r.class, kind == Kind::Source, ty) {
+            for property in style_of(&r.class, kind == Kind::Source || ty.grid.is_some(), ty) {
                 b.push(property, range.clone());
             }
             // An inline formula: its atom glyph takes no room, and its
@@ -333,6 +366,9 @@ fn style_of(class: &str, uniform: bool, ty: &Type) -> Vec<StyleProperty<'static,
 /// The font size a run is set at, for a formula set inline in it.
 fn run_size(class: &str, ty: &Type) -> f32 {
     let mut size = ty.size;
+    if ty.grid.is_some() {
+        return size;
+    }
     for c in class.split(' ') {
         size = match c {
             "h1" => ty.size * 2.0,
@@ -623,6 +659,27 @@ mod tests {
             "{}",
             l.height
         );
+    }
+
+    #[test]
+    fn a_grid_sets_a_heading_at_the_body_size() {
+        let ty = Type {
+            grid: Some(Grid {
+                width: 9.6,
+                height: 24.0,
+            }),
+            ..Type::default()
+        };
+        let mut f = Fonts::new(ty.clone());
+        let heading = f.layout(&row(vec![run("Title", "g h1 b")]), 600.0, Kind::Prose);
+        let body = f.layout(&row(vec![run("Title", "g b")]), 600.0, Kind::Prose);
+        assert!(
+            (heading.height - ty.line()).abs() < 0.5,
+            "{}",
+            heading.height
+        );
+        assert_eq!(heading.height, body.height);
+        assert!(crate::view::css(&ty).contains(".leaf .h1, .leaf .h2"));
     }
 
     #[test]
