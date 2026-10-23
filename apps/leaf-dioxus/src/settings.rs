@@ -202,6 +202,7 @@ impl Settings {
             size: self.size.px() * zoom,
             leading: self.spacing.ratio(),
             grid: None,
+            faces: Default::default(),
         }
     }
 

@@ -107,6 +107,7 @@ fn App() -> Element {
                 size: SIZE,
                 leading: LEADING,
                 grid: Some(grid()),
+                faces: Default::default(),
             },
             measure: OPTIONS.get().measure,
             appearance: if dark {

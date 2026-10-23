@@ -54,6 +54,8 @@ pub fn css(ty: &Type) -> String {
         size,
         leading,
         grid,
+        // Files, not rules: the host gives Blitz's collection the same ones.
+        faces: _,
     } = ty;
     let quote = ty.quote_indent();
     let Rules {
@@ -411,6 +413,7 @@ mod tests {
             size: 19.0,
             leading: 1.75,
             grid: None,
+            faces: Default::default(),
         };
         let css = css(&ty);
         assert!(
