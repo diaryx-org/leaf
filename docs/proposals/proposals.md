@@ -14,6 +14,7 @@ contents:
 - '[Editors inside a document](embedded-editors.md)'
 - '[A shared, patched winit for the Dioxus work](/docs/proposals/a-shared-patched-winit-for-the-dioxus-work.md)'
 - '[The leaf-dioxus editor in a terminal](/docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md)'
+- '[An edit format shared by leaf and the core](/docs/proposals/an-edit-format-shared-by-leaf-and-the-core.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Proposals
