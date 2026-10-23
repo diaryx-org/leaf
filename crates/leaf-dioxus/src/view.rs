@@ -311,7 +311,9 @@ fn render(ed: &Editor) -> Element {
         // text selection, drawn over leaf's, and the focus changes that made
         // `onkeydown` unreliable (see `keys.rs`). Not `onpointerdown`:
         // cancelling the pointer event stops Blitz dispatching `mousedown`.
-        div { class: "leaf", style: "width: {column}px; margin-left: {margin}px; position: relative; left: {slide}px",
+        // The element assistive tech is given the document's text as
+        // (`access.rs`), by its id.
+        div { class: "leaf", id: crate::access::TEXT_ID, style: "width: {column}px; margin-left: {margin}px; position: relative; left: {slide}px",
             // The wheel and the trackpad, in CSS pixels: a line is 20.
             onwheel: move |e: WheelEvent| {
                 e.prevent_default();

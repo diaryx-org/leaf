@@ -68,6 +68,8 @@ blitz-traits = "=0.3.0-beta.4"
 # `View::accessibility_action_events` through the app's own window events:
 # the version blitz-shell's `accessibility` uses.
 accesskit_xplat = "0.2"
+# The tree itself, where the editor's text goes in (`access.rs`).
+accesskit = "0.25"
 # Export as PDF and Print (`pdf.rs`): Blitz's paint recorded, and drawn again
 # as PDF pages by krilla, glyphs' characters read back from their fonts.
 anyrender = "0.14"

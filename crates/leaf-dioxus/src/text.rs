@@ -530,6 +530,21 @@ impl RowLayout {
         (line, self.prefix_w + x)
     }
 
+    /// The display column each visual line starts at.
+    pub fn line_cols(&self) -> Vec<usize> {
+        self.lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                if i == 0 {
+                    0
+                } else {
+                    self.prefix_cols + cols(&self.body.text[..l.bytes.start])
+                }
+            })
+            .collect()
+    }
+
     /// The display column at the start or end of visual line `line`.
     pub fn edge(&self, line: usize, end: bool) -> usize {
         let line = line.min(self.lines.len() - 1);

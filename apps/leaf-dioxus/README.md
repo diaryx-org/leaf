@@ -98,6 +98,25 @@ app carries out through its own handling of window events. The tree is rebuilt a
 rebuilds it only on a poll that finds changes, which the app's own resolves
 have usually taken first. The iOS side is the fork's `examples/ios-a11y`.
 
+The document is a text area (`AXTextArea`), not static text. Each tree
+built passes through a hook (`access.rs`, blitz-shell's
+`View::set_accessibility_tree_hook`) that hands the editor's element to the
+editor (`Editor::describe`, the widget's `access.rs`): its value is the
+whole text, and its children are text runs, one per visual line, with each
+character's length, position and width, where its words start, and the
+selection. In the rendered view the text is the text as shown; in the
+source view it is the Markdown. So assistive tech reads AXValue,
+AXNumberOfCharacters, AXSelectedText and AXSelectedTextRange, AXInsertionPointLineNumber,
+AXRangeForLine, AXLineForIndex, AXStringForRange and AXBoundsForRange, and
+VoiceOver reads by line and word. Setting AXValue or AXSelectedTextRange
+comes back as AccessKit's `SetValue` or `SetTextSelection`, which the
+editor carries out through the document as typing does
+(`Editor::accessibility_action`): a new value replaces only the stretch
+that differs, typed over. The text and its runs are kept while the
+document, the caret and the rows' layouts are unchanged, so a frame that
+changes neither costs about a millisecond (120,000 characters, debug
+build).
+
 **winit is patched.** Its macOS backend is kept, patched, in the Blitz
 fork's `patches/winit-appkit` (`PATCH.md` there says what and why;
 `upstream/` is the change prepared for winit), and the app takes it by git
@@ -446,13 +465,15 @@ An agent can test the app without taking the screen from whoever is using it
   `open`, which brings the app forward; `additional_arguments` passes it
   arguments.
 - **Reading it.** `get_window_state` captures one window even when it is
-  covered or minimized. The tree holds only the window's own buttons and the
-  menu bar: the page is drawn by Blitz and has no accessibility elements.
-  Read frames with `list_windows` or `System Events` (`position`, `size`).
+  covered or minimized. The document is an `AXTextArea` whose value is its
+  text (see "Accessibility" above), and the toolbar's controls are buttons
+  and checkboxes. Read frames with `list_windows` or `System Events`
+  (`position`, `size`).
 - **Acting on it.** Menu items through `invoke_menu`, which does not
   activate the app; window buttons by their element tokens; text with
-  `type_text` and a point in the page, which reaches the editor in a covered
-  window. A pixel click in the background does not move the caret, and keys
+  `set_value` on the text area's element token, read back from its value
+  (checked on 2026-10-22, in a covered window), or `type_text` and a point in
+  the page. A pixel click in the background does not move the caret, and keys
   to a minimized window are refused. `delivery_mode: "foreground"` brings the
   app forward and moves the real pointer: not for a screen someone is using.
   `set_window_frame` moves and sizes a window, between displays too.

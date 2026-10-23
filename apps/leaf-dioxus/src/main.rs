@@ -24,6 +24,7 @@
 //! `LEAF_TRACE=1` logs keys, pointer events and repaint timings to stderr;
 //! `LEAF_OUTLINE=1` outlines every visual line and run.
 
+mod access;
 mod app;
 mod commands;
 mod context;

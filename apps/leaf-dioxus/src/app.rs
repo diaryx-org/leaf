@@ -349,6 +349,7 @@ impl App {
             });
             doc.initial_build();
         }
+        crate::access::install(&mut view, window.id());
         view.resume();
         view.request_redraw();
         self.blitz.windows.insert(window.id(), view);
@@ -587,9 +588,18 @@ impl ApplicationHandler for App {
             // A press assistive tech asks for is carried out as a click,
             // through this app's own handling of window events, so the page
             // and the editor see it as they see a hand's.
+            // What it asks of the document's text is the editor's.
             if let BlitzShellEvent::Accessibility { window_id, data } = &event
                 && let accesskit_xplat::WindowEvent::ActionRequested(request) = &**data
             {
+                let edited = self
+                    .blitz
+                    .windows
+                    .get(window_id)
+                    .is_some_and(|view| crate::access::action(view, *window_id, request));
+                if edited {
+                    continue;
+                }
                 let events = self
                     .blitz
                     .windows

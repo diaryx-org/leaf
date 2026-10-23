@@ -134,6 +134,14 @@ is the Swift editor's defaults.
   follow. It does not clip to the box: Blitz will not repaint a clip that
   changes, so the stylesheet still clips at `body`, and the host covers what
   lies outside the box with its own chrome, in a stacking layer above it.
+- **Assistive tech** reads the document as text when the host hands the
+  editor its element's node. Blitz's tree has the page's rows as static
+  text; a host with blitz-shell's `View::set_accessibility_tree_hook` finds
+  the element by its id, `TEXT_ID`, gives its node to `Editor::describe`,
+  which makes it a text area and answers its text runs, and puts the runs in
+  the tree in place of the nodes under it. The requests that come back for
+  that node or a run (`is_text_run`) go to `Editor::accessibility_action`.
+  `apps/leaf-dioxus/src/access.rs` does all three.
 - **Under a finger** (iOS), a tap places the caret and raises the keyboard,
   a drag scrolls, and a sideways drag, where `Editor::set_turns` allows it,
   slides the page and is `Host::turn` when let go far enough. The keyboard is

@@ -48,6 +48,7 @@
 //!   fork (`patches/winit-appkit`); a `[patch]` here would not reach a host's
 //!   build.
 
+mod access;
 mod blocks;
 mod bridge;
 mod dispatch;
@@ -73,6 +74,7 @@ mod trace;
 mod view;
 mod viewport;
 
+pub use access::{TEXT_ID, is_text_run};
 pub use blocks::Directive;
 pub use editor::{Bounds, Editor, Look, STATUS, Status, use_editor, use_shared_editor};
 pub use host::{Clipboard, Host, Request};
