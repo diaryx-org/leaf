@@ -20,10 +20,14 @@
 //! repeats on every line — the shape Swift's `BlockChrome` draws.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
+use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::bridge::rows::{RowView, Run};
 pub use parley::Alignment;
+pub use parley::fontique::Blob;
 use parley::{
     Affinity, AlignmentOptions, Cursor, FontContext, FontFamily, FontStyle, FontWeight, InlineBox,
     InlineBoxKind, Layout, LayoutContext, LineHeight, StyleProperty, VerticalAlign,
@@ -54,6 +58,49 @@ pub struct Type {
     /// find bar, the status line and a table's padding and rules, is sized
     /// in whole cells.
     pub grid: Option<Grid>,
+    /// Font files the host brings, measured beside the system's: what lets
+    /// `body` and `mono` name a face the system does not have. The host
+    /// gives the renderer the same files, or Blitz draws a fallback where
+    /// parley measured the face.
+    pub faces: Faces,
+}
+
+/// Font files a host brings with it, as TrueType or OpenType bytes (a
+/// collection is one file of several faces). Which faces they are is the
+/// host's choice; the editor only measures with them. Cheap to clone, and
+/// two are equal when they hold the same files.
+#[derive(Clone, Default)]
+pub struct Faces(Arc<[Blob<u8>]>);
+
+impl Faces {
+    /// The files, as parley holds them: what a host hands its renderer's
+    /// font collection too, so both read one copy.
+    pub fn blobs(&self) -> &[Blob<u8>] {
+        &self.0
+    }
+}
+
+impl<T: AsRef<[u8]> + Send + Sync + 'static> FromIterator<T> for Faces {
+    fn from_iter<I: IntoIterator<Item = T>>(files: I) -> Self {
+        Self(files.into_iter().map(|f| Blob::new(Arc::new(f))).collect())
+    }
+}
+
+impl PartialEq for Faces {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len()
+            && self
+                .0
+                .iter()
+                .zip(other.0.iter())
+                .all(|(a, b)| a.id() == b.id())
+    }
+}
+
+impl fmt::Debug for Faces {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Faces({} files)", self.0.len())
+    }
 }
 
 /// One character cell of a grid surface, in CSS pixels: the monospace
@@ -73,6 +120,7 @@ impl Default for Type {
             size: 16.0,
             leading: 1.5,
             grid: None,
+            faces: Faces::default(),
         }
     }
 }
@@ -115,15 +163,22 @@ pub struct Fonts {
     fcx: FontContext,
     lcx: LayoutContext<()>,
     ty: Type,
+    /// The [`Faces`] files already in `fcx`, by blob id: a collection
+    /// cannot forget a font, so a file is registered once however often the
+    /// type changes.
+    registered: HashSet<u64>,
 }
 
 impl Fonts {
     pub fn new(ty: Type) -> Self {
-        Self {
+        let mut fonts = Self {
             fcx: FontContext::new(),
             lcx: LayoutContext::new(),
-            ty,
-        }
+            ty: Type::default(),
+            registered: HashSet::new(),
+        };
+        fonts.set_ty(ty);
+        fonts
     }
 
     pub fn ty(&self) -> &Type {
@@ -132,11 +187,17 @@ impl Fonts {
 
     /// Set the text in another type. Every layout made before is stale.
     pub fn set_ty(&mut self, ty: Type) {
+        for blob in ty.faces.blobs() {
+            if self.registered.insert(blob.id()) {
+                self.fcx.collection.register_fonts(blob.clone(), None);
+            }
+        }
         self.ty = ty;
     }
 
-    /// Whether the system has a family by this name — a settings choice
-    /// that is not installed would only fall back to the next in its list.
+    /// Whether the system, or the host's [`Faces`], has a family by this
+    /// name — a settings choice that is not installed would only fall back
+    /// to the next in its list.
     pub fn has_family(&mut self, name: &str) -> bool {
         self.fcx.collection.family_by_name(name).is_some()
     }
@@ -771,6 +832,52 @@ mod tests {
             ..Type::default()
         });
         assert!((f.char_width() - 2.0 * body).abs() < 0.2);
+    }
+
+    #[test]
+    fn a_face_the_host_brings_is_measured() {
+        const FACE: &[u8] = include_bytes!("../tests/faces/leaf-test-face.ttf");
+        const NAME: &str = "Leaf Test Face";
+        let mut f = Fonts::new(Type::default());
+        assert!(!f.has_family(NAME));
+
+        let faces: Faces = [FACE].into_iter().collect();
+        let ty = Type {
+            body: format!("\"{NAME}\", serif"),
+            faces: faces.clone(),
+            ..Type::default()
+        };
+        f.set_ty(ty.clone());
+        assert!(f.has_family(NAME));
+        // The same files again are already in the collection.
+        f.set_ty(ty.clone());
+        assert_eq!(f.registered.len(), 1);
+        assert_eq!(
+            ty,
+            Type {
+                faces: faces.clone(),
+                ..ty.clone()
+            }
+        );
+        assert_ne!(
+            ty,
+            Type {
+                faces: Faces::default(),
+                ..ty.clone()
+            }
+        );
+
+        let fonts: Vec<u64> = f
+            .build(&[plain("abc")], Kind::Prose, None)
+            .layout
+            .lines()
+            .flat_map(|line| line.items().collect::<Vec<_>>())
+            .filter_map(|item| match item {
+                parley::PositionedLayoutItem::GlyphRun(g) => Some(g.run().font().data.id()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fonts, [faces.blobs()[0].id()]);
     }
 
     #[test]
