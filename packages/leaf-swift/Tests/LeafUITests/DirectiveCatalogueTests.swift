@@ -36,7 +36,7 @@ final class DirectiveCatalogueTests: XCTestCase {
         let model = try LeafEditorModel(source: "Text.\n")
         model.insert(DirectiveItem(id: "d.embed", name: "embed", title: "Embed", icon: "link",
                                    content: DirectiveContent(attrs: ["src": "https://x.org", "wide": ""])))
-        XCTAssertTrue(model.source().contains("::embed{src=\"https://x.org\" wide}"), model.source())
+        XCTAssertTrue(model.source().contains("::embed{src=\"https://x.org\" wide=\"\"}"), model.source())
     }
 
     func testAnAskCanWriteOrCancel() throws {

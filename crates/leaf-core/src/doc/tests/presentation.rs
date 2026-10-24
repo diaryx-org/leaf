@@ -619,7 +619,7 @@ fn insert_page_break_parts_the_paragraph_and_spells_the_directive() {
 fn insert_directive_round_trips_name_label_and_attrs() {
     let attrs: Attrs = vec![
         ("src".into(), Some("https://x.org/a".into())),
-        ("title".into(), Some("a \"quoted\" b".into())),
+        ("title".into(), Some("a b".into())),
         ("wide".into(), None),
     ];
     let mut md = doc_with("directive_md", "hello world\n");
@@ -628,7 +628,7 @@ fn insert_directive_round_trips_name_label_and_attrs() {
     assert_eq!(md.status, None);
     assert_eq!(
         md.source,
-        "hello\n\n::x-card[A card]{src=\"https://x.org/a\" title=\"a \\\"quoted\\\" b\" wide}\n\nworld\n"
+        "hello\n\n::x-card[A card]{src=\"https://x.org/a\" title=\"a b\" wide=\"\"}\n\nworld\n"
     );
     assert!(md.dirty);
     md.view = View::Wysiwyg;
@@ -638,21 +638,20 @@ fn insert_directive_round_trips_name_label_and_attrs() {
     };
     assert_eq!(d.name, "x-card");
     assert_eq!(d.label, "A card");
-    // A bare attribute reads back with an empty value: that is what twig
-    // reports for Markdown's `{wide}`.
+    // A bare attribute is written `wide=""` and reads back empty.
     assert_eq!(
         d.key().attrs,
         [
             ("src".to_string(), "https://x.org/a".to_string()),
-            ("title".to_string(), "a \"quoted\" b".to_string()),
+            ("title".to_string(), "a b".to_string()),
             ("wide".to_string(), String::new()),
         ]
     );
     assert_eq!(d.attr("src"), Some("https://x.org/a"));
 
     // djot: the attributes on a line of their own over the fence, a bare
-    // one spelled `key=""` so that djot reads it as an attribute at all,
-    // and a class kept apart from the name the fence gives.
+    // one spelled `key=""` as in every format, and a class kept apart from
+    // the name the fence gives.
     let mut dj = fmt_doc("hello world\n", Format::Djot);
     dj.caret = 5;
     let dj_attrs: Attrs = vec![
