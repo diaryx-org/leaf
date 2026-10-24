@@ -3400,8 +3400,8 @@ impl LeafDoc {
     /// [`insert_page_break`](Self::insert_page_break) places a page break,
     /// which is this gesture with leaf's own name. It arrives in
     /// [`DocView::directives`] as it went in: `attrs` is the
-    /// [`DirectiveAttr`] list a [`DirectiveView`] carries, an empty value a
-    /// bare attribute.
+    /// [`DirectiveAttr`] list a [`DirectiveView`] carries. An empty value is
+    /// written `key=""`, the flag every format reads back as one.
     ///
     /// A name twig will not write (it is an ASCII letter and then letters,
     /// digits, `-` and `_`), a label holding a line end or a square bracket,
@@ -3414,10 +3414,8 @@ impl LeafDoc {
         label: Option<String>,
         attrs: Vec<DirectiveAttr>,
     ) -> DocView {
-        let attrs: Vec<(String, Option<String>)> = attrs
-            .into_iter()
-            .map(|a| (a.key, (!a.value.is_empty()).then_some(a.value)))
-            .collect();
+        let attrs: Vec<(String, Option<String>)> =
+            attrs.into_iter().map(|a| (a.key, Some(a.value))).collect();
         let mut g = self.lock();
         g.doc.insert_directive(&name, label.as_deref(), &attrs);
         g.frame()
@@ -5247,7 +5245,7 @@ mod tests {
     }
 
     /// A host's directive goes in as the view hands it out — name, label and
-    /// the `DirectiveAttr` list, an empty value a bare attribute — and a
+    /// the `DirectiveAttr` list, an empty value written `key=""` — and a
     /// reported height reserves its rows under the same key.
     #[test]
     fn a_directive_goes_in_the_way_it_comes_out() {
@@ -5265,7 +5263,7 @@ mod tests {
         let v = d.insert_directive("x-card".into(), Some("A card".into()), attrs);
         assert!(
             d.source()
-                .contains("::x-card[A card]{src=\"https://x.org/a\" wide}")
+                .contains("::x-card[A card]{src=\"https://x.org/a\" wide=\"\"}")
         );
         let [x] = v.directives.as_slice() else {
             panic!("one directive");

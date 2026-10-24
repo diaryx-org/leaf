@@ -456,7 +456,7 @@ export interface RegionEditor {
 
 /**
  * A directive's attributes as `insertDirective` takes them: the `{key, value}`
- * list a `DirectiveView` carries — an empty value is a bare attribute — or a
+ * list a `DirectiveView` carries — an empty value is written `key=""` — or a
  * plain object of the same pairs.
  */
 export type DirectiveAttrs = DirectiveAttr[] | Record<string, string>;

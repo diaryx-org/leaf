@@ -34,7 +34,7 @@ use anyhow::Context;
 use anyhow::{Result, anyhow};
 use twig::{
     Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Gesture, InlineKind, Kind,
-    NodeId, QueryMatch,
+    NodeId, Op, QueryMatch,
 };
 use unicode_segmentation::GraphemeCursor;
 
@@ -56,6 +56,7 @@ mod insert;
 mod marks;
 mod move_block;
 mod newline;
+mod ops;
 mod presentation;
 mod splice;
 mod state;
@@ -735,6 +736,13 @@ pub struct Doc {
     /// it ever drift anyway, the first undo twig refuses sets it to zero.
     undo_steps: usize,
     redo_steps: usize,
+    /// Every change to the text since a host last took them, as ops against
+    /// [`ops_base`](Self::ops_base) — see [`take_ops`](Self::take_ops).
+    ops: Vec<Op>,
+    /// The text as a host last took the ops, which `ops` read.
+    ops_base: String,
+    /// twig's revision as of the last change folded into `ops`.
+    ops_revision: u64,
     /// The undo group a host has open, if any — see
     /// [`begin_undo_group`](Self::begin_undo_group). `None` outside one.
     undo_group: Option<UndoGroup>,

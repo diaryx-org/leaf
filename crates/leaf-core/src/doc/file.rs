@@ -190,11 +190,9 @@ impl Doc {
         // The pre-reload caret, so undoing the swap puts it back where the
         // reader was standing — the same bracketing `splice_exact` does.
         self.record_caret();
-        if self
-            .editor
-            .edit_range(0, self.source.len(), &source)
-            .is_ok()
-        {
+        // Only what differs, so the ops a host takes are the change and not
+        // the whole file, and the undo step holds no more.
+        if self.editor.apply(&Op::diff(&self.source, &source)).is_ok() {
             self.refresh();
         } else {
             // twig wouldn't take the splice. Start over from the bytes, which is
@@ -211,7 +209,10 @@ impl Doc {
                     if let Some(g) = &mut self.undo_group {
                         g.has_step = false;
                     }
-                    self.source = source.clone();
+                    let before = std::mem::replace(&mut self.source, source.clone());
+                    // A new editor, whose revisions start again: the change
+                    // is the diff of the two texts.
+                    self.record_ops(&before);
                     // Not going through `refresh`, so the revision has to move
                     // here or every frontend keeps painting the old file from
                     // cache.
@@ -240,9 +241,11 @@ impl Doc {
     /// funnel every edit, undo, and redo comes through — so it's where the
     /// revision moves, and anything cached against the text dies here.
     pub(super) fn refresh(&mut self) {
-        if let Ok(s) = self.editor.source_str() {
-            self.source = s;
-        }
+        let before = match self.editor.source_str() {
+            Ok(s) => std::mem::replace(&mut self.source, s),
+            Err(_) => self.source.clone(),
+        };
+        self.record_ops(&before);
         self.revision += 1;
         // An edit is a step onto the history and the end of anything undone;
         // `undo`/`redo` come through here too and correct this after.
