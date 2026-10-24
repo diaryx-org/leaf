@@ -51,12 +51,16 @@ readme = "README.md"
 # default `fig` feature: that is `twig::meta` (frontmatter read and edited
 # through fig, and a document's `twig:` key obeyed), which leaf never asks for,
 # and it would bring fig's YAML, TOML, JSON and figl parsers with it.
-twig-doc = { version = "6", default-features = false }
-twig-markdown = "6"
-twig-djot = "6"
-twig-html = "6"
-twig-asciidoc = "6"
-twig-xml = "6"
+#
+# From git until twig's major version with edit ops (diaryx-org/twig#18) is
+# released: every edit is retain, insert and delete ops, which `Doc` hands its
+# host. Back to a crates.io version once it is.
+twig-doc = { git = "https://github.com/diaryx-org/twig", branch = "cc/youthful-hamilton-hid5lb", default-features = false }
+twig-markdown = { git = "https://github.com/diaryx-org/twig", branch = "cc/youthful-hamilton-hid5lb" }
+twig-djot = { git = "https://github.com/diaryx-org/twig", branch = "cc/youthful-hamilton-hid5lb" }
+twig-html = { git = "https://github.com/diaryx-org/twig", branch = "cc/youthful-hamilton-hid5lb" }
+twig-asciidoc = { git = "https://github.com/diaryx-org/twig", branch = "cc/youthful-hamilton-hid5lb" }
+twig-xml = { git = "https://github.com/diaryx-org/twig", branch = "cc/youthful-hamilton-hid5lb" }
 # The CSS inside a `style` attribute: the presentation vocabulary is written
 # there, so another app renders it, and every edit to it keeps the declarations
 # leaf did not write. Shared with thorn, which edits an SVG's `style` the same way.
