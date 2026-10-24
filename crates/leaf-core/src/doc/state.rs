@@ -143,6 +143,7 @@ impl Doc {
             path,
             disk_hash,
             clean_source: source.clone(),
+            ops_base: source.clone(),
             source,
             caret: 0,
             anchor: None,
@@ -173,6 +174,8 @@ impl Doc {
             revision: 0,
             undo_steps: 0,
             redo_steps: 0,
+            ops: Vec::new(),
+            ops_revision: 0,
             undo_group: None,
             #[cfg(test)]
             refuse_next_literal: false,

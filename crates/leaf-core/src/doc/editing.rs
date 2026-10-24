@@ -86,15 +86,16 @@ impl Doc {
     /// was — what a host does when the file changed under an open editor, as
     /// another device's edit arriving does.
     ///
-    /// Only the span that differs is replaced: the longest prefix and suffix
-    /// the two share are kept, so a caret or selection outside the change
-    /// stays on the characters it was on, and one inside it goes to the end
-    /// of what replaced it, as [`substitute`](Self::substitute) moves them.
-    /// Unlike a substitution, `text` is source and written exactly — nothing
-    /// in it is escaped — since it is the document as it now stands, not
-    /// something typed. An undo step of its own. `true` with nothing done
-    /// when the source is already `text`; `false` when the document is
-    /// read-only or the edit was refused.
+    /// Only what differs is replaced: twig's diff of the two texts
+    /// ([`twig::Op::diff`]), applied as one edit. A caret or selection
+    /// outside every change stays on the characters it was on, even between
+    /// two changes far apart, and one inside a change goes to the end of what
+    /// replaced it, as [`substitute`](Self::substitute) moves them. Unlike a
+    /// substitution, `text` is source and written exactly — nothing in it is
+    /// escaped — since it is the document as it now stands, not something
+    /// typed. An undo step of its own. `true` with nothing done when the
+    /// source is already `text`; `false` when the document is read-only or
+    /// the edit was refused.
     pub fn replace_source(&mut self, text: &str) -> bool {
         if self.source == text {
             return true;
@@ -102,20 +103,8 @@ impl Doc {
         if self.read_only {
             return false;
         }
-        let (start, end, with) = differing_span(&self.source, text);
-        let with = with.to_owned();
-        let before = self.source.len();
-        let (caret, anchor) = (self.caret, self.anchor);
-        let pending = (self.pending_marks, self.pending_at);
-        self.last_edit_kind = None;
-        if !self.splice_exact(start, end, &with, EditKind::Other) {
-            self.caret = caret;
-            self.anchor = anchor;
-            self.record_caret();
-            return false;
-        }
-        self.carry_selection(caret, anchor, pending, start, end, before);
-        true
+        let ops = Op::diff(&self.source, text);
+        self.apply_ops(&ops)
     }
 
     /// Put the caret and selection back after an edit of `[start, end)` that

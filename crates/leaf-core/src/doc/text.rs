@@ -571,27 +571,3 @@ pub(super) fn detect_format(path: &Path) -> Result<Format> {
         other => return Err(anyhow!("unknown document extension: .{other}")),
     })
 }
-
-/// The one span `from` and `to` differ in: `[start, end)` of `from`, and
-/// what `to` holds there. The longest shared prefix, then the longest shared
-/// suffix of what is left — never overlapping it — each ended on a character
-/// boundary of both.
-pub(super) fn differing_span<'a>(from: &str, to: &'a str) -> (usize, usize, &'a str) {
-    let (a, b) = (from.as_bytes(), to.as_bytes());
-    let mut prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
-    while !(from.is_char_boundary(prefix) && to.is_char_boundary(prefix)) {
-        prefix -= 1;
-    }
-    let most = a.len().min(b.len()) - prefix;
-    let mut suffix = a
-        .iter()
-        .rev()
-        .zip(b.iter().rev())
-        .take(most)
-        .take_while(|(x, y)| x == y)
-        .count();
-    while !(from.is_char_boundary(a.len() - suffix) && to.is_char_boundary(b.len() - suffix)) {
-        suffix -= 1;
-    }
-    (prefix, a.len() - suffix, &to[prefix..b.len() - suffix])
-}
