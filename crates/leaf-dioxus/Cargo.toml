@@ -35,6 +35,11 @@ vello = ["dioxus-native/vello"]
 # cascade sends every unix that is not macOS to X11/Wayland, iOS included,
 # which is the same reason leaf-gpui gates it.
 system-clipboard = ["dep:arboard"]
+# In a browser, the Mermaid renderer in a wasm module of its own, fetched the
+# first time a diagram is drawn (`picture.rs`). Only for a build that runs
+# the splitter (`cargo xtask web`): without it, the wasm imports a loader no
+# page provides.
+wasm-split = ["dep:wasm_split"]
 
 [dependencies]
 dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
@@ -110,3 +115,6 @@ tokio = { version = "1", default-features = false, features = ["time"] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Navigator", "Window"] }
+# Dioxus's split points (`wasm-split`). Its macro names the crate
+# `wasm_split`, hence the rename.
+wasm_split = { package = "wasm-splitter", version = "=0.8.0-alpha.3", optional = true }

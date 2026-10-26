@@ -48,6 +48,13 @@ pub enum Body {
     Svg(Rc<Svg>),
     /// The typesetter's complaint, shown in the picture's place.
     Error(String),
+    /// A diagram whose renderer is still loading (`wasm-split`): a box in
+    /// its place until it arrives and the editor repaints.
+    #[cfg_attr(
+        not(all(target_arch = "wasm32", feature = "wasm-split")),
+        expect(dead_code, reason = "only a split build draws in the background")
+    )]
+    Pending,
 }
 
 /// A formula or a diagram, laid out.
@@ -161,19 +168,73 @@ pub fn formula(tex: &str, size: f32, ink: [u8; 4]) -> Body {
 }
 
 /// A Mermaid diagram's picture, made once per source and appearance.
+#[cfg(not(all(target_arch = "wasm32", feature = "wasm-split")))]
 pub fn diagram(source: &str, dark: bool) -> Body {
     DIAGRAMS.with(|c| {
         c.borrow_mut()
             .entry((source.to_owned(), dark))
-            .or_insert_with(|| match leaf_mermaid::render(source, dark, None) {
-                Ok(p) => Body::Svg(Rc::new(Svg {
-                    url: data_url(&p.svg),
-                    size: (p.width as f32, p.height as f32),
-                })),
-                Err(e) => Body::Error(e.message),
-            })
+            .or_insert_with(|| render_diagram(source, dark))
             .clone()
     })
+}
+
+fn render_diagram(source: &str, dark: bool) -> Body {
+    match leaf_mermaid::render(source, dark, None) {
+        Ok(p) => Body::Svg(Rc::new(Svg {
+            url: data_url(&p.svg),
+            size: (p.width as f32, p.height as f32),
+        })),
+        Err(e) => Body::Error(e.message),
+    }
+}
+
+/// A Mermaid diagram's picture, made once per source and appearance — with
+/// the renderer in a wasm module of its own, fetched the first time a
+/// diagram is drawn: [`Body::Pending`] until it is, and then every editor
+/// repaints ([`on_arrival`]).
+///
+/// The renderer is 1.5 MB of the wasm, and most documents have no diagram.
+/// `wasm_split` moves what only [`lazy_diagram`] reaches into that module,
+/// when the build is split (`cargo xtask web`).
+#[cfg(all(target_arch = "wasm32", feature = "wasm-split"))]
+pub fn diagram(source: &str, dark: bool) -> Body {
+    let key = (source.to_owned(), dark);
+    if let Some(body) = DIAGRAMS.with(|c| c.borrow().get(&key).cloned()) {
+        return body;
+    }
+    if PENDING.with(|p| p.borrow_mut().insert(key.clone())) {
+        wasm_bindgen_futures::spawn_local(async move {
+            let body = lazy_diagram(key.0.clone(), key.1).await;
+            PENDING.with(|p| p.borrow_mut().remove(&key));
+            DIAGRAMS.with(|c| c.borrow_mut().insert(key, body));
+            ARRIVED.with(|a| a.borrow_mut().retain(|repaint| repaint()));
+        });
+    }
+    Body::Pending
+}
+
+/// The split point: what this reaches and nothing else does goes into the
+/// `mermaid` module.
+#[cfg(all(target_arch = "wasm32", feature = "wasm-split"))]
+#[wasm_split::wasm_split(mermaid)]
+async fn lazy_diagram(source: String, dark: bool) -> Body {
+    render_diagram(&source, dark)
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "wasm-split"))]
+thread_local! {
+    /// The diagrams being drawn in the background.
+    static PENDING: RefCell<std::collections::HashSet<(String, bool)>> = RefCell::default();
+    /// What to do when one arrives: each living editor's repaint, which
+    /// answers whether its editor still lives.
+    static ARRIVED: RefCell<Vec<Box<dyn Fn() -> bool>>> = RefCell::default();
+}
+
+/// Call `repaint` whenever a diagram drawn in the background arrives, until
+/// it answers `false`.
+#[cfg(all(target_arch = "wasm32", feature = "wasm-split"))]
+pub fn on_arrival(repaint: impl Fn() -> bool + 'static) {
+    ARRIVED.with(|a| a.borrow_mut().push(Box::new(repaint)));
 }
 
 /// Note the document's inline formulas, by offset, and the appearance they
@@ -240,6 +301,7 @@ fn box_of(body: &Body, width: f32, max: f32) -> (f32, f32) {
             ((w * scale).round(), (h * scale).round())
         }
         Body::Error(_) => (width.min(360.0), 44.0),
+        Body::Pending => (width.min(MAX_DIAGRAM), 120.0),
     }
 }
 
@@ -348,6 +410,9 @@ pub fn PictureBlock(block: Block) -> Element {
     let body = match &block.body {
         Body::Svg(s) => rsx! {
             img { src: "{s.url}", style: "display: block; width: {w}px; height: {h}px; {ring}" }
+        },
+        Body::Pending => rsx! {
+            div { style: "width: {w}px; height: {h}px; border-radius: 6px; border: 1px dashed var(--leaf-tertiary); {ring}" }
         },
         Body::Error(message) => rsx! {
             div { style: "display: flex; align-items: center; padding: 0 10px; box-sizing: border-box;
