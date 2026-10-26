@@ -1,0 +1,90 @@
+# A twig-export style config.
+#
+# Parsed by `fig`, so this same config could be written as .yaml, .json, or
+# .fig — the extension picks the parser.
+#
+# Two things a document can drive:
+#   * `document.from-metadata` binds frontmatter keys to page setup.
+#   * `[[rule]]` selectors match in-text directives, classes, and attributes.
+# In both cases THIS file is the authority. A document key nothing binds, and
+# a directive no rule mentions, do nothing.
+
+[document]
+paper = "a4"
+margin = "2.5cm"
+size = "11pt"
+leading = "0.65em"
+lang = "en"
+page-numbering = "1"
+
+# Frontmatter keys → document settings. `pdf-paper` is a key this config
+# invents; `title`/`author` are ones documents already carry.
+[document.from-metadata]
+title = "title"
+author = "author"
+paper = "pdf-paper"
+toc-depth = "pdf-toc"
+
+# ── Rules apply in source order; later rules overlay earlier ones property by
+# ── property. Put the general rule first, the specific one after.
+
+[[rule]]
+select = "heading[level=1]"
+size = "20pt"
+weight = "bold"
+space-before = "1.4em"
+space-after = "0.6em"
+
+[[rule]]
+select = "heading[level=2]"
+size = "15pt"
+weight = "semibold"
+space-before = "1.1em"
+
+# An admonition, expressed entirely in the neutral vocabulary — no raw Typst.
+[[rule]]
+select = "container[name=note]"
+space-before = "0.8em"
+space-after = "0.8em"
+
+[rule.box]
+fill = "#eef2ff"
+stroke = "#8899cc"
+stroke-width = "0.6pt"
+padding = "0.8em"
+radius = "3pt"
+
+# Only the fill is restated; stroke, padding and radius are inherited from the
+# rule above. This is the overlay cascade doing the work.
+[[rule]]
+select = "container[name=note][class~=warn]"
+
+[rule.box]
+fill = "#fff0f0"
+stroke = "#cc8888"
+
+# Audience filtering: drop a directive and its whole subtree.
+[[rule]]
+select = "container[name=internal]"
+hidden = true
+
+[[rule]]
+select = "block_quote"
+italic = true
+margin-left = "1.5em"
+color = "#444444"
+
+[[rule]]
+select = "code_block"
+size = "9pt"
+
+[rule.box]
+fill = "#f6f6f6"
+padding = "0.6em"
+radius = "2pt"
+
+# The escape hatch, named so it is obvious which part of this file is
+# Typst-specific and would not survive a backend swap.
+[[rule]]
+select = 'heading("Appendix")'
+break-before = "page"
