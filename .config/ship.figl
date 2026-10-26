@@ -16,6 +16,7 @@ post_bump = cargo xtask sync-versions
 extra_version_files = [
   apps/leaf-dioxus/Cargo.toml,
   apps/leaf-dioxus-tui/Cargo.toml,
+  apps/leaf-dioxus-web/Cargo.toml,
 ]
 
 # Not on crates.io: leaf is consumed from git, by commit, so a tag is a name
@@ -78,3 +79,12 @@ job
 > > id = dioxus
 > > name = Dioxus widget and app
 > > run = cargo fmt --manifest-path crates/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets --no-default-features --features vello -- -D warnings && cargo test --manifest-path crates/leaf-dioxus/Cargo.toml && cargo fmt --manifest-path apps/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path apps/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/leaf-dioxus/Cargo.toml
+> *
+> > # The web host (apps/leaf-dioxus-web, the editor in a browser tab), a
+> > # workspace of its own, and the widget as it builds there: for
+> > # `wasm32-unknown-unknown`, without the system clipboard, on Blitz's
+> > # hybrid renderer. Linted only: it runs in a browser, which `cargo test`
+> > # has none of (its README says how to try it).
+> > id = web
+> > name = Dioxus web host
+> > run = cargo fmt --manifest-path apps/leaf-dioxus-web/Cargo.toml --check && cargo clippy --manifest-path apps/leaf-dioxus-web/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --target wasm32-unknown-unknown --no-default-features --features dioxus-native/vello-hybrid -- -D warnings

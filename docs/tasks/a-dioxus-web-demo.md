@@ -34,5 +34,14 @@ labelled media and page breaks, a live status region); the clipboard in HTML
 and plain text; drag and drop, with files dropped in; `prefers-color-scheme`;
 a print stylesheet; and touch pointers for links and footnotes.
 
+**Since 2026-10-26.** Settled for Blitz in the browser, and begun:
+`apps/leaf-dioxus-web` runs the editor in a canvas through WebGPU, its
+README saying why and what does not work yet. The widget builds for wasm32
+with `clock.rs` (no `std::time::Instant` or tokio timer there) and reads the
+command key from the browser; the Blitz fork's `add_svg_fonts` gives SVG
+text the page's faces. Left: the input method (a hidden `<textarea>` feeding
+`ime.rs`), paste from outside the page, WebGL 2 for browsers without
+WebGPU, accessibility, and the Pages workflow that would deploy it.
+
 **Done when.** A release deploys a demo drawn by the leaf-dioxus editor, or
 the web is deliberately left to the archived editor's last deploy.
