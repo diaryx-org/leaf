@@ -5,14 +5,12 @@
 #
 # A workspace of its own, for the reason the Mac app is one: dioxus-native's
 # alpha pins a winit beta and a wgpu tree that leaf's root workspace should
-# not resolve. Built for the browser by wasm-pack, into `pkg/`, and served
-# from this directory by any static server:
+# not resolve. Built for the browser into `pkg/`, split, and served from this
+# directory by any static server:
 #
-#     wasm-pack build apps/leaf-dioxus-web --target web --release --no-typescript --no-pack
-#     python3 -m http.server -d apps/leaf-dioxus-web
+#     cargo xtask web --serve 8000
 #
-# There is nothing to build off the web: every line of the crate is behind
-# `cfg(target_arch = "wasm32")`.
+# There is nothing to build off the web: `main.rs` is empty there.
 [workspace]
 
 [package]
@@ -22,14 +20,15 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 
-[lib]
-crate-type = ["cdylib", "rlib"]
+[[bin]]
+name = "leaf_dioxus_web"
+path = "src/main.rs"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Default features off: the system clipboard is arboard's, which has no
 # browser; this host brings its own (`lib.rs`). And classic `vello` off, for
 # the hybrid renderer below.
-leaf-dioxus = { path = "../../crates/leaf-dioxus", default-features = false }
+leaf-dioxus = { path = "../../crates/leaf-dioxus", default-features = false, features = ["wasm-split"] }
 leaf-core = { path = "../../crates/leaf-core", default-features = false, features = ["syntax"] }
 dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
     "macro",
@@ -58,21 +57,14 @@ console_error_panic_hook = "0.1"
 
 # Stylo, parley and Vello want every optimisation they can get; the size is
 # brotli's to cut when the bundle is served (README.md).
+# What the splitter needs (`cargo xtask web`): fat LTO, so the call graph is
+# one module's, and debug info, so its functions have names. The xtask strips
+# both from what it writes into `pkg/`, so neither reaches the page.
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = true
 codegen-units = 1
-# No symbol names: the wasm's name section is 3.7 MB of the 25, and a panic
-# in the console names its file and line without it.
-strip = true
-
-# Binaryen's pass takes minutes over a bundle this size, and brotli saves more
-# when the bundle is served.
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = false
-
-[package.metadata.wasm-pack.profile.dev]
-wasm-opt = false
+debug = true
 
 [patch.crates-io]
 # Blitz from diaryx-org's fork, its `leaf` branch, as the Mac app takes it

@@ -6,30 +6,39 @@ WebGPU. It is the same editor as the Mac app's, on a document in memory
 (`demo.md`).
 
 ```sh
-wasm-pack build apps/leaf-dioxus-web --target web --release --no-typescript --no-pack
-python3 -m http.server -d apps/leaf-dioxus-web     # then open http://localhost:8000
+cargo xtask web --serve 8000     # then open http://localhost:8000
 ```
 
-wasm-pack fetches the `wasm-bindgen` that the lockfile names. The page is
-`index.html`, `pkg/` and `fonts/`; serve all three.
+The page is `index.html`, `pkg/` and `fonts/`; serve all three. The first
+build installs `wasm-bindgen` and `wasm-split-cli`, at the versions the
+lockfile names, into the app's `target/tools`.
 
 ## Size
 
-The wasm is 19.6 MB, 5.0 MB with brotli (`brotli -q 11`), and the fonts
-another 0.9 MB, fetched in parallel with it. Measured on 2026-10-26:
+The main wasm is 17.5 MB, 4.5 MB with brotli (`brotli -q 11`); the fonts
+another 0.9 MB, fetched in parallel with it; and the Mermaid renderer 2.7 MB
+(0.6 MB), fetched the first time a diagram is drawn. Measured on 2026-10-26.
 
-- The release profile strips symbol names (`strip = true`), which were
-  3.7 MB of the wasm. A panic still names its file and line.
-- The fonts are fetched by the page, not compiled in, so they download
-  beside the wasm and stay cached when it changes.
-- Binaryen's `wasm-opt -Oz` is off: it saves 1.7 MB before compression and
-  adds 0.1 MB after it, for a minute a build.
-- What is left is mostly the engine the first frame needs: Stylo (2.7 MB),
-  Blitz, parley, Vello and wgpu. The parts that could load later are the
-  Mermaid renderer (1.5 MB), syntax highlighting (syntect and two-face's
-  definitions, about 1.8 MB) and math (RaTeX and the KaTeX faces, about
-  0.9 MB). The image decoders (0.7 MB) and ICU's data are Blitz's
-  dependencies, which a host cannot turn off.
+- **Split** (`xtask/src/web.rs`, the steps of `dx build --wasm-split`): a
+  `#[wasm_split]` function in the widget's `picture.rs`, behind its
+  `wasm-split` feature, is the only way in to the renderer, so the renderer
+  goes into a module of its own. Until it arrives a diagram is an empty box,
+  and every editor repaints when it does. Without the split the wasm was
+  19.6 MB (5.0 MB).
+- **Stripped**: names, DWARF and relocations, which the splitter needs and
+  the page does not, go after the split; they were 3.7 MB of the wasm.
+- **Fonts**: fetched by the page, not compiled in, so they download beside
+  the wasm and stay cached when it changes.
+- **No `wasm-opt`**: `-Oz` saved 1.7 MB before compression and added 0.1 MB
+  after it, for a minute a build.
+
+What is left is mostly the engine the first frame needs: Stylo (2.7 MB),
+Blitz, parley, Vello and wgpu. Syntax highlighting (syntect and two-face's
+definitions, about 1.8 MB) and math (RaTeX and the KaTeX faces, about
+0.9 MB) could follow Mermaid, but both are called from inside a frame's
+layout — the highlighting from leaf-core's row builder — so each needs to
+draw plainly first and redraw when it arrives. The image decoders (0.7 MB)
+and ICU's data are Blitz's dependencies, which a host cannot turn off.
 
 ## Why Blitz in a canvas, and not the DOM
 

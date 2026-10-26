@@ -18,7 +18,6 @@
 //! method does not: winit's web backend has none, so a composition — an
 //! accent's dead key, a phone's keyboard, Japanese — does not reach the
 //! editor yet (README.md).
-#![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;
 use std::rc::Rc;
