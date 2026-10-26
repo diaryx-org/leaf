@@ -1,10 +1,14 @@
 ---
 status: open
 created: 2026-10-04
-updated: 2026-10-19
+updated: 2026-10-26
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Handoff of an open document between the Mac and iOS apps
+
+**Since the archive (2026-10-26).** The iOS app named here is archived
+(`archive/apps/leaf-editor`); the iOS end is now the Dioxus app on iOS, which
+has no iOS platform module yet.
 
 **Where.** `apps/leaf-dioxus/Info.plist` and `apps/leaf-editor/project.yml`
 (the document types), and the scene in `apps/leaf-editor/App/LeafApp.swift`

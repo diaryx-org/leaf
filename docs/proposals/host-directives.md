@@ -35,7 +35,7 @@ What the text below did not foresee:
 - leaf-swift and leaf-android lay out in points, so, like media, they never
   report heights through `set_directive_rows`. Only the terminal reports them.
 - On Android, a hardware Ctrl+Z under Gboard bypasses leaf's undo
-  ([task](/docs/tasks/ctrl-z-under-gboard.md)). The on-screen undo is correct.
+  ([task](/docs/tasks/closed/ctrl-z-under-gboard.md)). The on-screen undo is correct.
 
 ## The picture
 
@@ -127,7 +127,7 @@ with no hook, is drawn exactly as it is today.
 - **leaf-android**: a `directiveContent: @Composable (DirectiveView) -> Unit`
   slot, or null, placed by `EditorLayout` in the space `placeMedia` reserves for
   an image, with the rows collapsed the same way. This is the first
-  host-supplied block on Android. The [block views](../tasks/android-block-views.md)
+  host-supplied block on Android. The [block views](/docs/tasks/closed/android-block-views.md)
   task's tables and formulas are built-in blocks placed the same way.
 - **leaf-ratatui**: a `DirectiveRenderer` trait the host passes to the widget,
   which returns the `Vec<Line>` to draw for a directive at a given width, or

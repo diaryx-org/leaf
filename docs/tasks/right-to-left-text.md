@@ -1,10 +1,14 @@
 ---
 status: open
 created: 2026-09-04
-updated: 2026-09-04
+updated: 2026-10-26
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Right-to-left text
+
+**Since the archive (2026-10-26).** The frontend that follows core is now
+`crates/leaf-dioxus`, whose `access.rs` also hard-codes
+`TextDirection::LeftToRight`; the Swift code named below is under `archive/`.
 
 **Where.** `crates/leaf-core` first, then every frontend; `packages/leaf-swift`
 hard-codes left-to-right in `baseWritingDirection(for:in:)` and the row shaping.
