@@ -7,17 +7,15 @@ release_branch = main
 
 # No `verify`: before cutting, a release runs the jobs below.
 
-# The npm package's manifest, the iOS app's marketing version and the Mac
-# app's manifest (a workspace of its own) follow the workspace version, and no
-# manifest parser in ship reaches them — so the bump runs the task that writes
-# them, and the files are staged with the release commit. The `versions` job
-# checks they agree, which is what caught the npm one three releases behind.
+# The Dioxus apps' manifests (each a workspace of its own) follow the
+# workspace version, and ship's bump of the root workspace does not reach them
+# — so the bump runs the task that writes them, and the files are staged with
+# the release commit. The `versions` job checks they agree.
 post_bump = cargo xtask sync-versions
 
 extra_version_files = [
-  packages/leaf-web/package.json,
-  apps/leaf-editor/project.yml,
   apps/leaf-dioxus/Cargo.toml,
+  apps/leaf-dioxus-tui/Cargo.toml,
 ]
 
 # Not on crates.io: leaf is consumed from git, by commit, so a tag is a name
@@ -28,14 +26,12 @@ publishes = false
 # before the push is handed back to you is composed from these.
 tag_starts
 > *
-> > workflow = homebrew.yml
-> > does = builds the `leaf` CLI binaries and writes the tap formula
+> > workflow = mac-app.yml
+> > does = builds, signs and notarises Leaf.app, attaches its disk image to the release, and writes the tap's `leaf-editor` cask
 
 # The checks a release has to pass. `ship ci` runs them here, in this order,
 # with the same shell, and stops at the first that fails; `ship ci <id>` runs
-# one. `.github/workflows/ci.yml` does not run these: its checks are the binding
-# drift, the release-build rehearsal and the toolchain pin, which are about the
-# runners rather than the code.
+# one. No GitHub workflow runs them.
 #
 # A job is `id` (what `ship ci <id>` takes), `name` (the heading a full run
 # prints) and `run` (run by `bash -eo pipefail -c` at the repository root).
@@ -43,7 +39,7 @@ tag_starts
 # fails in seconds rather than after everything compiles.
 job
 > *
-> > # The npm package and the Mac app state the workspace version.
+> > # The Dioxus apps state the workspace version.
 > > id = versions
 > > name = Versions
 > > run = cargo xtask sync-versions --check

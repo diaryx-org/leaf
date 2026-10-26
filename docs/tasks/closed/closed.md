@@ -37,6 +37,9 @@ contents:
 - '[Split leaf-dioxus into a widget crate and its app](/docs/tasks/closed/split-leaf-dioxus-into-a-widget-crate-and-its-app.md)'
 - '[Place the Dioxus editor in part of a window](/docs/tasks/closed/place-the-dioxus-editor-in-part-of-a-window.md)'
 - '[The heading the caret is under is a question `Doc` cannot answer](/docs/tasks/closed/heading-at-offset.md)'
+- '[Android block views](/docs/tasks/closed/android-block-views.md)'
+- '[LeafUI''s own toolbar still defines every control a second time](/docs/tasks/closed/one-toolbar-definition.md)'
+- '[Ctrl+Z under Gboard undoes the keyboard''s text, not leaf''s step](/docs/tasks/closed/ctrl-z-under-gboard.md)'
 ---
 
 # Closed tasks

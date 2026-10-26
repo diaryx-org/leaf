@@ -8,6 +8,11 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 
 # A short row, a keyboard panel, and categories on the Mac
 
+**Since the archive (2026-10-26).** The implementation is LeafUI's, now under
+`archive/packages/leaf-swift`. The Mac's categories exist in the Dioxus app
+(`apps/leaf-dioxus/src/toolbar.rs`); the iOS row and panel are a gap, in "What
+iOS does not do yet".
+
 ## Status
 
 `implemented` on 2026-09-23, unreleased: the catalogue and the Mac's

@@ -32,8 +32,7 @@ use crate::util::{cmd, require_tool, root, run, stdout};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
-/// The team `DEVELOPMENT_TEAM` in `apps/leaf-editor/project.yml` names, which
-/// signs the Mac app too.
+/// The project's own Apple team, which signs the Mac app.
 const TEAM: &str = "V4322HH5HU";
 
 #[derive(clap::Args)]

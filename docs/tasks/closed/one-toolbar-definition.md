@@ -1,9 +1,12 @@
 ---
 title: LeafUI's own toolbar still defines every control a second time
-part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
+status: dropped
 ---
 # LeafUI's own toolbar still defines every control a second time
+
+**Dropped, 2026-10-26.** LeafToolbar and LeafUI's catalogue are archived
+(`archive/packages/leaf-swift`).
 
 LeafToolbar (`packages/leaf-swift/Sources/LeafToolbar`) is the formatting
 toolbar as a window's toolbar, over any `LeafToolbarEditor`. The Mac app

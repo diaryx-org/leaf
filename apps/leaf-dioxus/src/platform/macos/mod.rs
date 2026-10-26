@@ -306,24 +306,21 @@ pub fn open_sample() {
 }
 
 /// Where the bundle keeps its resources — the sample and its pictures, side
-/// by side. Run from `cargo run`, outside a bundle, the iOS app's folder
-/// the pictures come from.
+/// by side. Run from `cargo run`, outside a bundle, the app's own
+/// `resources/Media`, where the pictures come from.
 pub fn resources() -> PathBuf {
     let bundled = objc2_foundation::NSBundle::mainBundle()
         .resourcePath()
         .map(|p| PathBuf::from(p.to_string()));
     match bundled {
         Some(dir) if dir.join("Sample.md").exists() => dir,
-        _ => PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../leaf-editor/App/Media"
-        )),
+        _ => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/Media")),
     }
 }
 
 /// The bundled sample document's text.
 pub fn sample() -> String {
-    let dev = concat!(env!("CARGO_MANIFEST_DIR"), "/../leaf-editor/App/Sample.md");
+    let dev = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/Sample.md");
     std::fs::read_to_string(resources().join("Sample.md"))
         .or_else(|_| std::fs::read_to_string(dev))
         .unwrap_or_else(|_| "# leaf\n\nThe sample document is missing from the bundle.\n".into())

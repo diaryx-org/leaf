@@ -100,7 +100,7 @@ pub fn bundle(release: bool) -> Result<PathBuf> {
 
     // The icon: Assets.car for the system's own rendering, leaf.icns for
     // older readers, both named by Info.plist.
-    let sources = root.join("apps/leaf-editor/App");
+    let sources = root.join("apps/leaf-dioxus/resources");
     let partial = out.join("leaf-icon.plist");
     run(cmd("xcrun")
         .arg("actool")
@@ -135,7 +135,7 @@ pub fn bundle(release: bool) -> Result<PathBuf> {
 pub fn sample_copy() -> Result<PathBuf> {
     let dir = root().join("target/leaf-sample");
     std::fs::create_dir_all(&dir)?;
-    let app = root().join("apps/leaf-editor/App");
+    let app = root().join("apps/leaf-dioxus/resources");
     std::fs::copy(app.join("Sample.md"), dir.join("Sample.md"))?;
     for entry in std::fs::read_dir(app.join("Media"))? {
         let entry = entry?;

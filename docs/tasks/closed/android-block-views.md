@@ -1,10 +1,15 @@
 ---
-status: open
+status: dropped
 created: 2026-09-25
-updated: 2026-09-25
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-10-26
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # Android block views
+
+**Dropped, 2026-10-26.** The Compose editor this was for is archived
+(`archive/packages/leaf-android`). The leaf-dioxus editor draws tables, media
+and formulas on every platform; what Android still lacks is the task "What
+Android does not do yet".
 
 **Where.** `packages/leaf-android/leaf-compose` — `EditorLayout.kt` places
 rows, `LeafEditor.kt` draws them.

@@ -1,16 +1,14 @@
 //! `cargo xtask sync-versions` — write the workspace version into the files no
 //! manifest parser will ever find, and the CI check that they agree.
 //!
-//! Three such files today: `packages/leaf-web/package.json`, the iOS app's
-//! `MARKETING_VERSION` in `apps/leaf-editor/project.yml`, and the Mac app's
-//! manifest, `apps/leaf-dioxus/Cargo.toml` — a workspace of its own, which
-//! `ship`'s bump of the root workspace does not reach; `cargo xtask mac`
-//! stamps that version into the bundle's Info.plist. `ship` moves every
-//! Cargo manifest of the root workspace and the lockfile, and knows nothing
-//! about an npm manifest or an Xcode setting — so the package sat at 0.1.2 through three
-//! releases of the crates it wraps. `.config/ship.figl` names this task as the
-//! bump's `post_bump` and lists the files among `extra_version_files`, so a
-//! release commit carries them. `--check` is the `versions` CI job.
+//! Two such files today: the manifests of the Dioxus apps,
+//! `apps/leaf-dioxus/Cargo.toml` (Leaf for the Mac) and
+//! `apps/leaf-dioxus-tui/Cargo.toml` (the terminal), each a workspace of its
+//! own, which `ship`'s bump of the root workspace does not reach; `cargo xtask
+//! mac` stamps the Mac app's version into the bundle's Info.plist.
+//! `.config/ship.figl` names this task as the bump's `post_bump` and lists the
+//! files among `extra_version_files`, so a release commit carries them.
+//! `--check` is the `versions` CI job.
 
 use crate::util::{read, root};
 use anyhow::{Context, Result, bail};
@@ -18,12 +16,8 @@ use anyhow::{Context, Result, bail};
 /// The files that follow the workspace version without a manifest parser
 /// reaching them, as (path, the line prefix that finds the version).
 const FOLLOWERS: &[(&str, &str)] = &[
-    ("packages/leaf-web/package.json", "  \"version\": \""),
-    (
-        "apps/leaf-editor/project.yml",
-        "        MARKETING_VERSION: \"",
-    ),
     ("apps/leaf-dioxus/Cargo.toml", "version = \""),
+    ("apps/leaf-dioxus-tui/Cargo.toml", "version = \""),
 ];
 
 /// The version `[workspace.package]` states.
