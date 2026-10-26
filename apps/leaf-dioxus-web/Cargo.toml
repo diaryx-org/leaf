@@ -51,6 +51,7 @@ blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["
 # browser lists no system fonts. The parley Blitz and the editor pin.
 parley = "=0.12.0"
 wasm-bindgen = "0.2"
+js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
 # A panic, in the browser's console rather than as `unreachable`.
 console_error_panic_hook = "0.1"
@@ -61,6 +62,9 @@ console_error_panic_hook = "0.1"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+# No symbol names: the wasm's name section is 3.7 MB of the 25, and a panic
+# in the console names its file and line without it.
+strip = true
 
 # Binaryen's pass takes minutes over a bundle this size, and brotli saves more
 # when the bundle is served.

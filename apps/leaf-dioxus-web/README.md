@@ -10,9 +10,26 @@ wasm-pack build apps/leaf-dioxus-web --target web --release --no-typescript --no
 python3 -m http.server -d apps/leaf-dioxus-web     # then open http://localhost:8000
 ```
 
-wasm-pack fetches the `wasm-bindgen` that the lockfile names. The bundle is
-about 25 MB; brotli (`brotli -q 11 pkg/*.wasm`) cuts it by three to four
-times for serving.
+wasm-pack fetches the `wasm-bindgen` that the lockfile names. The page is
+`index.html`, `pkg/` and `fonts/`; serve all three.
+
+## Size
+
+The wasm is 19.6 MB, 5.0 MB with brotli (`brotli -q 11`), and the fonts
+another 0.9 MB, fetched in parallel with it. Measured on 2026-10-26:
+
+- The release profile strips symbol names (`strip = true`), which were
+  3.7 MB of the wasm. A panic still names its file and line.
+- The fonts are fetched by the page, not compiled in, so they download
+  beside the wasm and stay cached when it changes.
+- Binaryen's `wasm-opt -Oz` is off: it saves 1.7 MB before compression and
+  adds 0.1 MB after it, for a minute a build.
+- What is left is mostly the engine the first frame needs: Stylo (2.7 MB),
+  Blitz, parley, Vello and wgpu. The parts that could load later are the
+  Mermaid renderer (1.5 MB), syntax highlighting (syntect and two-face's
+  definitions, about 1.8 MB) and math (RaTeX and the KaTeX faces, about
+  0.9 MB). The image decoders (0.7 MB) and ICU's data are Blitz's
+  dependencies, which a host cannot turn off.
 
 ## Why Blitz in a canvas, and not the DOM
 
@@ -41,7 +58,7 @@ Tried in Chrome on a Mac, through WebGPU:
   wheel scrolls.
 - Headings, lists, quotes, tables, code with highlighting, footnotes,
   formulas, and Mermaid diagrams with their labels.
-- The page's own faces, bundled (`fonts/`, with their licences): Libertinus
+- The page's own faces (`fonts/`, with their licences): Libertinus
   Serif for the body and DejaVu Sans Mono for code. A browser shows no system
   fonts to Blitz, so the same files go to parley, to Blitz's font collection
   and to SVG text (`blitz_dom::add_svg_fonts`, on the Blitz fork's `leaf`).

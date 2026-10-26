@@ -22,6 +22,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use dioxus::prelude::*;
 use dioxus_native::winit::event::WindowEvent;
@@ -31,27 +32,29 @@ use leaf_dioxus::{Clipboard, Faces, Host, Look, Type, pressed, use_editor};
 use parley::fontique::{Collection, CollectionOptions, GenericFamily, SourceCache};
 use wasm_bindgen::prelude::*;
 
-/// The faces the page brings: Libertinus Serif for the body, in the book
-/// face's four styles, and DejaVu Sans Mono for code. Their licences are
-/// beside them in `fonts/`.
-const FILES: [&[u8]; 6] = [
-    include_bytes!("../fonts/LibertinusSerif-Regular.otf"),
-    include_bytes!("../fonts/LibertinusSerif-Italic.otf"),
-    include_bytes!("../fonts/LibertinusSerif-Bold.otf"),
-    include_bytes!("../fonts/LibertinusSerif-BoldItalic.otf"),
-    include_bytes!("../fonts/DejaVuSansMono.ttf"),
-    include_bytes!("../fonts/DejaVuSansMono-Bold.ttf"),
-];
+/// The faces the page brings, as `index.html` fetched them: Libertinus
+/// Serif for the body, in the book face's four styles, and DejaVu Sans Mono
+/// for code. Their licences are beside them in `fonts/`. Fetched beside the
+/// wasm rather than compiled into it, so they download in parallel with it
+/// and stay cached when it changes. Kept for the page's lifetime, which is
+/// what lets every [`Faces`] made of them share the bytes.
+static FILES: OnceLock<Vec<&'static [u8]>> = OnceLock::new();
 const BODY: &str = "Libertinus Serif";
 const MONO: &str = "DejaVu Sans Mono";
 
 /// What the page opens on.
 const DEMO: &str = include_str!("../demo.md");
 
-#[wasm_bindgen(start)]
-pub fn start() {
+/// Start the editor, with the font files `index.html` fetched, in order.
+#[wasm_bindgen]
+pub fn start(fonts: Vec<js_sys::Uint8Array>) {
     console_error_panic_hook::set_once();
-    blitz_dom::add_svg_fonts(FILES.map(<[u8]>::to_vec));
+    let files = fonts
+        .iter()
+        .map(|f| &*Vec::leak(f.to_vec()))
+        .collect::<Vec<&'static [u8]>>();
+    blitz_dom::add_svg_fonts(files.iter().map(|f| f.to_vec()));
+    let _ = FILES.set(files);
     dioxus_native::launch_cfg(
         App,
         Vec::new(),
@@ -64,7 +67,7 @@ pub fn start() {
 /// The page's faces, as the editor measures with them. The files are
 /// `'static`, so each `Faces` made of them shares the bytes.
 fn faces() -> Faces {
-    FILES.into_iter().collect()
+    FILES.get().into_iter().flatten().copied().collect()
 }
 
 /// Blitz's font collection: the page's faces and nothing else, with every

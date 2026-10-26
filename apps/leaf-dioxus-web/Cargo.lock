@@ -2476,6 +2476,7 @@ dependencies = [
  "console_error_panic_hook",
  "dioxus",
  "dioxus-native",
+ "js-sys",
  "leaf-core",
  "leaf-dioxus",
  "parley",
