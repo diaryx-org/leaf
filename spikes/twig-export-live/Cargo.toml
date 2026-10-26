@@ -1,0 +1,18 @@
+[package]
+name = "twig-export-live"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[dependencies]
+twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "main", default-features = false }
+twig-doc = { version = "6", default-features = false }
+twig-markdown = "6"
+typst = "0.15"
+typst-kit = { version = "0.15", features = ["embedded-fonts"] }
+typst-layout = "0.15"
+typst-pdf = "0.15"
+[profile.release]
+debug = false
+
+# Its own workspace, so leaf itself does not depend on it.
+[workspace]
