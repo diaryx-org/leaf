@@ -11,7 +11,8 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 
 ## Status
 
-`draft`, argued 2026-10-26 from leaf `main` at `67555a78` and twig-export
+`draft`, argued 2026-10-26 from leaf `main` at `d11f511a` (after every
+frontend but Dioxus moved to `archive/`) and twig-export
 `main` at `bf145b7`, which is on twig 6 and fig 7. The numbers are from the
 spike in [`spikes/twig-export-live`](/spikes/twig-export-live/README.md), which
 sets one document two ways: through twig-export's generated `.typ`, and as
@@ -41,7 +42,7 @@ ways to get an exact match, and one way to get a close one:
 | | What matches | What it costs |
 | --- | --- | --- |
 | **A. Shared settings** | The face, the sizes, the paper, the margins, the columns. Not where lines and pages break. | Small. A table of numbers both sides read, and a test. |
-| **B. twig-export sets leaf's layout** (export what leaf draws) | Everything, by construction. | leaf has no one layout to export: each frontend lays out text with its own toolkit. And leaf's layout has no contents page, no footnotes at the foot, no running heads. |
+| **B. twig-export sets leaf's layout** (export what leaf draws) | Everything, by construction. | The export would need Blitz and parley wherever a PDF is made, the CLI and the server included, and leaf's layout has no contents page, no footnotes at the foot, no running heads. |
 | **C. leaf draws twig-export's pages** | Everything, by construction. | Typst in the app, and a page view that draws Typst frames. A read-only preview first, then a caret over it. |
 
 The recommendation is **A now, then C in two steps**, with the words reaching
@@ -50,24 +51,25 @@ markup (**Typst for the procedural part only**, below). B is ruled out below.
 
 ## What exists
 
-**leaf lays out text in each toolkit's own engine.** leaf-core decides what
-each glyph is and how it is styled; it does not decide where a line breaks.
-leaf-swift breaks lines with Core Text (`CTTypesetterSuggestLineBreak` in
-`EditorLayout.swift`), greedy and with no hyphenation, and justifies by
-kerning the spaces of a finished line. The Mac app in Rust
-(`apps/leaf-dioxus`) breaks them with Blitz's text layout. leaf-android uses
-Compose's, and leaf-web the browser's. A page break falls between rows,
-never through one (`PageSetup.swift`, `apps/leaf-dioxus/src/pdf.rs`). So two
-leaf frontends can already disagree about a page by a line or two; the PDF
-from each is "what this frontend shows", which is a true statement for each
-one separately.
+**leaf lays out text with parley, and has no page view.** Since
+2026-10-26 leaf's one frontend is the Dioxus editor (`crates/leaf-dioxus`),
+in windows (`apps/leaf-dioxus`) and in a terminal (`apps/leaf-dioxus-tui`);
+the Swift, web, Android and ratatui frontends are in `archive/`. leaf-core
+decides what each glyph is and how it is styled; parley, under Blitz, decides
+where a line breaks (`crates/leaf-dioxus/src/text.rs`), greedily and with no
+hyphenation. The editor is a flowing column: pages exist only in Export as
+PDF and Print (`apps/leaf-dioxus/src/pdf.rs`), which lay out an offscreen
+editor as wide as the paper's column, a US Letter sheet with a 72-point
+margin, and break a page between rows, never through one. The paginated view
+with columns was leaf-swift's (`PageSetup.swift`), now archived; Diaryx's
+Apple app still uses that frontend at its pinned version, and its PDF.
 
 **twig-export lays out with Typst.** It emits a `.typ` file from the twig
 AST and a selector-to-style config, and compiles it in-process
 (`twig-export/DESIGN.md`). Typst breaks a justified paragraph with
 Knuth–Plass and hyphenation, a ragged one greedily; it measures line spacing
 from the bottom of one line to the top of the next (`leading`), not with the
-font's ascent and descent as Core Text does; it keeps widows and orphans
+font's ascent and descent as parley and Core Text do; it keeps widows and orphans
 off a page; it puts footnotes at the foot of the page; and a block can split
 across a page. Its page carries running heads, page numbers and a contents
 page, which leaf's does not.
@@ -82,18 +84,22 @@ math engine of its own, with different spacing and faces.
 **The four setting words are the shared contract.** Diaryx's
 `workspace/src/setting.rs` reads `font`, `size`, `layout` and `columns` from
 a document's frontmatter, and says that "every renderer answers it in its
-own idiom". leaf's `PageSetup` has the paper, the margins (72 points), the
-column count and the gutter (24 points). twig-export's config has the paper,
-the margin, the size and the leading, but no column count.
+own idiom". leaf's PDF has the paper and the margin (72 points), but no
+columns; the archived `PageSetup` had a column count and a 24-point gutter.
+twig-export's config has the paper, the margin, the size and the leading,
+but no column count.
 
 ## Why not B: twig-export sets what leaf draws
 
 B means: the export *is* leaf's layout, as `apps/leaf-dioxus/src/pdf.rs`
-already does for the Mac (an offscreen editor, painted into a PDF). It is
-exact for one frontend. It fails the Diaryx proposal's two requirements:
+already does (an offscreen editor, painted into a PDF). With one frontend
+left, B is more plausible than it was: parley sets the same lines wherever
+Dioxus runs. It still fails the Diaryx proposal's two requirements:
 
 - A PDF must be byte-identical across the CLI, the Mac, iOS and Android.
-  leaf's layout is four toolkits' layouts, and the CLI has none.
+  Each would have to make its PDF through Blitz and parley, the CLI and the
+  server included, and Diaryx's Apple app is still on the archived Swift
+  frontend.
 - A book needs a contents page, footnotes at the foot, running heads and
   page numbers. Those are a typesetter's, and building them into an editor's
   row layout is building a second Typst, badly.
@@ -110,14 +116,13 @@ Make every number that both sides set come from one place, and test it.
   (`#set page(columns: n)`); it has none today.
 - **The numbers under the words**: the margin (leaf's 72 points), the
   gutter (24 points), the body leading, and the size and spacing of each
-  heading level. leaf's themes hold these per frontend (`EditorTheme` in
-  Swift, `Look` in Rust). They become one table in leaf-core, which every
-  frontend's theme reads and which Diaryx's shipped twig-export template is
-  generated from.
+  heading level. leaf holds these in the Dioxus editor's `Look`. They
+  become one table in leaf-core, which `Look` reads and which Diaryx's
+  shipped twig-export template is generated from.
 - **The faces**: the generic families map to the same bundled files on both
   sides (`diaryx_faces`), so that `serif` is one font everywhere.
-- **A test**: one document, set by leaf (the Rust Mac app's offscreen layout,
-  which needs no simulator) and by twig-export, compared on paper size,
+- **A test**: one document, set by leaf (`pdf.rs`'s offscreen layout, which
+  needs no simulator) and by twig-export, compared on paper size,
   column count, body size, and the line count of each paragraph. The last is
   a tolerance, not an equality: it is the measure of how close A gets.
 
@@ -159,10 +164,10 @@ re-emits and recompiles, and the pane redraws the pages that changed.
 - **Click to source.** A click on the preview puts the caret in the editor
   at the word clicked. Through `.typ` that needs a span map in twig-export;
   through content built from the twig tree it needs nothing (below).
-- **Where it lands first**: the Rust Mac app (`apps/leaf-dioxus`), which can
-  link twig-export directly and draw a page as an image (`typst-render`) or
-  as vectors. leaf-swift and leaf-android reach it through `leaf-ffi` as page
-  images; leaf-web through a wasm build, later.
+- **Where it lands**: `apps/leaf-dioxus`, which links twig-export directly
+  and draws a page as an image (`typst-render`) or as vectors, on the Mac
+  first and then wherever that app runs. The terminal editor has no pages to
+  show; a web build would need Typst in wasm (**To settle**).
 
 ### C2. A caret on the page
 
@@ -184,9 +189,10 @@ not.
   page break, typing latency on a book (the 62 ms above, every key), and
   everything twig-export does not draw yet (math, highlights) — each of
   which C2 can only edit once Typst draws it.
-- **What it replaces**: leaf's own paginated layout (`PageSetup`, the page
-  stacking in `EditorLayout`). A document with `layout: a4` opens in the
-  Typst page view; `layout: continuous` opens in the flowing editor.
+- **What it adds**: the Dioxus editor has no page view today, so this is
+  its first, not a replacement. A document with `layout: a4` opens in the
+  Typst page view; `layout: continuous` opens in the flowing editor. The
+  archived leaf-swift view is what it would have replaced.
 
 C2 is real work, and it is worth deciding on after C1 has been used.
 
@@ -319,8 +325,9 @@ After A and C, leaf makes two promises, and each is true:
 - **The page view** promises the *page*: it is the PDF, drawn.
 
 This replaces "leaf's PDF stays, for what it is good at" in the Diaryx
-proposal. Once C1 exists, leaf's own PDF (`pdfData`, `pdf.rs`) prints a page
-nobody will see anywhere else, and Export as PDF goes through twig-export on
+proposal. Once C1 exists, leaf's own PDF (`pdf.rs`, and the archived
+`pdfData` that Diaryx's Apple app still calls) prints a page nobody will see
+anywhere else, and Export as PDF goes through twig-export on
 every platform. Print as shown can stay as a separate command, if anyone
 asks for it.
 
