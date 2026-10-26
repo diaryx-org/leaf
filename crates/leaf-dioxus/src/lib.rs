@@ -51,6 +51,7 @@
 mod access;
 mod blocks;
 mod bridge;
+mod clock;
 mod dispatch;
 mod editor;
 mod find;

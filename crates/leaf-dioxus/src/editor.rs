@@ -17,10 +17,10 @@ use std::cell::{Cell, RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
 
 use crate::bridge::frame::Frame;
 use crate::bridge::rows::{Marks, RowHandle, RowView};
+use crate::clock::Instant;
 use dioxus::prelude::*;
 use dioxus_native::winit::window::Window;
 use leaf_core::{Doc, View};

@@ -2344,6 +2344,7 @@ dependencies = [
  "dioxus",
  "dioxus-native",
  "image",
+ "js-sys",
  "leaf-core",
  "leaf-math",
  "leaf-mermaid",
@@ -2352,6 +2353,9 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "usvg",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
 ]
 
 [[package]]

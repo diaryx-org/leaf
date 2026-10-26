@@ -124,13 +124,37 @@ pub fn apply_table(doc: &mut Doc, cmd: TableCommand) -> Action {
     Action::Handled
 }
 
-/// ⌘ arrives as `META` — `keyboard-types` 0.8 retired `SUPER`, which Blitz
-/// reported it as through 0.3.0-beta.3. Matching the other one, every ⌘ chord
-/// fell through to the plain keys: ⌘I typed an `i`, ⌘↓ moved one row.
-#[cfg(target_os = "macos")]
-const CMD: Modifiers = Modifiers::META;
-#[cfg(not(target_os = "macos"))]
-const CMD: Modifiers = Modifiers::CONTROL;
+/// Whether the keys are a Mac's: ⌘ the command key, and ⌃ the Emacs keys
+/// beside it. Built for macOS, they are. In a browser the build says
+/// nothing — `target_os` is `unknown` there — so the browser is asked, once:
+/// a Mac, an iPhone or an iPad has a Mac's keys.
+fn mac_keys() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        thread_local! {
+            static MAC: bool = web_sys::window()
+                .and_then(|w| w.navigator().user_agent().ok())
+                .is_some_and(|ua| ["Macintosh", "iPhone", "iPad"].iter().any(|p| ua.contains(p)));
+        }
+        MAC.with(|mac| *mac)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        cfg!(target_os = "macos")
+    }
+}
+
+/// The command key's modifier. ⌘ arrives as `META` — `keyboard-types` 0.8
+/// retired `SUPER`, which Blitz reported it as through 0.3.0-beta.3.
+/// Matching the other one, every ⌘ chord fell through to the plain keys: ⌘I
+/// typed an `i`, ⌘↓ moved one row.
+fn cmd() -> Modifiers {
+    if mac_keys() {
+        Modifiers::META
+    } else {
+        Modifiers::CONTROL
+    }
+}
 
 /// Apply one key press to the document.
 ///
@@ -144,8 +168,8 @@ const CMD: Modifiers = Modifiers::CONTROL;
 pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Action {
     let shift = mods.contains(Modifiers::SHIFT);
     let alt = mods.contains(Modifiers::ALT);
-    let cmd = mods.contains(CMD);
-    let ctrl = cfg!(target_os = "macos") && mods.contains(Modifiers::CONTROL);
+    let cmd = mods.contains(cmd());
+    let ctrl = mac_keys() && mods.contains(Modifiers::CONTROL);
 
     if cmd && ctrl && code == Code::Space {
         return Action::CharacterPalette;
@@ -408,7 +432,7 @@ mod tests {
     fn cmd_b_bolds_the_selection() {
         let mut d = doc("hello\n");
         d.select_range(0, 5);
-        press(&mut d, ch("b"), Code::KeyB, CMD);
+        press(&mut d, ch("b"), Code::KeyB, cmd());
         assert!(d.source.starts_with("**hello**"), "{:?}", d.source);
     }
 
@@ -416,7 +440,7 @@ mod tests {
     fn shift_cmd_8_is_a_bullet_list_though_its_key_is_a_star() {
         let mut d = doc("item\n");
         d.place_caret(1, false);
-        press(&mut d, ch("*"), Code::Digit8, CMD | Modifiers::SHIFT);
+        press(&mut d, ch("*"), Code::Digit8, cmd() | Modifiers::SHIFT);
         assert!(
             d.source.starts_with("- item") || d.source.starts_with("* item"),
             "{:?}",
@@ -444,12 +468,12 @@ mod tests {
             ("v", Gesture::Paste),
         ] {
             assert_eq!(
-                apply_key(&mut d, &ch(c), Code::Unidentified, CMD),
+                apply_key(&mut d, &ch(c), Code::Unidentified, cmd()),
                 Action::Gesture(want)
             );
         }
         assert_eq!(
-            apply_key(&mut d, &ch("v"), Code::KeyV, CMD | Modifiers::SHIFT),
+            apply_key(&mut d, &ch("v"), Code::KeyV, cmd() | Modifiers::SHIFT),
             Action::Gesture(Gesture::PastePlain)
         );
     }
@@ -494,10 +518,10 @@ mod tests {
         let mut d = doc("x\n");
         d.place_caret(0, false);
         // ⌥⌘C types `ç`; it is still the code-block chord.
-        press(&mut d, ch("ç"), Code::KeyC, CMD | Modifiers::ALT);
+        press(&mut d, ch("ç"), Code::KeyC, cmd() | Modifiers::ALT);
         assert!(d.source.starts_with("```"), "{:?}", d.source);
         assert_eq!(
-            apply_key(&mut d, &ch("ƒ"), Code::KeyF, CMD | Modifiers::ALT),
+            apply_key(&mut d, &ch("ƒ"), Code::KeyF, cmd() | Modifiers::ALT),
             Action::Find(FindCommand::Open { replace: true })
         );
     }
@@ -630,21 +654,24 @@ mod tests {
         let mut d = doc("hello\n");
         let before = d.source.clone();
         let z = |a| Action::Request(Request::Zoom(a));
-        assert_eq!(press(&mut d, ch("="), Code::Equal, CMD), z(ZoomCommand::In));
         assert_eq!(
-            press(&mut d, ch("+"), Code::Equal, CMD | Modifiers::SHIFT),
+            press(&mut d, ch("="), Code::Equal, cmd()),
             z(ZoomCommand::In)
         );
         assert_eq!(
-            press(&mut d, ch("-"), Code::Minus, CMD),
+            press(&mut d, ch("+"), Code::Equal, cmd() | Modifiers::SHIFT),
+            z(ZoomCommand::In)
+        );
+        assert_eq!(
+            press(&mut d, ch("-"), Code::Minus, cmd()),
             z(ZoomCommand::Out)
         );
         assert_eq!(
-            press(&mut d, ch("0"), Code::Digit0, CMD),
+            press(&mut d, ch("0"), Code::Digit0, cmd()),
             z(ZoomCommand::Reset)
         );
         assert_eq!(
-            press(&mut d, ch(","), Code::Comma, CMD),
+            press(&mut d, ch(","), Code::Comma, cmd()),
             Action::Request(Request::Settings)
         );
         assert_eq!(d.source, before);

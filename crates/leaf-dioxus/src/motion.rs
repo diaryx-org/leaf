@@ -7,11 +7,12 @@
 //! all go through the editor's layouts — Swift's split, with CTTypesetter in
 //! parley's place.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dioxus::prelude::*;
 use leaf_core::{Doc, View};
 
+use crate::clock::Instant;
 use crate::editor::Editor;
 use crate::find::Focus;
 use crate::row::{Pointer, PressMode, Target};
@@ -150,7 +151,7 @@ impl Editor {
                 let r = doc.get_client_bounding_rect(node.node_id())?;
                 return Some((x, r.y, w, r.height));
             }
-            tokio::time::sleep(Duration::from_millis(16)).await;
+            crate::clock::sleep(Duration::from_millis(16)).await;
         }
         None
     }

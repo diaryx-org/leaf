@@ -504,7 +504,7 @@ impl Editor {
     /// top-left, as Blitz's are. `None` while the editor has its document
     /// borrowed: `node` is then left as it was.
     pub fn describe(&self, node: &mut Node) -> Option<Vec<(NodeId, Node)>> {
-        let t0 = std::time::Instant::now();
+        let t0 = crate::clock::Instant::now();
         let doc = self.st.doc.try_borrow().ok()?;
         let lays = self.sig.lays.peek();
         // The text and its runs hold while the document, the caret (which
