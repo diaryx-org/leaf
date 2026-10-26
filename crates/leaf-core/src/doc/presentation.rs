@@ -160,10 +160,11 @@ impl Doc {
     /// the whole of the rule, including why a code block, a list item, a table
     /// and a setext heading are left unsplit.
     ///
-    /// `attrs` are `(key, value)` pairs in the order they are written, a `None`
-    /// value a bare attribute — the shape
-    /// [`DirectiveMark::attrs`](crate::wysiwyg::DirectiveMark::attrs) reads
-    /// back.
+    /// `attrs` are `(key, value)` pairs in the order they are written — the
+    /// shape [`DirectiveMark::attrs`](crate::wysiwyg::DirectiveMark::attrs)
+    /// reads back. A `None` value, a bare attribute, is written `key=""`:
+    /// twig refuses a bare key, which djot does not read as an attribute at
+    /// all and Markdown reads back as `key=""` regardless.
     ///
     /// Refused, with a status and nothing written, where
     /// [`Capabilities::directives`] is `false`, and for a `name` or `label`
@@ -171,13 +172,10 @@ impl Doc {
     /// digits, `-` and `_`, and a label may hold no line end and no square
     /// bracket. twig is the judge of both, asked before anything is parted.
     ///
-    /// djot needs two things of its own, since its spelling is a fence under
-    /// an attribute line. A bare attribute is written `key=""`: twig writes
-    /// `{wide}`, which djot does not read as an attribute at all, and
-    /// Markdown reads its own `{wide}` back as `wide=""` regardless. And a
-    /// label is refused, because djot has nowhere to put one: twig writes it
-    /// as the fence's body, which reads back as a container holding a
-    /// paragraph and not as a directive.
+    /// djot refuses a label, because its spelling is a fence under an
+    /// attribute line and it has nowhere to put one: twig would write it as
+    /// the fence's body, which reads back as a container holding a paragraph
+    /// and not as a directive.
     pub fn insert_directive(
         &mut self,
         name: &str,
@@ -185,8 +183,12 @@ impl Doc {
         attrs: &[(String, Option<String>)],
     ) {
         let supported = self.capabilities().directives;
+        let attrs: Attrs = attrs
+            .iter()
+            .map(|(k, v)| (k.clone(), Some(v.clone().unwrap_or_default())))
+            .collect();
         if self.format != Format::Djot {
-            self.write_directive("directive", supported, name, label, attrs);
+            self.write_directive("directive", supported, name, label, &attrs);
             return;
         }
         if label.is_some_and(|l| !l.is_empty()) {
@@ -195,10 +197,6 @@ impl Doc {
             }
             return;
         }
-        let attrs: Attrs = attrs
-            .iter()
-            .map(|(k, v)| (k.clone(), Some(v.clone().unwrap_or_default())))
-            .collect();
         self.write_directive("directive", supported, name, None, &attrs);
     }
 

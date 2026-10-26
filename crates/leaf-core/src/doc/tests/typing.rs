@@ -168,17 +168,6 @@ fn replacing_the_source_writes_markup_as_markup() {
 }
 
 #[test]
-fn the_differing_span_ends_on_characters() {
-    assert_eq!(differing_span("abc", "abc"), (3, 3, ""));
-    assert_eq!(differing_span("abXc", "abYc"), (2, 3, "Y"));
-    assert_eq!(differing_span("aaa", "aaaa"), (3, 3, "a"));
-    assert_eq!(differing_span("aaaa", "aa"), (2, 4, ""));
-    // é and è share their first byte; the span must not split it.
-    assert_eq!(differing_span("café", "cafè"), (3, 5, "è"));
-    assert_eq!(differing_span("", "x"), (0, 0, "x"));
-}
-
-#[test]
 fn a_substitution_behind_the_caret_leaves_the_caret_and_is_its_own_step() {
     let mut d = wysiwyg_doc("substitute", "\n");
     d.caret = 0;

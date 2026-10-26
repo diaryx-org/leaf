@@ -2371,7 +2371,8 @@ impl LeafDoc {
     /// — a host's catalogue item. Placed as `insert_page_break` places a page
     /// break, which is this gesture with leaf's own name. It arrives in
     /// `DocView.directives` as it went in: `attrs` is the [`DirectiveAttr`]
-    /// list a [`DirectiveView`] carries, an empty value a bare attribute.
+    /// list a [`DirectiveView`] carries. An empty value is written `key=""`,
+    /// the flag every format reads back as one.
     ///
     /// A name twig will not write (an ASCII letter and then letters, digits,
     /// `-` and `_`), a label holding a line end or a square bracket, a label in
@@ -2383,10 +2384,8 @@ impl LeafDoc {
         label: Option<String>,
         attrs: Vec<DirectiveAttr>,
     ) -> Result<DocView, JsValue> {
-        let attrs: Vec<(String, Option<String>)> = attrs
-            .into_iter()
-            .map(|a| (a.key, (!a.value.is_empty()).then_some(a.value)))
-            .collect();
+        let attrs: Vec<(String, Option<String>)> =
+            attrs.into_iter().map(|a| (a.key, Some(a.value))).collect();
         self.doc.insert_directive(&name, label.as_deref(), &attrs);
         self.frame()
     }
@@ -4241,7 +4240,7 @@ mod tests {
     }
 
     /// A host's directive goes in as the view hands it out — name, label and
-    /// the `DirectiveAttr` list, an empty value a bare attribute — and a
+    /// the `DirectiveAttr` list, an empty value written `key=""` — and a
     /// reported height reserves its rows under the same key.
     #[test]
     fn a_directive_goes_in_the_way_it_comes_out() {
@@ -4263,7 +4262,7 @@ mod tests {
         assert!(
             d.doc
                 .source
-                .contains("::x-card[A card]{src=\"https://x.org/a\" wide}")
+                .contains("::x-card[A card]{src=\"https://x.org/a\" wide=\"\"}")
         );
         let views = wysiwyg_directives(&d.doc.vmap);
         let [x] = views.as_slice() else {

@@ -826,7 +826,7 @@ public final class LeafEditorModel {
 
     /// Write the leaf directive `name` at the caret, with `label` and `attrs`,
     /// placed as a page break is: a paragraph parts around it and the caret
-    /// lands on a line under it. An empty attribute value is a bare attribute.
+    /// lands on a line under it. An empty attribute value is written `key=""`.
     ///
     /// Writes nothing, with a status, where core refuses: a name that is not a
     /// letter and then letters, digits, `-` and `_`; a label holding a line end

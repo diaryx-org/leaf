@@ -18,6 +18,7 @@ mod mark_edges;
 mod math;
 mod motion;
 mod move_block;
+mod ops;
 mod presentation;
 mod ragged_formats;
 mod rich_view;

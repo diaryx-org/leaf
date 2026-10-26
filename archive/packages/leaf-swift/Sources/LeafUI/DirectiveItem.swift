@@ -13,9 +13,8 @@ import Foundation
 import LeafFFI
 
 /// What one directive is written with: its `[label]` and its `{attributes}`.
-/// An empty attribute value writes a bare attribute (`{wide}`), as an empty one
-/// reads back — the `DirectiveAttr` list a `DirectiveView` hands out is the
-/// list this takes.
+/// An empty attribute value is written `wide=""`, and reads back empty — the
+/// `DirectiveAttr` list a `DirectiveView` hands out is the list this takes.
 public struct DirectiveContent {
     /// The directive's `[label]`, or nil for none. djot has nowhere to put one
     /// and refuses the whole directive rather than dropping it.

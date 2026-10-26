@@ -1311,8 +1311,8 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
      * [`insert_page_break`](Self::insert_page_break) places a page break,
      * which is this gesture with leaf's own name. It arrives in
      * [`DocView::directives`] as it went in: `attrs` is the
-     * [`DirectiveAttr`] list a [`DirectiveView`] carries, an empty value a
-     * bare attribute.
+     * [`DirectiveAttr`] list a [`DirectiveView`] carries. An empty value is
+     * written `key=""`, the flag every format reads back as one.
      *
      * A name twig will not write (it is an ASCII letter and then letters,
      * digits, `-` and `_`), a label holding a line end or a square bracket,
@@ -2765,8 +2765,8 @@ open func insert(text: String) -> DocView  {
      * [`insert_page_break`](Self::insert_page_break) places a page break,
      * which is this gesture with leaf's own name. It arrives in
      * [`DocView::directives`] as it went in: `attrs` is the
-     * [`DirectiveAttr`] list a [`DirectiveView`] carries, an empty value a
-     * bare attribute.
+     * [`DirectiveAttr`] list a [`DirectiveView`] carries. An empty value is
+     * written `key=""`, the flag every format reads back as one.
      *
      * A name twig will not write (it is an ASCII letter and then letters,
      * digits, `-` and `_`), a label holding a line end or a square bracket,
@@ -11030,7 +11030,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert() != 57472) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_directive() != 45079) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_directive() != 3768) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_footnote() != 24840) {
