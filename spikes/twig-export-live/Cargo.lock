@@ -2413,6 +2413,7 @@ dependencies = [
  "twig-export",
  "twig-markdown",
  "typst",
+ "typst-eval",
  "typst-kit",
  "typst-layout",
  "typst-pdf",
