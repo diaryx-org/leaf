@@ -11030,7 +11030,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert() != 57472) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_directive() != 45079) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_directive() != 3768) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_footnote() != 24840) {
