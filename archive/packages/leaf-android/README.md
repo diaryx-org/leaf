@@ -106,7 +106,7 @@ than the document across JNA.
 
 Tables draw as core's box-drawn picture in monospace rather than a grid, block
 video, audio and display math as their placeholder rows, and a directive's panel is
-not outlined — see [Android block views](../../docs/tasks/android-block-views.md).
+not outlined — see [Android block views](../../../docs/tasks/closed/android-block-views.md).
 The Apple views' footnote and link peeks, wikilink following, find, the
 presentation-vocabulary menus and page layout have no counterpart yet.
 

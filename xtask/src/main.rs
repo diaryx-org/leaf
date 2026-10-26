@@ -3,9 +3,9 @@
 //! every developer already has the only toolchain it needs.
 //!
 //! What earns a task here is work that leaves Rust, or work that must be done
-//! the same way every time. `cargo run` already opens the TUI and `cargo run -p
-//! leaf` the GUI; the Apple apps, the Android app and the web demo each need several tools
-//! driven in the right order.
+//! the same way every time: Leaf.app is a bundle, signed, its version stamped
+//! in, and a release of it is notarised in a disk image. The tasks for the
+//! archived frontends (Swift, web, Android) are in `archive/xtask/`.
 //!
 //! CI and releasing are not here. Both are `ship`, configured by
 //! `.config/ship.figl` — the same tool the org's other repositories cut
@@ -15,14 +15,11 @@
 //!
 //! [cargo-xtask]: https://github.com/matklad/cargo-xtask
 
-mod android;
 mod isolation;
 mod mac;
 mod package;
-mod swift;
 mod util;
 mod versions;
-mod web;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -30,7 +27,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "cargo xtask",
-    about = "Build leaf's non-Rust frontends, and the checks too big for one command",
+    about = "Build and package Leaf.app, and the checks too big for one command",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -42,12 +39,6 @@ struct Cli {
 enum Task {
     /// Build Leaf.app from apps/leaf-dioxus and launch it.
     Mac(mac::Args),
-    /// Build and launch Leaf: on macOS as `mac` does, with --ios apps/leaf-editor.
-    Swift(swift::Args),
-    /// Build the wasm binding and serve the web demo (apps/leaf-web-demo).
-    Web(web::Args),
-    /// Build and launch the Android app (apps/leaf-android) over packages/leaf-android.
-    Android(android::Args),
     /// Build a signed, notarised Leaf.app in a .dmg for other Macs (target/package/).
     Package(package::Args),
 
@@ -55,7 +46,7 @@ enum Task {
     PackageIsolation,
 
     /// Write the workspace version into the files no manifest parser reaches
-    /// (packages/leaf-web/package.json). `ship`'s bump runs this.
+    /// (the Dioxus apps' own manifests). `ship`'s bump runs this.
     SyncVersions {
         /// Write nothing; fail unless every file already states the version.
         #[arg(long)]
@@ -73,9 +64,6 @@ enum Task {
 fn main() -> Result<()> {
     match Cli::parse().task {
         Task::Mac(args) => mac::run_task(args),
-        Task::Swift(args) => swift::run_task(args),
-        Task::Web(args) => web::run_task(args),
-        Task::Android(args) => android::run_task(args),
         Task::Package(args) => package::run_task(args),
         Task::PackageIsolation => isolation::run_task(),
         Task::SyncVersions { check: false } => versions::run_task(),

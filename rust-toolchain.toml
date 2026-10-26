@@ -1,8 +1,5 @@
-# gpui uses library features that stabilized in 1.95, and Zed itself pins that
-# exact channel. Nothing in *this* workspace needs it any more — leaf-gpui and
-# apps/leaf are their own workspaces now — but this file sits at the repository
-# root and rustup resolves it by walking up, so it is what those two get as well.
-# One toolchain for the checkout, chosen by its most demanding corner.
+# The org's Rust pin. It was set here first, for gpui (archived), which
+# uses library features that stabilised in 1.95.
 #
 # Above 1.95.0 itself because macOS 27's dyld refuses some proc-macro dylibs
 # that 1.95's rustc links ("mis-aligned LINKEDIT string pool"; rustc reports it
@@ -10,9 +7,7 @@
 # `versions.rust` explains it at length.
 #
 # It is also the number diaryx-org/nix publishes as `versions.rust` for the whole
-# org, for this reason and named as leaf's. The two are meant to agree; the
-# `toolchain-pin` CI job checks this file against what homebrew.yml passes the
-# shared release workflow, which is the pair that silently breaks the release.
+# org, for this reason and named as leaf's. The two are meant to agree.
 [toolchain]
 channel = "1.98.1"
 profile = "minimal"

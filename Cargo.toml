@@ -1,40 +1,22 @@
 [workspace]
 resolver = "3"
-# crates/* are all Rust libraries. Under apps/ the Rust binaries are listed
-# explicitly — apps/ also holds non-Cargo frontends (apps/leaf-web-demo) that a
-# glob would wrongly try to load as workspace members.
-members = ["crates/*", "apps/leaf-tui", "xtask"]
-# The gpui side of the project, deliberately outside this workspace. leaf-gpui
-# and apps/leaf are on gpui-pre from crates.io; leaf-ios is archived and still
-# reaches the Zed monorepo. When all three did, a lockfile that named it carried 22 git-sourced
-# crates and roughly 500 packages nothing here compiles — measured: 769 packages
-# with them, 275 without, against the 141 `leaf-tui` actually uses. That is a
-# cost to everything that reads this lockfile rather than resolving fresh, and
-# nix's `buildRustPackage` made it a hard stop: it demands an output hash for
-# every git entry and vendors them all, whatever `-p` it is told to build.
+# The Rust libraries under the Dioxus frontend: the core, and what it draws
+# formulas, diagrams and pictures with. xtask is a member so `cargo xtask`
+# shares this lockfile.
+members = ["crates/*", "xtask"]
+# crates/leaf-dioxus, the Dioxus widget, and crates/leaf-dioxus-ui, its menus
+# and dialogs, are each a workspace of their own: they are on Dioxus 0.8's
+# alpha, whose winit beta and wgpu tree nothing here should resolve. Their
+# apps, apps/leaf-dioxus and apps/leaf-dioxus-tui, are outside `members`
+# already. Build each from its own manifest:
 #
-# `exclude` applies to the `crates/*` glob above as well as to named members, so
-# leaf-gpui leaves the workspace without the glob having to be expanded by hand.
+#     cargo build --manifest-path apps/leaf-dioxus/Cargo.toml
 #
-# Each is its own workspace with its own lockfile. Build them from their own
-# manifests:
-#
-#     cargo build --manifest-path crates/leaf-gpui/Cargo.toml   # the widget
-#     cargo build --manifest-path apps/leaf/Cargo.toml          # the desktop app
-#
-# leaf-ios (archived, see apps/leaf-ios/README.md) additionally path-deps the
-# external gpui-mobile fork and needs its own [patch] table, which is why it was
-# the first one out.
-#
-# crates/leaf-dioxus, the Dioxus widget, is out for its own reason: it is on
-# Dioxus 0.8's alpha, whose winit beta and wgpu tree nothing here should
-# resolve. Its app, apps/leaf-dioxus, is outside the `members` globs already.
-exclude = ["apps/leaf-ios", "apps/leaf", "crates/leaf-gpui", "crates/leaf-dioxus"]
-# `cargo run -- file.md` and `cargo build` default to the TUI, so the workspace
-# split doesn't change the everyday UX. xtask is a member so `cargo xtask` shares
-# this lockfile, but never a default member — nobody wants the task runner
-# rebuilt by a bare `cargo build`.
-default-members = ["apps/leaf-tui"]
+# The other frontends (Swift, web, gpui, Android and the ratatui TUI) are
+# archived under archive/; see archive/README.md. Nothing here builds them.
+exclude = ["crates/leaf-dioxus", "crates/leaf-dioxus-ui"]
+# A bare `cargo build` builds the libraries, not the task runner.
+default-members = ["crates/*"]
 
 [workspace.package]
 version = "0.5.1"
@@ -76,28 +58,12 @@ leaf-math = { path = "crates/leaf-math", version = "0.5.1" }
 leaf-math-edit = { path = "crates/leaf-math-edit", version = "0.5.1", default-features = false }
 leaf-session = { path = "crates/leaf-session", version = "0.5.1" }
 # Mermaid diagrams to SVG, through mmdr, for a host's fence editor to draw.
-# leaf's frontends never draw a diagram themselves; the bindings carry it.
+# The Dioxus editor draws a fence through it.
 leaf-mermaid = { path = "crates/leaf-mermaid", version = "0.5.1" }
-
-# The profile the wasm binding ships under (`wasm-pack build --profile wasm`).
-# `release` is left as cargo defines it, because the TUI and the Swift
-# framework build under it and want speed; this one inherits it and trades
-# some of that for bytes on the wire, which is what a browser pays for. Fat
-# LTO and one codegen unit let the linker drop what RaTeX, syntect and std
-# bring in but the binding never calls; `panic = "abort"` drops the unwinding
-# tables — `console_error_panic_hook` still runs before the trap, so a panic
-# is still a message in the console. What each setting bought is measured in
-# `packages/leaf-web/README.md`.
-[profile.wasm]
-inherits = "release"
-opt-level = "s"
-lto = "fat"
-codegen-units = 1
-panic = "abort"
 
 # mmdr optimised even in a debug build: unoptimised, its flowchart layout is
 # some six times slower (a 20-node chart 244 ms against 40 ms), which makes
-# the leaf-editor app's Debug configuration a poor guide to what Diaryx ships.
+# a debug build a poor guide to what Diaryx ships.
 # A profile here governs only builds of this workspace.
 [profile.dev.package.mermaid-rs-renderer]
 opt-level = 3

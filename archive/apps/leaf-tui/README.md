@@ -1,0 +1,164 @@
+# leaf-tui — archived
+
+The ratatui terminal editor (binary `leaf`), over
+[`leaf-ratatui`](../../crates/leaf-ratatui), archived on 2026-10-26. The
+terminal editor is now [`apps/leaf-dioxus-tui`](../../../apps/leaf-dioxus-tui),
+the leaf-dioxus editor painted into character cells; see
+[the archive's README](../../README.md) for why, and for what leaf-tui does
+that its successor does not do yet. The last `leaf` formula in
+`diaryx-org/tap` is this editor, at 0.5.1.
+
+What follows is what the repository README said about it, as it was.
+
+## Using leaf-tui
+
+### Usage
+
+```sh
+cargo run -- path/to/document.md
+```
+
+Formats are detected by extension: `.md`/`.markdown`, `.dj`/`.djot`,
+`.html`/`.htm`, `.xml`. The formatting toolbar targets the lightweight-markup
+formats (Markdown, Djot).
+
+A path that doesn't exist yet opens an empty buffer under that name, the way any
+other terminal editor does — `^S` creates the file. The extension still has to be
+one of the above, since it is what the buffer is parsed as, and nothing is
+written until you save, so opening a file and quitting leaves the disk untouched.
+
+The palette follows the terminal. On startup leaf asks it whether it is light or
+dark (an `OSC 11` query, the same moment it probes for a graphics protocol) and
+picks the matching colors, so the tint behind a code block is a lift off *your*
+background rather than a fixed dark slab. Terminals that won't answer are
+detected as such quickly and fall back to `COLORFGBG`, then to dark. To pin it:
+
+```sh
+LEAF_THEME=light cargo run -- path/to/document.md
+```
+
+`leaf -r <file>` (or `--read-only`) opens the document as a **reading surface**
+rather than an editing one. Caret motion, selection, copy, `⌥g` follow, the
+view/markup/line-flow dials, the palette and the key reference all work exactly
+as they do anywhere else; everything that would change the document or write a
+file is refused, says so, and is dimmed in the palette, the context menu and the
+key reference. The flag goes on either side of the path. The gate itself is
+`leaf-core`'s — every mutation funnels through three doors and all three are
+shut — so this is a guarantee rather than a suppressed keyboard.
+
+### Keys
+
+| key | action |
+|-----|--------|
+| *(printable)* | insert at the caret (replacing any selection) |
+| `Enter` / `Backspace` / `Delete` | the usual — `Enter` in a table drops to the cell below, growing the table when there isn't one, and `Backspace` at a cell's start or `Delete` at its end does nothing rather than merge two cells |
+| `Tab` / `⇧Tab` | indent / outdent — in a table, walk the cells, appending a row off the last one |
+| `⌥Enter` | an in-cell line break (the terminal's spelling of `⇧Enter`, which a terminal can't tell from `Enter`) |
+| arrows / `Home` / `End` | move the caret |
+| `Shift`+move | extend the selection |
+| click / drag | place / drag the caret — a click under the last block lands on a blank line beneath it, opening one if need be |
+| `⌥b` / `⌥i` / `⌥c` | toggle **bold** / *italic* / `code` on the selection |
+| `⌥m` / `⌥d` / `⌥u` | toggle highlight / strikethrough / underline |
+| `⌥1`…`⌥6` | make the block at the caret a heading of that level |
+| `⌥0` | make it a paragraph |
+| `⌥7` / `⌥8` / `⌥9` | numbered list / bulleted list / quote |
+| `⌥⇧c` | make the block at the caret a code block — or open an empty one on a blank line |
+| `⌥t` / `⌥x` | give the item at the caret a checkbox / tick the box |
+| `⌥k` / `⌥l` | set the link destination / the code block's language |
+| `⌥e` / `⌥f` / `⌥r` | insert an image / a footnote / a horizontal rule |
+| `⌥a` / `⌥⇧r` | cycle the block's alignment (left, centre, right) / insert a page break |
+| `⌥↑` / `⌥↓` | move the block at the caret — a paragraph, a picture, a list item with its children — one place up / down |
+| `⌥g` | follow what the caret is on — a footnote to its note, a note back to its reference, a `#fragment` to the heading it names |
+| `⌥w` | switch between the source and wysiwyg views |
+| `⌥⇧w` / `⌥⇧f` | cycle the markup mode / flip line flow |
+| `^f` / `^h` | **find** / find and replace — a bar in the footer, matching case-insensitively over the source |
+| `^p` or `⌥p` | **the command palette** |
+| `F1` or `⌥h` | the key reference |
+| `^s` / `⌥s` / `⌥n` / `^q` | save / save as / new / quit |
+| right-click | the context menu: Format, Insert, Table and View flyouts |
+| hover | peek at what's under the pointer — a footnote's note, a link's destination — without moving the caret |
+| terminal paste | arrives whole (bracketed paste) and lands as one undo step — into the prompt or the palette when one is open, otherwise into the document |
+
+leaf **watches the file** it has open. Twice a second it stats the path, and on
+the rare tick where that has moved it asks `Doc::disk_state` — the hash against
+leaf's watermark — what actually happened. A document with no unsaved changes
+reloads itself silently, keeping the caret and the scroll, so a `git checkout`
+or a formatter run shows up in the buffer instead of waiting to become a
+conflict — and the reload is **one undo step**, so `^z` gives you back what you
+were looking at. Never on the tick that notices: a write is a truncate and then
+a write, so the reload waits for a tick where the file has stopped moving rather
+than reading somebody's half-finished one. A document *with* unsaved changes is
+never reloaded behind your back: it says so once, and the Overwrite/Reload/Cancel
+prompt at save time is where the choice gets made.
+
+Inside the find bar: `Enter` steps to the next match (and `^g` repeats it),
+`↑`/`↓` walk back and forward, `Esc` closes and leaves the caret on the match it
+landed on. `⇧Enter` and `^⇧g` are *not* the "previous" half, because a terminal
+sends the identical bytes for `Enter` and `⇧Enter` — the same reason the in-cell
+line break is spelled `⌥Enter` here. With a replacement field up (`^h`, or `^h`
+again on an open find bar, which keeps the query), `Tab` swaps fields and `^r`
+replaces all — as a single undo step, because replace-all is one thing you did.
+`Enter` does whichever field the keyboard is in: in the replacement it replaces
+the current match and moves on, in the query it steps, as it always does. `^h`
+over a selection, or over a bar that already has a query, starts in the
+replacement field, so the common path is one key. The bar hands the host's own
+chords back to the host — `^q`, `^s`, `^c` (which copies the match), `^p`, `⌥h`,
+`⌥w` — rather than swallowing them; it is a strip with two fields in it, not a
+modal dialog.
+
+Matches are painted with `leaf-core`'s `Doc::set_highlights`, so a hit inside
+`**bold**` selects the rendered word: the offsets are source bytes, which is the
+coordinate the caret, the selection, and the wash are all already in. Searching
+the source is also what makes a hit possible in text the *rich* view doesn't
+draw — inside hidden frontmatter, or in a link's destination — and those don't
+count as matches in that view. They are counted and said out loud ("2 of 3, 1
+hidden"), and never stepped to, washed, or replaced; `⌥w` into the source view,
+where every byte is on screen, is where the whole count is.
+
+Everything the keyboard doesn't reach is in the **command palette** — the three
+media kinds, all fourteen table operations, the eight highlight colours, and the
+markup/line-flow modes named outright rather than cycled. Type a few letters of a
+command's name and press Return; `table` finds the whole grid family, `ir` finds
+Insert Row Above, `highlight:` finds the colours.
+
+A **highlight's colour** is `==🔴 text==`, which Markdown spells and djot
+does not. The eight rows — seven colours and No Colour — sit under Format ▸
+Highlight Colour and in the palette, dim wherever there is nothing to colour, and
+tick the one the caret is standing in. Over a selection that isn't highlighted
+yet, one press does both: the highlight and its colour, as a single undo step.
+
+**Embed…** in the palette asks for a URL and writes `::embed{src="…"}` where
+the caret is, and the rich view draws every embed as a card titled "Embed"
+holding its URL; the caret steps over the card in one press each way. It is
+leaf-tui showing a host's directives — the ones leaf-ratatui lets a host name,
+insert (`DirectiveItem`) and draw (`DirectiveRenderer`) — rather than a name
+leaf adopts, so it is offered in Markdown and djot only, and dimmed elsewhere.
+Any other leaf directive is still the `⧉ name` placeholder.
+
+The palette, the context menu, and the key reference are all generated from one
+command table (`apps/leaf-tui/src/commands.rs`), so a command cannot gain a key
+without gaining a menu row and a line in the help. Every one of those surfaces
+also **dims what the document's format cannot spell** — a footnote or a task
+box in an HTML file — rather than hiding it, so what a format can't do stays
+legible instead of merely absent. What that line no longer separates is the
+highlight: leaf both renders *and* writes `==text==` in Markdown as of twig
+3.3.1, and `~~struck~~` with it, and as of twig 3.10 `<u>underline</u>` too.
+The gate is real and worth stating, because it is what makes the button honest — twig will only author
+bytes the document's own reparse reads back, and leaf parses every document with
+the `highlight` extension (`==🔴 text==`, colour and all), so `⌥m` writes a
+highlight that is still a highlight when the file is opened again.
+
+### Status
+
+Both views work: caret editing, mouse, selection, the format-aware toolbar, undo/
+redo, and live AST awareness, in either source or wysiwyg. Tables are editable as
+a grid; footnotes can be written and walked in both directions; images, video and
+audio embed; and the markup and line-flow dials are reachable.
+
+Known rough edges (next steps): no soft-wrap-aware width for wide/emoji glyphs
+(columns are counted in chars); code blocks render read-styled but map coarsely,
+so edit code in the source view; no inline-image rendering yet (kitty/sixel is
+the natural follow-up now that the glyph map exists); and `⌥g` names an external
+link's destination rather than opening it — launching a browser out of a text
+editor is a decision for the person at the keyboard, and most terminals already
+make a printed URL clickable.
