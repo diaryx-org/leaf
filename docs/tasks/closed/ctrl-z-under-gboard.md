@@ -1,10 +1,15 @@
 ---
-status: open
+status: dropped
 created: 2026-09-30
-updated: 2026-09-30
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-10-26
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # Ctrl+Z under Gboard undoes the keyboard's text, not leaf's step
+
+**Dropped, 2026-10-26.** `LeafInputConnection` is archived
+(`archive/packages/leaf-android`). Whether Gboard hands Ctrl+Z to the app is
+still a question for the Dioxus app's input on Android, which the task "What
+Android does not do yet" carries.
 
 **Where.** `packages/leaf-android/leaf-compose`: `LeafInputConnection`, and
 how a hardware Ctrl+Z reaches `LeafEditorState.key` when Gboard is the IME.

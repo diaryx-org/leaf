@@ -552,7 +552,7 @@ rect. It uses every item in the list above, and it is inline.
 - **Inline host views.** Should an inline region ever be a host view, or are
   inline regions always pictures from a leaf session? Pictures only is simpler,
   and nothing foreseen needs more.
-- **Android.** Should Android get the protocol now (`docs/tasks/android-block-views.md`
+- **Android.** Should Android get the protocol now (`docs/tasks/closed/android-block-views.md`
   is related) or follow later?
 - **Terminal.** Whether leaf-ratatui gets math sessions at all, and what a
   host-view region looks like there. Probably a placeholder plus "open in

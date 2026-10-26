@@ -9,26 +9,12 @@
 !/.claude/settings.json
 .playwright-mcp/
 .DS_Store
-# wasm-pack output for the web editor package — regenerated from crates/leaf-wasm
-# and crates/leaf-math-wasm by `npm run build:wasm` in packages/leaf-web, never
-# committed.
-/packages/leaf-web/pkg/
-/packages/leaf-web/pkg-math/
-# The demo page's Mermaid module, from crates/leaf-mermaid-wasm.
-/apps/leaf-web-demo/pkg-mermaid/
-
-# SwiftPM/Xcode build dirs for the Swift package, whose manifest lives at the
-# repo root. The UniFFI binding under packages/leaf-swift/uniffi-generated/ is
-# COMMITTED (a version-resolved clone runs no generators) — regenerate it with
-# scripts/gen-bindings.sh; CI diffs it against crates/leaf-ffi.
+# Build output of the archived frontends, should one be built where it lies.
+/archive/packages/leaf-web/pkg/
+/archive/packages/leaf-web/pkg-math/
+/archive/apps/leaf-web-demo/pkg-mermaid/
+/archive/packages/leaf-swift/.build/
+/archive/packages/leaf-swift/build/
 /.build/
 /.swiftpm/
-# This repository publishes the root SwiftPM package as a library. Consumers
-# resolve its declared version range themselves; local build pins are not source.
-/Package.resolved
-packages/leaf-swift/.build/
-# Xcode's own build directory for the package (distinct from SwiftPM's `.build`),
-# left behind when apps/leaf-editor is built against it as a local package.
-packages/leaf-swift/build/
-packages/leaf-swift/.swiftpm/xcode/xcuserdata/adamharris.xcuserdatad/xcschemes/
 .env

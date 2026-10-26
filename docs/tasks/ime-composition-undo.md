@@ -1,10 +1,16 @@
 ---
 status: open
 created: 2026-09-25
-updated: 2026-09-25
+updated: 2026-10-26
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # An IME composition undoes a keystroke at a time
+
+**Since the archive (2026-10-26).** The paths below to `packages/` are under
+`archive/` now. The leaf-dioxus editor closes the undo half (`ime.rs`, through
+`edit_composing` and `end_composition`). The other half is still open there: a
+composition is a raw splice, so an armed Bold and a literal `*` are lost, and
+fixing that needs a composing insert in core.
 
 **What.** A word typed through an IME that composes — Gboard composes nearly
 every word on Android — takes one Undo per letter to take back, stepping

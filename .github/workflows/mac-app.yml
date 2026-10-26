@@ -15,9 +15,9 @@ name: Mac app
 #
 # Then the `cask` job points `Casks/leaf-editor.rb` in diaryx-org/homebrew-tap
 # at the new image, pushing as the diaryx-bot GitHub App (TAP_APP_ID,
-# TAP_APP_KEY) the way homebrew.yml's formula bump does.
+# TAP_APP_KEY).
 #
-# Fires on the same `v*.*.*` tags homebrew.yml does. Dispatched by hand it
+# Fires on `v*.*.*` tags. Dispatched by hand it
 # builds, signs and notarises whatever ref it is run on and keeps the image as
 # a workflow artifact, touching no release — the way to rehearse this before a
 # tag depends on it. Dispatched with `cask-tag` it builds nothing and only

@@ -3,7 +3,7 @@ title: What the Mac app does not do yet
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 status: open
 created: 2026-10-15
-updated: 2026-10-19
+updated: 2026-10-26
 ---
 # What the Mac app does not do yet
 
@@ -49,15 +49,30 @@ LeafUI app did that this one does not, each a piece of work of its own:
 - **The presentation menus.** Alignment, text size, font, text colour and
   line spacing for a paragraph or a run (`PresentationRows.swift`), and the
   Paragraph spacing setting.
-- **Accessibility.** The editor is not yet a VoiceOver text area, and the
-  toolbar and menus drawn in the page are not reached by it either: the app
-  builds Blitz without its `accessibility` feature.
+- **Keys.** Cocoa's standard key bindings beyond the editor's ⌃A/E/K/F/B/N/P/D/H:
+  the kill ring with ⌃Y, ⌃T to transpose, ⌃O, the mark (`setMark`,
+  `selectToMark`, `swapWithMark`), the scrolling commands, Transformations
+  (upper case, lower case, capitalise), selecting a paragraph or a line, and
+  the user's own `DefaultKeyBinding.dict`. LeafUI did them in
+  `archive/packages/leaf-swift/Sources/LeafUI/LeafTextView.swift` (near lines
+  2798–3200).
+- **Trackpad zoom.** Pinch (`magnify(with:)`) and smart zoom
+  (`smartMagnify`), in the same file near lines 189–205.
+- **A window that is not key.** LeafUI blinked the caret (`resetBlink`) and
+  dimmed the selection when its window was not key (`keyStateChanged`).
+  Neither was found in the editor; to check.
+- **The context menu's other items.** Share…, Paste and Match Style, and
+  Writing Tools (`LeafTextView.swift` near lines 3400–3445).
 - **Remote media.** A picture at a web URL draws as a chip: there is no
   counterpart to `onResolveMedia` fetching it.
 
 Not yet seen on a screen, for want of the app in front during the session
 that wrote it: Look Up's popover, the print panel, and Export's save sheet.
 The PDF they print is unit-tested (`pdf.rs`).
+
+LeafUI is archived (`archive/packages/leaf-swift`); its files are where to
+look for how it did each of these. The document is a VoiceOver text area
+since `46711670`, so accessibility is off this list.
 
 **Done when.** Each is either done in the Mac app or deliberately left out,
 with this list updated as they go.

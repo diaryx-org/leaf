@@ -7,7 +7,7 @@ contents:
 - '[Audiences](/vocab/audiences.md)'
 - '[Proposals](/docs/proposals/proposals.md)'
 - '[Tasks](/docs/tasks/tasks.md)'
-- '[leaf-web](/packages/leaf-web/README.md)'
+- '[Archive](/archive/README.md)'
 config: .config/prov.yaml
 registry: registry.yaml
 id: 6h2bs8f
@@ -19,150 +19,76 @@ A caret-based rich-text editor for documents, built on [`twig`](https://github.c
 
 ## Workspace layout
 
-leaf is a Cargo workspace in three tiers. The caret/selection model and the
-AST→glyph mapping live in a frontend-neutral **core**; embeddable editor
-**widgets** wrap it per toolkit; and thin **apps** host a widget with a window,
-clipboard, and file I/O.
+The caret/selection model and the AST→glyph mapping live in a
+frontend-neutral **core**. One editor widget draws it: `leaf-dioxus`, on
+Dioxus's native renderer, which draws HTML and CSS through
+[the Blitz fork](https://github.com/diaryx-org/blitz) (branch `leaf`) with no
+webview. Thin **apps** host the widget with a window or a terminal, a
+clipboard and file I/O.
+
+The other frontends (Swift for iOS and the Mac, the web package and its wasm
+binding, gpui for the desktop, Android, and the ratatui terminal editor) are
+archived under [`archive/`](archive/README.md). They stay readable there as a
+guide to what each platform needs; the tasks under `docs/tasks` say which of
+those behaviours the Dioxus path does not have yet.
 
 ### `crates/` — Rust libraries
 
-| crate                                 | what it is                                                                                                                                                                                                                                                         |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| crate | what it is |
+| ----- | ---------- |
 | [`leaf-core`](crates/leaf-core)       | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency. Fenced code is syntax-highlighted here too (syntect, two-face's grammars — the set `plates` publishes with), as an eight-way `Token` per glyph that each frontend colours its own way; the `syntax` feature carries the grammars and can be left out. |
 | [`leaf-raster`](crates/leaf-raster)   | the **shared CPU rasterization layer**: image decode (SVG included), path resolution and aspect-fit policy, and oversized-heading rasters with the caret and selection painted into the pixels — how a terminal heading stays editable when cells can't draw over a graphics-protocol image.                    |
-| [`leaf-ratatui`](crates/leaf-ratatui) | the **embeddable terminal widget** (ratatui + crossterm): renders the editing surface into a `Rect` and turns key/mouse events into `Doc` edits, returning an `Outcome` for what the host owns (quit, save, clipboard, dialogs). The terminal peer of `leaf-gpui`. |
-| [`leaf-gpui`](crates/leaf-gpui)       | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. Renders only the editing surface and leaves window chrome, file I/O, and quit to the host.  |
 | [`leaf-dioxus`](crates/leaf-dioxus) | the **embeddable widget on Dioxus's native renderer** (`dioxus-native`, Blitz on wgpu): the editor, its rows, input method, find bar and status line, drawn in the `Look` its host gives it and asking a `Host` for the clipboard, Save, the zoom and the context menu. A standalone workspace, since `dioxus-native` is an alpha. |
-| [`leaf-ffi`](crates/leaf-ffi)         | the **UniFFI Rust binding** — wraps the filesystem-free `Doc` behind a C ABI so a native app can drive it: as Swift for the `leaf-swift` package, and as Kotlin for `leaf-android`.                                                                                  |
 | [`leaf-math`](crates/leaf-math)       | TeX to a **self-contained SVG picture** with baseline metrics, through RaTeX with KaTeX's outlines embedded — the one door every frontend draws a formula through, so the picture is byte-identical everywhere.                                                    |
-| [`leaf-wasm`](crates/leaf-wasm)       | the **wasm-bindgen Rust binding** — wraps the `Doc` for the browser (`LeafDoc` + a typed `DocView`). Paired with the `leaf-web` package.                                                                                                                           |
-| [`leaf-math-wasm`](crates/leaf-math-wasm) | the **typesetter's own wasm module** — `leaf-math` behind one `typeset_math`, built apart from `leaf-wasm` because it is two megabytes most documents never need; `leaf-web` fetches it on the first formula.                                                   |
-
-### `packages/` — importable non-Rust widget packages
-
-| package | what it is |
-|---------|------------|
-| [`leaf-swift`](packages/leaf-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version) — `LeafUI`, the AppKit/UIKit editor view, over the committed UniFFI `leaf-ffi` binding. The Apple peer of `leaf-ratatui`/`leaf-gpui`. |
-| [`leaf-android`](packages/leaf-android) | the Android library — `LeafEditor`, a Jetpack Compose editor, over the UniFFI binding generated as Kotlin: rows wrapped and hit-tested by Compose's own text layout, and the soft keyboard through an `InputConnection` that composes into the document through core. A Gradle build of its own (`org.diaryx.leaf:leaf-compose`), not yet published. |
-| [`leaf-web`](packages/leaf-web) | the npm package (not yet published; private until there is a consumer) — `LeafEditor`, a framework-agnostic web editor, over the `leaf-wasm` binding. Tables draw as a real grid from core's structural `TableView`, not as the box-glyph picture; links, footnotes, task boxes and host highlights are clickable; text and files drop onto it; a frame repaints only the rows it changed; a highlight takes one of seven colours; the toolbar dims what the format cannot spell. |
+| [`leaf-mermaid`](crates/leaf-mermaid) | Mermaid diagrams to SVG, through mmdr, for the editor to draw a fence with. |
+| [`leaf-session`](crates/leaf-session) | the editors leaf runs itself for a region of a document (a formula today), behind one interface: keys in, splices on the region's content out. |
+| [`leaf-math-edit`](crates/leaf-math-edit) | a structural formula editor whose file format stays TeX (a spike), which `leaf-session` runs. |
 
 ### `apps/` — runnable frontends
 
 | app | what it is |
 |-----|------------|
-| [`leaf-tui`](apps/leaf-tui) | the terminal editor (binary `leaf`) — a thin host around `leaf-ratatui` wiring a terminal, clipboard, and dialogs. The workspace default `cargo run`. |
-| [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. A standalone workspace, like `leaf-ios`. |
-| [`leaf-ios`](apps/leaf-ios) | the gpui iOS host — **archived**; see its [README](apps/leaf-ios/README.md). leaf on iOS is `leaf-swift`. |
 | [`leaf-dioxus`](apps/leaf-dioxus) | **Leaf**, in Rust from `main` up, for every platform Dioxus's native renderer reaches — the Mac's is `Leaf.app` (`org.diaryx.leaf`). A window per document, each a Dioxus page: the toolbar, `crates/leaf-dioxus`'s editor, the context menu and Settings, their buttons, menus and dialogs [unit](https://github.com/diaryx-org/unit)'s. What a platform does its own way is `platform/`: on the Mac an `NSDocument` per window (Open, autosave, Versions, Rename, recents, Finder's Open With), the menu bar, the spelling checker, Look Up and the print panel, through objc2. Export as PDF and Print from the editor's own layout. What it does not do yet is the task "What the Mac app does not do yet". A standalone workspace, since `dioxus-native` is an alpha and its macOS winit backend is vendored and patched. |
-| [`leaf-editor`](apps/leaf-editor) | **Leaf** for iOS (`org.diaryx.leaf`), consuming `packages/leaf-swift`. Opens, edits and saves `.md`, `.dj` and `.html` through the document browser and the Files app, with a Settings sheet. It built for the Mac too until `apps/leaf-dioxus` replaced it there. |
-| [`leaf-android`](apps/leaf-android) | **Leaf** for Android (`org.diaryx.leaf`), consuming `packages/leaf-android`. Opens, edits and autosaves `.md`, `.dj` and `.html` through the Storage Access Framework and Open With, with the rendered/source toggle and a formatting bar over the keyboard. |
-| [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. Published from each release tag at **<https://diaryx-org.github.io/leaf/>** by [`pages.yml`](.github/workflows/pages.yml). |
+| [`leaf-dioxus-tui`](apps/leaf-dioxus-tui) | the terminal editor: the same `leaf-dioxus` editor, laid out by Blitz and painted into character cells by `blitz-tui`, with unit's menus and dialogs in their cell density. It replaces the archived `leaf-tui`; what it does not do yet is in [its proposal](docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md) and the task "The terminal editor after leaf-tui". A standalone workspace, like the app's. |
 
 ```sh
-cargo run -- path/to/document.md            # the TUI (workspace default)
-cargo run -- --width 100 path/to/document.md # centered 100-column document
-
-# The GUI and the Dioxus app are their own workspaces, so they are reached by
-# manifest rather than by `-p`:
-cargo run --manifest-path apps/leaf/Cargo.toml -- path/to/document.md
 cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- path/to/document.md
+cargo run --manifest-path apps/leaf-dioxus-tui/Cargo.toml -- path/to/document.md
 ```
 
-The other frontends aren't a `cargo run` away — the Mac app is a bundle put
-together around its binary, the iOS app a Rust
-staticlib behind a UniFFI binding behind an Xcode project, the Android app a
-shared library behind the same binding behind Gradle, and the web demo a wasm
-build behind a static server. Each is one word through the task runner in
-[`xtask/`](xtask):
+The Mac app is a bundle put together around its binary, so it has a task in
+the runner in [`xtask/`](xtask):
 
 ```sh
 cargo xtask mac              # build Leaf.app (apps/leaf-dioxus) and launch it, with a copy of the sample open
 cargo xtask mac notes.md     # …with a document of your own
-cargo xtask swift --ios      # Leaf for iOS (apps/leaf-editor) on its own `iPhone 17 (leaf)` simulator (--device for another)
 cargo xtask package          # a signed, notarised Leaf.app in a .dmg, in target/package/
-cargo xtask android        # build + install Leaf on the attached Android device or emulator
-cargo xtask web            # build the wasm, serve apps/leaf-web-demo, open it
-cargo xtask web --test     # …serve the leaf-web editor tests instead
-cargo xtask web --headless # …run those tests in Chrome and exit with the outcome
 ```
 
-`cargo xtask swift` regenerates the Xcode project — and for iOS the UniFFI
-binding — when they're missing, so a fresh checkout needs no separate bootstrap step; pass
-`--regen` to force it after changing the Rust *API* surface. `cargo xtask --help`
-lists every task and flag. `cargo xtask package` needs a Developer ID identity
-in the keychain and notary credentials in the environment; the head of
-[`xtask/src/package.rs`](xtask/src/package.rs) names them, and
-`--no-notarize` does without the second.
+`cargo xtask --help` lists every task and flag. `cargo xtask package` needs a
+Developer ID identity in the keychain and notary credentials in the
+environment; the head of [`xtask/src/package.rs`](xtask/src/package.rs) names
+them, and `--no-notarize` does without the second.
 
 The runner holds the tasks that leave Rust; the checks and releasing are
 [`ship`](https://github.com/diaryx-org/ship). `ship ci` runs everything a
 release has to pass — the follower versions, rustfmt, clippy with warnings
-denied, the workspace tests, and a `cargo check` of each crate alone in each
-feature shape a host actually builds. `ship <patch|minor|major|X.Y.Z>` runs
-those checks, moves the version through every manifest and the lockfile, cuts
-the generated region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a
-released section, and commits and tags — locally. Pushing takes `--push`, and
-a pushed tag is a release: `homebrew.yml` ships the `leaf` binary, and
-[`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed, notarised
-`Leaf-<version>-aarch64.dmg` to the release and points the tap's
+denied, the workspace tests, a `cargo check` of each crate alone in each
+feature shape a host actually builds, and the Dioxus widget and app, each a
+workspace of its own. `ship <patch|minor|major|X.Y.Z>` runs those checks,
+moves the version through every manifest and the lockfile, cuts the generated
+region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released section,
+and commits and tags — locally. Pushing takes `--push`, and a pushed tag is a
+release: [`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed,
+notarised `Leaf-<version>-aarch64.dmg` to the release and points the tap's
 `leaf-editor` cask at it (`brew install --cask diaryx-org/tap/leaf-editor`).
 The crates are not on crates.io (0.5.0 was the last upload): provui and the
 Diaryx app name them from git, `{ git = "https://github.com/diaryx-org/leaf",
 branch = "main" }`, and lock the commit they build.
 
-`leaf-wasm` and `leaf-ffi` are two projections of the same `leaf_core::Doc`, and
-`ship ci` holds them level: a method exported by one binding and not the
-other fails the `the_two_bindings_export_the_same_methods` test, which exists
-because that is exactly how the browser ended up a year behind the Apple app.
-Genuinely host-specific spellings are listed, with reasons, in
-`BINDING_DIVERGENCE` in [`xtask/src/isolation.rs`](xtask/src/isolation.rs).
-
-The web editor's own tests live in a browser, not in `cargo test`
-([`packages/leaf-web/test`](packages/leaf-web/test)): what they cover is a
-`TreeWalker`, a `Range`, a native selection, and text laid out in a proportional
-font, and a stub DOM would mostly be testing the stub. `cargo xtask web --test`
-serves them; the page reports into `document.title` and `window.__results` as
-well as on screen, and `cargo xtask web --headless` reads that outcome out of
-a headless Chrome and exits with it. It is not part of `ship ci`, which
-has no browser to assume, so run it before pushing a change to the web editor.
-
 `ship` is the org's release tool, which its other repositories cut releases
 with too; what makes leaf leaf is [`.config/ship.figl`](.config/ship.figl) and
 nothing else.
-
-`leaf` and `leaf-gpui` take gpui from `gpui-pre`, Longbridge's crates.io
-snapshots of Zed's gpui; the first build compiles the gpui tree, so it is slow.
-It has **both views**, toggled with `⌘e`, just like the TUI's `⌥w`:
-
-- **source** — the raw document, caret in source bytes.
-- **wysiwyg** — `leaf-core`'s `VisualMap` resolved: `**bold**` painted bold,
-  `_italic_` italic, `# ` / `` ` `` / `**` delimiters hidden, headings coloured,
-  list markers as bullets. Each rendered glyph still maps back to its source
-  byte, so the caret, selection, and clicks ride the *visible* text and step over
-  hidden delimiters — the identical `VisualMap` the TUI renders, here with real
-  proportional bold/italic via the per-glyph `to_gpui` styling in
-  `leaf-gpui/src/style.rs`.
-
-Both views share one rendering path (a `RowLayout` per visual row carrying each
-character's source offset), so caret, selection, and mouse hit-testing are
-written once and work in either view. Keys: arrows/Home/End (+`⇧` to select),
-type to edit, `⌘b`/`⌘i` bold/italic, `⌘e` toggle view, `⌘s` save, `⌘q` quit.
-
-```sh
-cargo run --manifest-path apps/leaf/Cargo.toml -- document.md
-cargo run --manifest-path apps/leaf/Cargo.toml -- document.md wysiwyg
-```
-
-**gpui gotchas (macOS), learned the hard way:**
-
-- The `gpui_platform` dependency **must** enable the `font-kit` feature. Without
-  it, gpui's macOS backend uses a placeholder text system that lays text out but
-  rasterizes *no glyphs* — the window, caret, and selection all render, but every
-  character is invisible. This is not a version issue; it's a feature flag.
-- gpui uses library features stabilized in Rust 1.95, and its macOS backend
-  compiles Metal shaders at build time — so a full Xcode with the **Metal
-  Toolchain** component is required (`xcodebuild -downloadComponent
-  MetalToolchain`). The pinned toolchain lives in `rust-toolchain.toml`.
 
 Sibling to [`bough`](https://github.com/diaryx-org/bough): **same backend, opposite model.** Where bough
 moves a selection through the document's AST and edits the *tree*, leaf gives you
@@ -171,7 +97,7 @@ turns every keystroke into one of twig's offset-addressed edits. The document
 stays a live, round-trippable AST the whole time you type into it, so a Markdown
 file and a Djot file are edited through the exact same operations.
 
-Two views, toggled with `⌥w`:
+Two views:
 
 - **source** — the raw document with the caret in source bytes.
 - **wysiwyg** — the markup *resolved*: headings coloured, `**bold**` as real
@@ -194,154 +120,3 @@ Every action maps onto twig's editor surface:
 | click to place the caret | `node_at` + the flat `nodes()` snapshot |
 | **bold / italic / code / mark** | `toggle_inline(range, kind)` |
 | **heading / body** | `set_block(offset, kind)` |
-
-## Usage
-
-```sh
-cargo run -- path/to/document.md
-```
-
-Formats are detected by extension: `.md`/`.markdown`, `.dj`/`.djot`,
-`.html`/`.htm`, `.xml`. The formatting toolbar targets the lightweight-markup
-formats (Markdown, Djot).
-
-A path that doesn't exist yet opens an empty buffer under that name, the way any
-other terminal editor does — `^S` creates the file. The extension still has to be
-one of the above, since it is what the buffer is parsed as, and nothing is
-written until you save, so opening a file and quitting leaves the disk untouched.
-
-The palette follows the terminal. On startup leaf asks it whether it is light or
-dark (an `OSC 11` query, the same moment it probes for a graphics protocol) and
-picks the matching colors, so the tint behind a code block is a lift off *your*
-background rather than a fixed dark slab. Terminals that won't answer are
-detected as such quickly and fall back to `COLORFGBG`, then to dark. To pin it:
-
-```sh
-LEAF_THEME=light cargo run -- path/to/document.md
-```
-
-`leaf -r <file>` (or `--read-only`) opens the document as a **reading surface**
-rather than an editing one. Caret motion, selection, copy, `⌥g` follow, the
-view/markup/line-flow dials, the palette and the key reference all work exactly
-as they do anywhere else; everything that would change the document or write a
-file is refused, says so, and is dimmed in the palette, the context menu and the
-key reference. The flag goes on either side of the path. The gate itself is
-`leaf-core`'s — every mutation funnels through three doors and all three are
-shut — so this is a guarantee rather than a suppressed keyboard.
-
-## Keys
-
-| key | action |
-|-----|--------|
-| *(printable)* | insert at the caret (replacing any selection) |
-| `Enter` / `Backspace` / `Delete` | the usual — `Enter` in a table drops to the cell below, growing the table when there isn't one, and `Backspace` at a cell's start or `Delete` at its end does nothing rather than merge two cells |
-| `Tab` / `⇧Tab` | indent / outdent — in a table, walk the cells, appending a row off the last one |
-| `⌥Enter` | an in-cell line break (the terminal's spelling of `⇧Enter`, which a terminal can't tell from `Enter`) |
-| arrows / `Home` / `End` | move the caret |
-| `Shift`+move | extend the selection |
-| click / drag | place / drag the caret — a click under the last block lands on a blank line beneath it, opening one if need be |
-| `⌥b` / `⌥i` / `⌥c` | toggle **bold** / *italic* / `code` on the selection |
-| `⌥m` / `⌥d` / `⌥u` | toggle highlight / strikethrough / underline |
-| `⌥1`…`⌥6` | make the block at the caret a heading of that level |
-| `⌥0` | make it a paragraph |
-| `⌥7` / `⌥8` / `⌥9` | numbered list / bulleted list / quote |
-| `⌥⇧c` | make the block at the caret a code block — or open an empty one on a blank line |
-| `⌥t` / `⌥x` | give the item at the caret a checkbox / tick the box |
-| `⌥k` / `⌥l` | set the link destination / the code block's language |
-| `⌥e` / `⌥f` / `⌥r` | insert an image / a footnote / a horizontal rule |
-| `⌥a` / `⌥⇧r` | cycle the block's alignment (left, centre, right) / insert a page break |
-| `⌥↑` / `⌥↓` | move the block at the caret — a paragraph, a picture, a list item with its children — one place up / down |
-| `⌥g` | follow what the caret is on — a footnote to its note, a note back to its reference, a `#fragment` to the heading it names |
-| `⌥w` | switch between the source and wysiwyg views |
-| `⌥⇧w` / `⌥⇧f` | cycle the markup mode / flip line flow |
-| `^f` / `^h` | **find** / find and replace — a bar in the footer, matching case-insensitively over the source |
-| `^p` or `⌥p` | **the command palette** |
-| `F1` or `⌥h` | the key reference |
-| `^s` / `⌥s` / `⌥n` / `^q` | save / save as / new / quit |
-| right-click | the context menu: Format, Insert, Table and View flyouts |
-| hover | peek at what's under the pointer — a footnote's note, a link's destination — without moving the caret |
-| terminal paste | arrives whole (bracketed paste) and lands as one undo step — into the prompt or the palette when one is open, otherwise into the document |
-
-leaf **watches the file** it has open. Twice a second it stats the path, and on
-the rare tick where that has moved it asks `Doc::disk_state` — the hash against
-leaf's watermark — what actually happened. A document with no unsaved changes
-reloads itself silently, keeping the caret and the scroll, so a `git checkout`
-or a formatter run shows up in the buffer instead of waiting to become a
-conflict — and the reload is **one undo step**, so `^z` gives you back what you
-were looking at. Never on the tick that notices: a write is a truncate and then
-a write, so the reload waits for a tick where the file has stopped moving rather
-than reading somebody's half-finished one. A document *with* unsaved changes is
-never reloaded behind your back: it says so once, and the Overwrite/Reload/Cancel
-prompt at save time is where the choice gets made.
-
-Inside the find bar: `Enter` steps to the next match (and `^g` repeats it),
-`↑`/`↓` walk back and forward, `Esc` closes and leaves the caret on the match it
-landed on. `⇧Enter` and `^⇧g` are *not* the "previous" half, because a terminal
-sends the identical bytes for `Enter` and `⇧Enter` — the same reason the in-cell
-line break is spelled `⌥Enter` here. With a replacement field up (`^h`, or `^h`
-again on an open find bar, which keeps the query), `Tab` swaps fields and `^r`
-replaces all — as a single undo step, because replace-all is one thing you did.
-`Enter` does whichever field the keyboard is in: in the replacement it replaces
-the current match and moves on, in the query it steps, as it always does. `^h`
-over a selection, or over a bar that already has a query, starts in the
-replacement field, so the common path is one key. The bar hands the host's own
-chords back to the host — `^q`, `^s`, `^c` (which copies the match), `^p`, `⌥h`,
-`⌥w` — rather than swallowing them; it is a strip with two fields in it, not a
-modal dialog.
-
-Matches are painted with `leaf-core`'s `Doc::set_highlights`, so a hit inside
-`**bold**` selects the rendered word: the offsets are source bytes, which is the
-coordinate the caret, the selection, and the wash are all already in. Searching
-the source is also what makes a hit possible in text the *rich* view doesn't
-draw — inside hidden frontmatter, or in a link's destination — and those don't
-count as matches in that view. They are counted and said out loud ("2 of 3, 1
-hidden"), and never stepped to, washed, or replaced; `⌥w` into the source view,
-where every byte is on screen, is where the whole count is.
-
-Everything the keyboard doesn't reach is in the **command palette** — the three
-media kinds, all fourteen table operations, the eight highlight colours, and the
-markup/line-flow modes named outright rather than cycled. Type a few letters of a
-command's name and press Return; `table` finds the whole grid family, `ir` finds
-Insert Row Above, `highlight:` finds the colours.
-
-A **highlight's colour** is `==🔴 text==`, which Markdown spells and djot
-does not. The eight rows — seven colours and No Colour — sit under Format ▸
-Highlight Colour and in the palette, dim wherever there is nothing to colour, and
-tick the one the caret is standing in. Over a selection that isn't highlighted
-yet, one press does both: the highlight and its colour, as a single undo step.
-
-**Embed…** in the palette asks for a URL and writes `::embed{src="…"}` where
-the caret is, and the rich view draws every embed as a card titled "Embed"
-holding its URL; the caret steps over the card in one press each way. It is
-leaf-tui showing a host's directives — the ones leaf-ratatui lets a host name,
-insert (`DirectiveItem`) and draw (`DirectiveRenderer`) — rather than a name
-leaf adopts, so it is offered in Markdown and djot only, and dimmed elsewhere.
-Any other leaf directive is still the `⧉ name` placeholder.
-
-The palette, the context menu, and the key reference are all generated from one
-command table (`apps/leaf-tui/src/commands.rs`), so a command cannot gain a key
-without gaining a menu row and a line in the help. Every one of those surfaces
-also **dims what the document's format cannot spell** — a footnote or a task
-box in an HTML file — rather than hiding it, so what a format can't do stays
-legible instead of merely absent. What that line no longer separates is the
-highlight: leaf both renders *and* writes `==text==` in Markdown as of twig
-3.3.1, and `~~struck~~` with it, and as of twig 3.10 `<u>underline</u>` too.
-The gate is real and worth stating, because it is what makes the button honest — twig will only author
-bytes the document's own reparse reads back, and leaf parses every document with
-the `highlight` extension (`==🔴 text==`, colour and all), so `⌥m` writes a
-highlight that is still a highlight when the file is opened again.
-
-## Status
-
-Both views work: caret editing, mouse, selection, the format-aware toolbar, undo/
-redo, and live AST awareness, in either source or wysiwyg. Tables are editable as
-a grid; footnotes can be written and walked in both directions; images, video and
-audio embed; and the markup and line-flow dials are reachable.
-
-Known rough edges (next steps): no soft-wrap-aware width for wide/emoji glyphs
-(columns are counted in chars); code blocks render read-styled but map coarsely,
-so edit code in the source view; no inline-image rendering yet (kitty/sixel is
-the natural follow-up now that the glyph map exists); and `⌥g` names an external
-link's destination rather than opening it — launching a browser out of a text
-editor is a decision for the person at the keyboard, and most terminals already
-make a printed URL clickable.

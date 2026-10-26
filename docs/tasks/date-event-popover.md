@@ -1,10 +1,14 @@
 ---
 status: open
 created: 2026-10-04
-updated: 2026-10-04
+updated: 2026-10-26
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # A force click on a date shows no Calendar card
+
+**Since the archive (2026-10-26).** `LeafTextView.swift` is under
+`archive/packages/leaf-swift`. The gap is now the Dioxus Mac app's: its Look
+Up and data detectors, in "What the Mac app does not do yet".
 
 **Where.** `packages/leaf-swift/Sources/LeafUI/LeafTextView.swift` —
 `lookUp(under:event:)` and the data detectors beside it — and

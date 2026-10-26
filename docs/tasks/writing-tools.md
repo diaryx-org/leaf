@@ -1,10 +1,15 @@
 ---
 status: in-progress
 created: 2026-09-04
-updated: 2026-09-22
+updated: 2026-10-26
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Writing Tools in the Apple views
+
+**Since the archive (2026-10-26).** LeafUI is under
+`archive/packages/leaf-swift`, and is where to look for how it was done. The
+Dioxus app has no Writing Tools on the Mac ("What the Mac app does not do
+yet") or iOS ("What iOS does not do yet").
 
 **Status.** Implemented, not yet seen working end to end, in
 `feat(swift): inline Writing Tools in both views through the system's coordinator`.
