@@ -6024,8 +6024,9 @@ dependencies = [
 
 [[package]]
 name = "twig-asciidoc"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=cc%2Fyouthful-hamilton-hid5lb#8f14298a7d463647c2440f90d2a032b291227747"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3583fcbd776b3c7e009c95be1a09e8b8cd5986db0369f02433839155567fb35b"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -6033,8 +6034,9 @@ dependencies = [
 
 [[package]]
 name = "twig-djot"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=cc%2Fyouthful-hamilton-hid5lb#8f14298a7d463647c2440f90d2a032b291227747"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df7623ba396e17d9890d2432249002f76780b1b44b6a8f8791cd2e8806ec899"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -6042,16 +6044,18 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=cc%2Fyouthful-hamilton-hid5lb#8f14298a7d463647c2440f90d2a032b291227747"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43059a77c9c1b7e56f38a74917a4e446da813388ab9a6227520081abf4fb5ebc"
 dependencies = [
  "twig-kit",
 ]
 
 [[package]]
 name = "twig-html"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=cc%2Fyouthful-hamilton-hid5lb#8f14298a7d463647c2440f90d2a032b291227747"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d0f5733e9d1cf54d306105e89d9a4388a36e1a77110065214dacc681adfcacc"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -6059,13 +6063,15 @@ dependencies = [
 
 [[package]]
 name = "twig-kit"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=cc%2Fyouthful-hamilton-hid5lb#8f14298a7d463647c2440f90d2a032b291227747"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "547e69372eacfac62d3bc3c0433683894d9b0743aa413311c50a0732ae890397"
 
 [[package]]
 name = "twig-markdown"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=cc%2Fyouthful-hamilton-hid5lb#8f14298a7d463647c2440f90d2a032b291227747"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3e82b47b5b941022c8ce086f8c32c36e563482c1a2a74805abd2398eadbacd1"
 dependencies = [
  "twig-doc",
  "twig-html",
@@ -6074,8 +6080,9 @@ dependencies = [
 
 [[package]]
 name = "twig-xml"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=cc%2Fyouthful-hamilton-hid5lb#8f14298a7d463647c2440f90d2a032b291227747"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb47e9676fbc4dd21759bc478aaea2111dd85c55e102048e7a67f7bde6d55621"
 dependencies = [
  "twig-doc",
  "twig-kit",

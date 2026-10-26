@@ -45,7 +45,7 @@ impl Doc {
         if edit.is_empty() {
             return;
         }
-        self.ops = match Op::compose(&self.ops, &edit) {
+        self.ops = match Op::compose(&self.ops_base, &self.ops, &edit) {
             Ok(ops) => ops,
             // Only ops that split a character twig inserted, which twig's own
             // never do; the text the host last took is still a sound start.
