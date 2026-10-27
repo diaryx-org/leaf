@@ -42,7 +42,7 @@ pub use counts::TextCounts;
 pub use doc::{
     Capabilities, DiskState, Doc, DropTarget, FootnoteDef, FootnoteRef, Heading, Highlight,
     HighlightCursor, InlineMarks, Landing, LineFlow, MarkupMode, PAGE_BREAK, Quote, View,
-    VisualKey,
+    VisualKey, parse_tree,
 };
 pub use frame::{RowDelta, apply_row_delta, row_delta};
 pub use source::{SourceMap, StyledRun};

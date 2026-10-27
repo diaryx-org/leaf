@@ -1,6 +1,5 @@
 //! A winit [`Window`] that is no window: a sheet of a given size that Blitz
-//! lays the editor out on and paints, offscreen, for Export as PDF and
-//! Print (`pdf.rs`).
+//! lays a page out on, offscreen, for tests (`headless.rs`, `sheet.rs`).
 //!
 //! Blitz and the editor talk to their window through winit's `Window`
 //! trait — its size and scale, a redraw, the input method's caret area —
@@ -122,7 +121,7 @@ impl Window for HostedWindow {
     fn scale_factor(&self) -> f64 {
         self.state.lock().unwrap().scale
     }
-    /// Nothing to draw to: a sheet is painted when `pdf.rs` asks.
+    /// Nothing to draw to: a sheet is only laid out.
     fn request_redraw(&self) {}
     fn pre_present_notify(&self) {}
     fn reset_dead_keys(&self) {}
