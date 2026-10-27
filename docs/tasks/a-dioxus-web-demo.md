@@ -3,7 +3,7 @@ title: A web demo drawn by the Dioxus editor
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 status: open
 created: 2026-10-26
-updated: 2026-10-26
+updated: 2026-10-27
 ---
 # A web demo drawn by the Dioxus editor
 
@@ -39,9 +39,40 @@ a print stylesheet; and touch pointers for links and footnotes.
 README saying why and what does not work yet. The widget builds for wasm32
 with `clock.rs` (no `std::time::Instant` or tokio timer there) and reads the
 command key from the browser; the Blitz fork's `add_svg_fonts` gives SVG
-text the page's faces. Left: the input method (a hidden `<textarea>` feeding
-`ime.rs`), paste from outside the page, WebGL 2 for browsers without
-WebGPU, accessibility, and the Pages workflow that would deploy it.
+text the page's faces.
+
+**Since 2026-10-27.** Most of leaf-web's list is back. A hidden text field
+at the caret holds the focus and brings the input method, the clipboard in
+both flavours and the browser's `beforeinput` (`field.rs`); it holds the
+text as shown around the caret, so a screen reader reads the document's
+words. Pictures load through the new `Host::picture`, and text, HTML,
+pictures and documents can be dropped. ⌘S, ⌘O and `localStorage` keep the
+document (`files.rs`); a tap follows a link or footnote; the dark appearance
+follows the system's. `pages.yml` deploys it on the next tag.
+
+Left:
+
+- **WebGL 2**, for a browser without WebGPU, which gets a message instead
+  of the editor. dioxus-native fixes the renderer at compile time, and
+  `anyrender_vello_hybrid` has a WebGL scene painter but no WebGL window
+  renderer: one would be a patch in the Blitz fork's
+  `patches/anyrender_vello_hybrid`, chosen at resume when WebGPU has no
+  adapter.
+- **Print and Export as PDF.** leaf-web printed its DOM; a canvas prints a
+  bitmap of what is on screen. The Mac app's `pdf.rs` lays the document out
+  offscreen and draws it with krilla; on the web its synchronous picture
+  loading would need to become async, and it would move to a crate both
+  apps share.
+- **Accessibility beyond the text**: the structure (headings, lists,
+  links) and a live region for the status line, which AccessKit has no web
+  adapter to give.
+- **Faces for other scripts and colour emoji**: CJK and emoji draw as boxes,
+  since Blitz sees only the faces the page brings.
+- **The split** (`cargo xtask web --split`), off until it is sound: code
+  leaf-core shares with the Mermaid renderer moves into its module and does
+  nothing until it arrives (`xtask/src/web.rs`).
+- **Tried only in headless Chrome on Linux**: Safari, Firefox, a phone's
+  keyboard and a screen reader are not.
 
 **Done when.** A release deploys a demo drawn by the leaf-dioxus editor, or
 the web is deliberately left to the archived editor's last deploy.
