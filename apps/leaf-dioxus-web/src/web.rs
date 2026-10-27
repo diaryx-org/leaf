@@ -17,16 +17,19 @@
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-use dioxus::core::{Runtime, current_scope_id};
+use dioxus::core::{Runtime, ScopeId, current_scope_id};
 use dioxus::prelude::*;
 use dioxus_native::winit::event::WindowEvent;
 use dioxus_native::{Config, FontContext};
 use leaf_core::{Doc, Format};
-use leaf_dioxus::{Clipboard, Faces, Host, InputArea, Look, Picture, Type, pressed, use_editor};
+use leaf_dioxus::{
+    Clipboard, Editor, Faces, Host, InputArea, Look, Picture, Request, Type, pressed, use_editor,
+};
 use parley::fontique::{Collection, CollectionOptions, GenericFamily, SourceCache};
 use wasm_bindgen::prelude::*;
 
 use crate::field::Field;
+use crate::files::Files;
 use crate::pictures::Pictures;
 
 /// The faces the page brings, as `index.html` fetched them: Libertinus
@@ -114,12 +117,35 @@ fn look() -> Look {
     }
 }
 
+/// The editor, with what calls into it from outside its events needs: the
+/// Dioxus runtime and the scope to call it in, as dioxus-native calls a
+/// `use_window_event` handler. The page's own listeners and its fetches
+/// reach the editor through this.
+pub struct Ed {
+    ed: Editor,
+    runtime: Rc<Runtime>,
+    scope: ScopeId,
+}
+
+impl Ed {
+    pub fn run<R>(&self, f: impl FnOnce(&Editor) -> R) -> R {
+        self.runtime.in_scope(self.scope, || f(&self.ed))
+    }
+
+    /// The editor, for what reads it without changing it.
+    pub fn editor(&self) -> &Editor {
+        &self.ed
+    }
+}
+
 /// The page's [`Host`]: the text field that brings the keyboard and the
-/// clipboard (`field.rs`), and links opened in a new tab. The rest are the
-/// defaults: Save, Save As and the settings have nowhere to go yet.
+/// clipboard (`field.rs`), pictures (`pictures.rs`), Save and the document
+/// kept between visits (`files.rs`), and links opened in a new tab. The zoom
+/// and the settings are the defaults: the browser's own zoom does the one.
 struct Page {
     field: Rc<Field>,
     pictures: Rc<Pictures>,
+    files: Rc<Files>,
 }
 
 impl Host for Page {
@@ -152,6 +178,18 @@ impl Host for Page {
         self.pictures.get(dest)
     }
 
+    fn request(&self, _ed: &Editor, request: Request) {
+        match request {
+            Request::Save => self.files.save(false),
+            Request::SaveAs => self.files.save(true),
+            _ => {}
+        }
+    }
+
+    fn repainted(&self, doc: &Doc) {
+        self.files.remember(doc);
+    }
+
     /// A web address, in a new tab. Anything else names a file beside the
     /// document, and a document in memory has none.
     fn open(&self, what: &str) {
@@ -168,23 +206,40 @@ impl Host for Page {
 fn App() -> Element {
     let field = use_hook(Field::new);
     let pictures = use_hook(|| Rc::new(Pictures::default()));
+    let files = use_hook(|| Rc::new(Files::default()));
     let ed = use_editor(
-        || Doc::from_source(DEMO.into(), Format::Markdown).expect("the demo document"),
+        // What the page kept from the last visit, or else the demo.
+        || {
+            Files::kept().unwrap_or_else(|| {
+                Doc::from_source(DEMO.into(), Format::Markdown).expect("the demo document")
+            })
+        },
         look,
         {
             let field = field.clone();
             let pictures = pictures.clone();
-            move || Rc::new(Page { field, pictures }) as Rc<dyn Host>
+            let files = files.clone();
+            move || {
+                Rc::new(Page {
+                    field,
+                    pictures,
+                    files,
+                }) as Rc<dyn Host>
+            }
         },
     );
     use_hook({
         let ed = ed.clone();
         move || {
-            let (runtime, scope) = (Runtime::current(), current_scope_id());
+            let ed = Rc::new(Ed {
+                ed,
+                runtime: Runtime::current(),
+                scope: current_scope_id(),
+            });
             let repaint = ed.clone();
-            let rt = runtime.clone();
-            pictures.on_arrival(move || rt.in_scope(scope, || repaint.refresh()));
-            field.listen(ed, runtime, scope, pictures);
+            pictures.on_arrival(move || repaint.run(|e| e.refresh()));
+            files.attach(ed.clone());
+            field.listen(ed, pictures, files);
         }
     });
     let mut mods = Default::default();

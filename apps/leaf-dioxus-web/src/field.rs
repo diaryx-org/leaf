@@ -29,7 +29,7 @@
 //! - **Dropping** (`drop` on the page): text or HTML from another page or
 //!   app goes in where it lands, as a paste would; a picture file goes into
 //!   the page's memory ([`Pictures::keep`]) and into the document as a
-//!   picture of its own, on its own line.
+//!   picture of its own, on its own line; a document file is opened.
 //!
 //! The field holds the caret's source line, with the document's selection
 //! over the same text ([`InputArea`]), so a keyboard's suggestions and an
@@ -42,7 +42,6 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::str::FromStr;
 
-use dioxus::core::{Runtime, ScopeId};
 use dioxus::html::{Code, Key, Modifiers, NamedKey};
 use dioxus_native::winit::event::{Ime, WindowEvent};
 use leaf_dioxus::{Around, Clipboard, Editor, InputArea};
@@ -54,7 +53,9 @@ use web_sys::{
     InputEvent, KeyboardEvent,
 };
 
+use crate::files::Files;
 use crate::pictures::Pictures;
+use crate::web::Ed;
 
 /// The field, and what the page's clipboard holds.
 pub struct Field {
@@ -179,22 +180,14 @@ impl Field {
         let _ = self.area.focus_with_options(&opts);
     }
 
-    /// Send the field's events to `ed`, inside the Dioxus runtime the way
-    /// dioxus-native sends winit's (`use_window_event`), and keep the focus
-    /// here when the canvas takes it.
-    pub fn listen(
-        self: &Rc<Self>,
-        ed: Editor,
-        runtime: Rc<Runtime>,
-        scope: ScopeId,
-        pictures: Rc<Pictures>,
-    ) {
+    /// Send the field's events to the editor, and keep the focus here when
+    /// the canvas takes it.
+    pub fn listen(self: &Rc<Self>, ed: Rc<Ed>, pictures: Rc<Pictures>, files: Rc<Files>) {
         let cx = Rc::new(Cx {
             field: self.clone(),
             ed,
-            runtime,
-            scope,
             pictures,
+            files,
         });
         let on = |name: &str, f: Box<dyn FnMut(web_sys::Event)>| {
             let f = Closure::<dyn FnMut(web_sys::Event)>::wrap(f);
@@ -267,19 +260,18 @@ impl Field {
     }
 }
 
-/// What a listener needs: the field, the editor, and the runtime to call it
-/// in; and the pictures, for one dropped.
+/// What a listener needs: the field and the editor; and the pictures and
+/// files, for what is dropped and for ⌘O.
 struct Cx {
     field: Rc<Field>,
-    ed: Editor,
-    runtime: Rc<Runtime>,
-    scope: ScopeId,
+    ed: Rc<Ed>,
     pictures: Rc<Pictures>,
+    files: Rc<Files>,
 }
 
 impl Cx {
     fn run<R>(&self, f: impl FnOnce(&Editor) -> R) -> R {
-        self.runtime.in_scope(self.scope, || f(&self.ed))
+        self.ed.run(f)
     }
 
     fn chord(&self, key: Key, code: Code, mods: Modifiers) -> bool {
@@ -310,6 +302,17 @@ impl Cx {
             && (!(command || emacs) || alt_gr)
         {
             // Typed: the field's `beforeinput` says what it typed.
+            return;
+        }
+        // ⌘O and ⇧⌘S: the page's open and Save As, not the browser's.
+        if command && !e.alt_key() && code == Code::KeyO && !e.shift_key() {
+            e.prevent_default();
+            self.files.open();
+            return;
+        }
+        if command && !e.alt_key() && code == Code::KeyS && e.shift_key() {
+            e.prevent_default();
+            self.files.save(true);
             return;
         }
         // The clipboard's chords are the browser's, whose `copy`, `cut` and
@@ -468,6 +471,14 @@ impl Cx {
             .files()
             .map(|list| (0..list.length()).filter_map(|i| list.get(i)).collect())
             .unwrap_or_default();
+        // A document dropped is opened, in this page's place.
+        if let Some(file) = files
+            .iter()
+            .find(|f| crate::files::format_of(&f.name()).is_some())
+        {
+            self.files.open_file(file.clone());
+            return;
+        }
         let pictures: Vec<_> = files
             .into_iter()
             .filter(|f| f.type_().starts_with("image/"))
@@ -520,7 +531,7 @@ impl Cx {
             return;
         };
         let (text, html) = {
-            let doc = self.ed.shared_doc();
+            let doc = self.ed.editor().shared_doc();
             let mut d = doc.borrow_mut();
             let Some(text) = d.selected_text().map(str::to_owned) else {
                 return;

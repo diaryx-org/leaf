@@ -99,6 +99,15 @@ Tried in Chrome on a Mac, through WebGPU:
   as a paste would, and a picture file goes in as a picture on its own
   line, kept in the page's memory under its file name.
 
+- Opening and saving (`files.rs`). The page keeps the document in
+  `localStorage` as it changes and opens on it next time (`?demo` opens the
+  demo instead). ⌘S writes it to a file through the browser's save picker,
+  and to the same file after; where there is no picker (Safari, Firefox) it
+  downloads it. ⇧⌘S asks again. ⌘O, or a document dropped on the page,
+  opens Markdown, Djot, HTML, AsciiDoc or XML by its extension. The
+  pickers tried in Chrome through stand-ins, since a headless browser shows
+  none.
+
 Not tried yet: the dark appearance, Safari, Firefox, a phone or tablet,
 and a document long enough to test how fast it scrolls.
 
@@ -122,8 +131,8 @@ and a document long enough to test how fast it scrolls.
 - **A picture on another site that does not allow CORS.** A canvas can show
   only what the page may read, so such a picture is the editor's chip with
   its alt text.
-- **Saving and opening.** ⌘S and ⌘O do nothing: the page has nowhere to keep
-  a document yet.
+- **Pictures dropped on the page outlive it only in a saved file's
+  links:** they are kept in memory, so a reload draws them as chips.
 - **Colour emoji, and scripts the bundled faces lack.** Libertinus and
   DejaVu cover Latin, Greek and Cyrillic; Chinese, Japanese, Korean and
   emoji draw as boxes. A browser shows Blitz no system font, so each would

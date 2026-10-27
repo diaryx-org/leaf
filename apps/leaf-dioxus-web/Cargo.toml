@@ -61,7 +61,8 @@ web-sys = { version = "0.3", features = [
     "Clipboard", "ClipboardEvent", "CompositionEvent", "CssStyleDeclaration", "DataTransfer",
     "Document", "Element", "FocusEvent", "FocusOptions", "HtmlCanvasElement", "HtmlElement",
     "HtmlTextAreaElement", "InputEvent", "KeyboardEvent", "Navigator", "Window", "DragEvent",
-    "File", "FileList", "Blob", "Response",
+    "File", "FileList", "Blob", "BlobPropertyBag", "Response", "Storage", "Url",
+    "HtmlAnchorElement", "HtmlInputElement", "Location",
 ] }
 wasm-bindgen-futures = "0.4"
 # Pictures, which the page loads itself (`pictures.rs`): their format, for
