@@ -125,6 +125,10 @@ objc2-pdf-kit = { version = "0.3.2", default-features = false, features = [
     "std", "PDFDocument", "objc2-app-kit",
 ] }
 
+[dev-dependencies]
+# A folder of their own for the tests that write files, removed after.
+tempfile = "3"
+
 # A debug build with full debug info is several hundred megabytes; line
 # tables are enough for a panic's file and line.
 [profile.dev]

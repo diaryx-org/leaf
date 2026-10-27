@@ -609,7 +609,12 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(m) => {
                 self.mods.insert(window_id, m.state());
             }
-            WindowEvent::Focused(true) => FOCUSED.set(Some(window_id)),
+            WindowEvent::Focused(true) => {
+                FOCUSED.set(Some(window_id));
+                if let Some(p) = &page {
+                    guard(|| p.focused());
+                }
+            }
             _ => {}
         }
         if let Some(p) = &page {

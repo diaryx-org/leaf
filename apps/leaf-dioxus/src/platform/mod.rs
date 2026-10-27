@@ -7,7 +7,8 @@
 //!
 //! - `Document`: one document's handle in the system's document model — on
 //!   the Mac an `NSDocument` — with `take_doc`, `take_doc_from`, `path`,
-//!   `title`, `attach`, `show`, `edited`, `ask_to_close` and `close`.
+//!   `title`, `attach`, `show`, `edited`, `clean`, `focused`, `ask_to_close`
+//!   and `close`.
 //! - `start()` before the event loop runs, `launched()` once it does, and
 //!   `event_loop(&mut builder)` for the loop's own settings.
 //! - `document_window(attributes)` and `TITLE_BAR`: how a document window

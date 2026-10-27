@@ -5,19 +5,23 @@ use super::*;
 impl Doc {
     // ── the file ──────────────────────────────────────────────────────────────
 
+    /// Whether the bytes landed: an untitled document, or a failed write,
+    /// is `false`, with the status saying why.
     #[cfg(feature = "fs")]
-    pub fn save(&mut self) {
+    pub fn save(&mut self) -> bool {
         if self.is_untitled() {
             // No path to write and no name to invent: ⌘S on an untitled document
             // is a Save As, and only a frontend has a picker to ask with. Say so
             // rather than failing at the filesystem with an empty path.
             self.status = Some("untitled — save as…".into());
-            return;
+            return false;
         }
         let path = self.path.clone();
-        if self.write(&path) {
+        let landed = self.write(&path);
+        if landed {
             self.mark_saved();
         }
+        landed
     }
 
     /// Save As: write the document to `path` and *move* it there — `self.path`
@@ -40,21 +44,26 @@ impl Doc {
     /// history — not a rename. So `notes.md` saved as `notes.dj` holds Markdown
     /// in a `.dj` file, and `format_name()` keeps honestly saying `markdown`
     /// until it's reopened.
+    ///
+    /// Whether the bytes landed, as [`Doc::save`].
     #[cfg(feature = "fs")]
-    pub fn save_as(&mut self, path: PathBuf) {
+    pub fn save_as(&mut self, path: PathBuf) -> bool {
         if !self.write(&path) {
-            return;
+            return false;
         }
         self.path = path;
         self.mark_saved();
+        true
     }
 
     /// Put `source` on disk at `path`, reporting whether it got there. The one
     /// place leaf writes a document, so a save and a Save As can't disagree
     /// about what a failure looks like.
+    ///
+    /// Whole or not at all: see [`replace_file`].
     #[cfg(feature = "fs")]
     fn write(&mut self, path: &Path) -> bool {
-        match std::fs::write(path, self.source.as_bytes()) {
+        match replace_file(path, self.source.as_bytes()) {
             Ok(()) => true,
             Err(e) => {
                 self.status = Some(format!("save failed: {e}"));
@@ -273,4 +282,101 @@ impl Doc {
     pub fn can_redo(&self) -> bool {
         !self.read_only && self.redo_steps > 0
     }
+}
+
+/// Put `bytes` at `path` whole or not at all. They are written to a file
+/// beside it and renamed over it, so a write that fails partway (a full
+/// disk, a lost mount) leaves the last saved file as it was, where
+/// `std::fs::write` truncates it first.
+///
+/// - A symbolic link is followed, even to a target that is not there yet,
+///   so the file it names is the one written and the link stays a link.
+/// - A file already there keeps its permissions; a new one is made as
+///   `File::create` makes it, under the umask.
+/// - The temporary file's name is short and fixed in shape, so a target
+///   whose own name is near the filesystem's limit can still be saved.
+/// - The new bytes, then (on Unix) the folder's entry for them, are flushed
+///   to the disk before this returns, so a save reported done survives a
+///   power cut.
+#[cfg(feature = "fs")]
+pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let target = follow_links(path)?;
+    let dir = target
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let (temp, mut file) = create_beside(dir)?;
+    let written = (|| {
+        if let Ok(meta) = std::fs::metadata(&target) {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return written;
+    }
+    sync_dir(dir)
+}
+
+/// `path` with every symbolic link at its end followed, whether or not the
+/// last target exists: the file a save should write. A relative target is
+/// read from the link's own folder. Links through the folders above are
+/// left for the rename to follow.
+#[cfg(feature = "fs")]
+fn follow_links(path: &Path) -> std::io::Result<PathBuf> {
+    let mut at = path.to_path_buf();
+    // The kernel's own limit on a chain of links (Linux's MAXSYMLINKS).
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&at) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let to = std::fs::read_link(&at)?;
+                at = match at.parent() {
+                    Some(dir) if to.is_relative() => dir.join(to),
+                    _ => to,
+                };
+            }
+            _ => return Ok(at),
+        }
+    }
+    Err(std::io::Error::other(format!(
+        "{}: too many levels of symbolic links",
+        path.display()
+    )))
+}
+
+/// A new file in `dir` for a save to be written to before it is renamed:
+/// `.leaf-save-<process>-<n>`, never one that is already there.
+#[cfg(feature = "fs")]
+fn create_beside(dir: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp = dir.join(format!(".leaf-save-{}-{n}", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => return Ok((temp, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Flush `dir`'s entries to the disk, so a rename in it survives a power
+/// cut. Unix only: Windows cannot open a folder to flush it, and commits a
+/// rename's metadata itself.
+#[cfg(feature = "fs")]
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
