@@ -279,18 +279,20 @@ impl Document {
                 DiskState::Changed if doc.dirty => {
                     Some("The file changed on disk — saving will ask".to_string())
                 }
+                // `reload` says how it went in the status line itself:
+                // "reloaded", or why not.
                 DiskState::Changed => {
                     doc.reload();
-                    Some("Reloaded from disk".to_string())
+                    None
                 }
                 DiskState::Missing => Some(format!("{} is no longer on disk", doc.file_name())),
                 _ => None,
             };
             if let Some(s) = said {
                 doc.status = Some(s);
-                drop(doc);
-                ed.refresh();
             }
+            drop(doc);
+            ed.refresh();
         });
     }
 

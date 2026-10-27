@@ -701,3 +701,57 @@ fn a_save_keeps_the_files_permissions_and_follows_a_link() {
         "the link stays a link"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_save_through_a_link_to_a_missing_file_makes_the_file_and_keeps_the_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real.md");
+    let link = dir.path().join("link.md");
+    std::fs::write(&real, "old\n").unwrap();
+    // Relative, as most links are: read from the link's own folder.
+    std::os::unix::fs::symlink("real.md", &link).unwrap();
+    let mut d = Doc::open(link.clone()).unwrap();
+    std::fs::remove_file(&real).unwrap();
+    d.insert("new ");
+    assert!(d.save());
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link stays a link"
+    );
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), "new old\n");
+}
+
+#[test]
+fn a_file_whose_name_is_near_the_limit_still_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    // 250 bytes: a valid name on every common filesystem (255), with no
+    // room for a temporary file named after it.
+    let name = format!("{}.md", "n".repeat(247));
+    let path = dir.path().join(&name);
+    std::fs::write(&path, "old\n").unwrap();
+    let mut d = Doc::open(path.clone()).unwrap();
+    d.insert("new ");
+    assert!(d.save(), "{:?}", d.status);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new old\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_new_file_is_made_with_the_permissions_any_new_file_gets() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    // What the umask gives a file made the ordinary way, beside it.
+    let plain = dir.path().join("plain.md");
+    std::fs::File::create(&plain).unwrap();
+    let want = std::fs::metadata(&plain).unwrap().permissions().mode() & 0o777;
+    let mut d = Doc::blank().unwrap();
+    d.insert("hello");
+    let new = dir.path().join("new.md");
+    assert!(d.save_as(new.clone()));
+    let mode = std::fs::metadata(&new).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, want);
+}

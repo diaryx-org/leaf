@@ -3374,7 +3374,6 @@ dependencies = [
  "anyhow",
  "fig-css",
  "syntect",
- "tempfile",
  "twig-asciidoc",
  "twig-djot",
  "twig-doc",

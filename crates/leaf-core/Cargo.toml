@@ -16,7 +16,7 @@ description = "Frontend-neutral core of leaf: a byte-offset caret/selection mode
 # constructors (`Doc::from_source`, the public `source` field, `mark_saved`)
 # instead, since it has no path to read and its own way to persist bytes.
 default = ["fs", "syntax"]
-fs = ["dep:tempfile"]
+fs = []
 # Syntax highlighting inside fenced code blocks: each code glyph is classed with
 # a `Token` by the language the fence names. Default-on, since every frontend
 # paints it, but a feature because of what it weighs — the grammars travel as an
@@ -39,9 +39,6 @@ unicode-segmentation = "1.13.3"
 # Display width: a column is a terminal cell, and a `col` counted in characters
 # drifts from the glyph it names by one cell per wide character on the line.
 unicode-width = "0.2.0"
-# A save written beside the file and renamed over it (`Doc::write`), so a
-# write that fails partway leaves the last saved file whole.
-tempfile = { version = "3", optional = true }
 # `regex-fancy`, never the default `regex-onig`: oniguruma is a C library, and
 # this crate has to keep compiling for `wasm32-unknown-unknown` (leaf-wasm) and
 # as a staticlib for iOS (leaf-ffi). `parsing` alone — no `html`, no themes:
@@ -58,3 +55,7 @@ syntect = { version = "5.3", default-features = false, features = [
 two-face = { version = "0.5", default-features = false, features = [
     "syntect-fancy",
 ], optional = true }
+
+[dev-dependencies]
+# A folder of their own for the save tests, removed after.
+tempfile = "3"
