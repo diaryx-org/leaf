@@ -6,7 +6,6 @@ updated: 2026-10-04
 contents:
 - '[Writing Tools in the Apple views](writing-tools.md)'
 - '[Right-to-left text](right-to-left-text.md)'
-- '[`can_undo` counts edits, and twig counts steps](can-undo-counts-edits-not-steps.md)'
 - '[The Mac app runs unsandboxed](sandboxed-mac-app.md)'
 - '[Enter in an HTML document writes whitespace](enter-in-html-writes-whitespace.md)'
 - '[Text glued under a closing `</div>` draws until the next full rebuild](text-glued-under-a-closing-div.md)'

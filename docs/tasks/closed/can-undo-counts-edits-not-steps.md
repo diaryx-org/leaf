@@ -1,25 +1,25 @@
 ---
-status: open
+status: done
 created: 2026-09-16
-updated: 2026-10-06
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-10-27
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # `can_undo` counts edits, and twig counts steps
 
-**Status.** Open: the leaf half is in, provui's is not. `fix(core):
-can_undo answers exactly, and undo and redo say whether they moved` makes
-both halves truthful. twig has no depth query, so `undo_steps` is now an
-exact mirror of its stacks rather than a count of edits — it follows every
-`coalesce_last_undo` under twig's two-step rule and twig's 200-step cap —
-and `Doc::undo()` / `redo()` return `bool`. The frames leaf-ffi and the wasm
-binding hand back carry the exact `can_undo` / `can_redo`; their `undo` and
-`redo` still return a frame. The done-when's test is
-`can_undo_is_false_once_a_coalesced_run_is_undone`, and
+**Status.** Done. Both halves are in. leaf's is `df37bd0`, `fix(core)!:
+can_undo answers exactly, and undo and redo say whether they moved`. twig has
+no depth query, so `undo_steps` is now an exact mirror of its stacks rather
+than a count of edits — it follows every `coalesce_last_undo` under twig's
+two-step rule and twig's 200-step cap — and `Doc::undo()` / `redo()` return
+`bool`. The frames leaf-ffi and the wasm binding hand back carry the exact
+`can_undo` / `can_redo`; their `undo` and `redo` still return a frame. The
+done-when's test is `can_undo_is_false_once_a_coalesced_run_is_undone`, and
 `can_undo_is_exact_across_the_gestures_that_coalesce` holds the mirror to
-twig across the gestures that fold steps. What remains is provui's, and it
-waits on nothing now: provui takes leaf from git, and its lock (`17dd988`,
-2026-10-06) already carries the fix. `DocumentSession` drops its "walk on
-when the body did not move" special case.
+twig across the gestures that fold steps. provui's is `a627568` in provui,
+`refactor(core): undo and redo take the editors' own answer, with no body
+special case` (2026-10-26): `DocumentSession::undo` and `redo` now press an
+editor only when its `can_undo` / `can_redo` says it has a step, and stop
+the walk when a pressed step does not move, in either editor.
 
 **Where.** `crates/leaf-core/src/doc/undo.rs`, `undo_steps` / `redo_steps`, and
 `Doc::undo` / `Doc::redo` beside them.
