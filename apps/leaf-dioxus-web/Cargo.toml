@@ -60,8 +60,14 @@ js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Clipboard", "ClipboardEvent", "CompositionEvent", "CssStyleDeclaration", "DataTransfer",
     "Document", "Element", "FocusEvent", "FocusOptions", "HtmlCanvasElement", "HtmlElement",
-    "HtmlTextAreaElement", "InputEvent", "KeyboardEvent", "Navigator", "Window",
+    "HtmlTextAreaElement", "InputEvent", "KeyboardEvent", "Navigator", "Window", "DragEvent",
+    "File", "FileList", "Blob", "Response",
 ] }
+wasm-bindgen-futures = "0.4"
+# Pictures, which the page loads itself (`pictures.rs`): their format, for
+# the `data:` URI Blitz decodes them from, and the URI's base64.
+image = { version = "0.25", default-features = false }
+base64 = "0.22"
 # A panic, in the browser's console rather than as `unreachable`.
 console_error_panic_hook = "0.1"
 

@@ -22,11 +22,12 @@ use dioxus::prelude::*;
 use dioxus_native::winit::event::WindowEvent;
 use dioxus_native::{Config, FontContext};
 use leaf_core::{Doc, Format};
-use leaf_dioxus::{Clipboard, Faces, Host, InputArea, Look, Type, pressed, use_editor};
+use leaf_dioxus::{Clipboard, Faces, Host, InputArea, Look, Picture, Type, pressed, use_editor};
 use parley::fontique::{Collection, CollectionOptions, GenericFamily, SourceCache};
 use wasm_bindgen::prelude::*;
 
 use crate::field::Field;
+use crate::pictures::Pictures;
 
 /// The faces the page brings, as `index.html` fetched them: Libertinus
 /// Serif for the body, in the book face's four styles, and DejaVu Sans Mono
@@ -118,6 +119,7 @@ fn look() -> Look {
 /// defaults: Save, Save As and the settings have nowhere to go yet.
 struct Page {
     field: Rc<Field>,
+    pictures: Rc<Pictures>,
 }
 
 impl Host for Page {
@@ -146,6 +148,10 @@ impl Host for Page {
         self.field.place(area);
     }
 
+    fn picture(&self, _doc: &Doc, dest: &str) -> Option<Picture> {
+        self.pictures.get(dest)
+    }
+
     /// A web address, in a new tab. Anything else names a file beside the
     /// document, and a document in memory has none.
     fn open(&self, what: &str) {
@@ -161,17 +167,25 @@ impl Host for Page {
 #[allow(non_snake_case)]
 fn App() -> Element {
     let field = use_hook(Field::new);
+    let pictures = use_hook(|| Rc::new(Pictures::default()));
     let ed = use_editor(
         || Doc::from_source(DEMO.into(), Format::Markdown).expect("the demo document"),
         look,
         {
             let field = field.clone();
-            move || Rc::new(Page { field }) as Rc<dyn Host>
+            let pictures = pictures.clone();
+            move || Rc::new(Page { field, pictures }) as Rc<dyn Host>
         },
     );
     use_hook({
         let ed = ed.clone();
-        move || field.listen(ed, Runtime::current(), current_scope_id())
+        move || {
+            let (runtime, scope) = (Runtime::current(), current_scope_id());
+            let repaint = ed.clone();
+            let rt = runtime.clone();
+            pictures.on_arrival(move || rt.in_scope(scope, || repaint.refresh()));
+            field.listen(ed, runtime, scope, pictures);
+        }
     });
     let mut mods = Default::default();
     dioxus_native::use_window_event({

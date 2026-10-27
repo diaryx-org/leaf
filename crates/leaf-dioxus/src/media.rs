@@ -157,7 +157,7 @@ thread_local! {
 }
 
 /// The still at `path`, measured once.
-fn still(path: &Path) -> Option<Rc<Still>> {
+pub fn still(path: &Path) -> Option<Rc<Still>> {
     STILLS.with(|c| {
         c.borrow_mut()
             .entry(path.to_path_buf())
@@ -182,9 +182,7 @@ fn measure(path: &Path) -> Option<(f32, f32)> {
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
     if svg {
-        let data = std::fs::read(path).ok()?;
-        let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).ok()?;
-        return Some((tree.size().width(), tree.size().height()));
+        return svg_size(&std::fs::read(path).ok()?);
     }
     let (w, h) = image::ImageReader::open(path)
         .ok()?
@@ -193,6 +191,25 @@ fn measure(path: &Path) -> Option<(f32, f32)> {
         .into_dimensions()
         .ok()?;
     Some((w as f32, h as f32))
+}
+
+/// The natural size of the picture in `bytes`, in any format the editor
+/// draws, SVG included: for a host that loads a picture itself
+/// ([`Host::picture`](crate::Host::picture)) and has no file to name.
+pub fn picture_size(bytes: &[u8]) -> Option<(f32, f32)> {
+    let raster = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok());
+    match raster {
+        Some((w, h)) => Some((w as f32, h as f32)),
+        None => svg_size(bytes),
+    }
+}
+
+fn svg_size(data: &[u8]) -> Option<(f32, f32)> {
+    let tree = usvg::Tree::from_data(data, &usvg::Options::default()).ok()?;
+    Some((tree.size().width(), tree.size().height()))
 }
 
 /// Where the caret is, if it is at the picture.
@@ -277,15 +294,16 @@ fn prefix_of(glyphs: &[Glyph]) -> RowView {
 }
 
 /// Lay out one medium at `rows[info.rows_span.start]` in a column `width`
-/// pixels wide, its destination found on disk by `locate` (the host's
-/// `locate_media`, then the editor's own rule). `reuse` hands
+/// pixels wide, its picture found by `find` (`blocks::find_still`: the
+/// host's own picture, or a file found by the host's `locate_media`, then
+/// by the editor's own rule). `reuse` hands
 /// back last frame's layout of the same prefix, so a block nothing changed
 /// in compares equal and is not rendered again.
 #[allow(clippy::too_many_arguments)]
 pub fn block(
     info: &MediaInfo,
     rows: &[VRow],
-    locate: &dyn Fn(&str) -> Option<PathBuf>,
+    find: &dyn Fn(&str) -> Option<Rc<Still>>,
     caret: usize,
     selection: Option<(usize, usize)>,
     fonts: &mut Fonts,
@@ -294,10 +312,7 @@ pub fn block(
 ) -> Option<Block> {
     let row = rows.get(info.rows_span.start)?;
     let (start, end) = stops(row)?;
-    let still = info
-        .still(ColorScheme::Light)
-        .and_then(locate)
-        .and_then(|p| still(&p));
+    let still = info.still(ColorScheme::Light).and_then(find);
     let prefix = prefix_of(&row.glyphs);
     let prefix_layout = reuse(&prefix).unwrap_or_else(|| {
         LayoutHandle(Rc::new(fonts.layout(&prefix, f32::INFINITY, Kind::Prose)))
@@ -457,7 +472,8 @@ mod tests {
 
     fn blocks_of(d: &Doc, caret: usize) -> Vec<Block> {
         let mut fonts = Fonts::new(crate::text::Type::default());
-        let locate = |dest: &str| resolve(dest, Some(Path::new("/nowhere")));
+        let locate =
+            |dest: &str| resolve(dest, Some(Path::new("/nowhere"))).and_then(|p| still(&p));
         d.vmap
             .media
             .iter()
@@ -534,7 +550,7 @@ mod tests {
         let b = block(
             &d.vmap.media[0],
             &d.vmap.rows,
-            &|dest| resolve(dest, Some(&dir)),
+            &|dest| resolve(dest, Some(&dir)).and_then(|p| still(&p)),
             0,
             None,
             &mut Fonts::new(crate::text::Type::default()),
@@ -597,6 +613,18 @@ mod tests {
     #[test]
     fn a_file_url_escapes_what_a_url_cannot_hold() {
         assert_eq!(file_url(Path::new("/a b/c%.png")), "file:///a%20b/c%25.png");
+    }
+
+    #[test]
+    fn a_picture_is_measured_from_its_bytes_whatever_its_format() {
+        let mut png = Vec::new();
+        image::RgbImage::new(30, 20)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(picture_size(&png), Some((30.0, 20.0)));
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"></svg>"#;
+        assert_eq!(picture_size(svg), Some((64.0, 48.0)));
+        assert_eq!(picture_size(b"not a picture"), None);
     }
 
     #[test]

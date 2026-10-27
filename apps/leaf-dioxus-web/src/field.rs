@@ -26,6 +26,11 @@
 //!   page's clipboard and has the editor paste it with ⌘V, as it would the
 //!   Mac's.
 //!
+//! - **Dropping** (`drop` on the page): text or HTML from another page or
+//!   app goes in where it lands, as a paste would; a picture file goes into
+//!   the page's memory ([`Pictures::keep`]) and into the document as a
+//!   picture of its own, on its own line.
+//!
 //! The field holds the caret's source line, with the document's selection
 //! over the same text ([`InputArea`]), so a keyboard's suggestions and an
 //! autocorrection see the words around the caret. When the browser moves
@@ -43,10 +48,13 @@ use dioxus_native::winit::event::{Ime, WindowEvent};
 use leaf_dioxus::{Around, Clipboard, Editor, InputArea};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    ClipboardEvent, CompositionEvent, Document, FocusEvent, HtmlTextAreaElement, InputEvent,
-    KeyboardEvent,
+    ClipboardEvent, CompositionEvent, Document, DragEvent, FocusEvent, HtmlTextAreaElement,
+    InputEvent, KeyboardEvent,
 };
+
+use crate::pictures::Pictures;
 
 /// The field, and what the page's clipboard holds.
 pub struct Field {
@@ -174,12 +182,19 @@ impl Field {
     /// Send the field's events to `ed`, inside the Dioxus runtime the way
     /// dioxus-native sends winit's (`use_window_event`), and keep the focus
     /// here when the canvas takes it.
-    pub fn listen(self: &Rc<Self>, ed: Editor, runtime: Rc<Runtime>, scope: ScopeId) {
+    pub fn listen(
+        self: &Rc<Self>,
+        ed: Editor,
+        runtime: Rc<Runtime>,
+        scope: ScopeId,
+        pictures: Rc<Pictures>,
+    ) {
         let cx = Rc::new(Cx {
             field: self.clone(),
             ed,
             runtime,
             scope,
+            pictures,
         });
         let on = |name: &str, f: Box<dyn FnMut(web_sys::Event)>| {
             let f = Closure::<dyn FnMut(web_sys::Event)>::wrap(f);
@@ -212,6 +227,26 @@ impl Field {
         let c = cx.clone();
         on("paste", Box::new(move |e| c.paste(e.unchecked_ref())));
 
+        // A drop anywhere on the page: what is over the canvas is the
+        // editor's, and the browser opening a dropped file in the tab is
+        // never wanted.
+        let doc = document();
+        let over = Closure::<dyn FnMut(DragEvent)>::new(|e: DragEvent| {
+            e.prevent_default();
+            if let Some(d) = e.data_transfer() {
+                d.set_drop_effect("copy");
+            }
+        });
+        let _ = doc.add_event_listener_with_callback("dragover", over.as_ref().unchecked_ref());
+        over.forget();
+        let c = cx.clone();
+        let dropped = Closure::<dyn FnMut(DragEvent)>::new(move |e: DragEvent| {
+            e.prevent_default();
+            c.drop(&e);
+        });
+        let _ = doc.add_event_listener_with_callback("drop", dropped.as_ref().unchecked_ref());
+        dropped.forget();
+
         // winit focuses the canvas on every press; the focus comes straight
         // back here, so the next key is the field's. Once this listener has
         // returned: taking the focus fires `focusin` again, into it.
@@ -232,12 +267,14 @@ impl Field {
     }
 }
 
-/// What a listener needs: the field, the editor, and the runtime to call it in.
+/// What a listener needs: the field, the editor, and the runtime to call it
+/// in; and the pictures, for one dropped.
 struct Cx {
     field: Rc<Field>,
     ed: Editor,
     runtime: Rc<Runtime>,
     scope: ScopeId,
+    pictures: Rc<Pictures>,
 }
 
 impl Cx {
@@ -416,6 +453,66 @@ impl Cx {
         });
     }
 
+    /// Something dropped on the page, at the point it was dropped: picture
+    /// files, or else text in its richest flavour. The caret goes there
+    /// first; a drop off the text — on a table, a picture, the margin —
+    /// lands at the caret.
+    fn drop(self: &Rc<Self>, e: &DragEvent) {
+        let Some(data) = e.data_transfer() else {
+            return;
+        };
+        let (x, y) = (e.client_x() as f64, e.client_y() as f64);
+        let at = self.run(|ed| ed.offset_at_point(x, y));
+        self.field.focus();
+        let files: Vec<web_sys::File> = data
+            .files()
+            .map(|list| (0..list.length()).filter_map(|i| list.get(i)).collect())
+            .unwrap_or_default();
+        let pictures: Vec<_> = files
+            .into_iter()
+            .filter(|f| f.type_().starts_with("image/"))
+            .collect();
+        if !pictures.is_empty() {
+            let cx = self.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let mut names = Vec::new();
+                for file in pictures {
+                    let Ok(buffer) = JsFuture::from(file.array_buffer()).await else {
+                        continue;
+                    };
+                    let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+                    names.push(cx.pictures.keep(&file.name(), bytes));
+                }
+                cx.run(|ed| {
+                    {
+                        let mut d = ed.doc();
+                        if let Some(at) = at {
+                            d.place_caret(at, false);
+                        }
+                        let lines = picture_lines(&d.source, d.caret, &names);
+                        d.paste(&lines);
+                    }
+                    ed.refresh();
+                    ed.ime_area();
+                });
+            });
+            return;
+        }
+        let get = |kind: &str| data.get_data(kind).ok().filter(|s| !s.is_empty());
+        let board = Clipboard {
+            text: get("text/plain"),
+            html: get("text/html"),
+        };
+        if board.text.is_none() && board.html.is_none() {
+            return;
+        }
+        *self.field.board.borrow_mut() = board;
+        if let Some(at) = at {
+            self.run(|ed| ed.doc().place_caret(at, false));
+        }
+        self.chord(Key::Character("v".into()), Code::KeyV, command_key());
+    }
+
     /// Copy or Cut: the document's selection, in both flavours, into the
     /// event's data. Nothing selected leaves the event to the browser.
     fn copy(&self, e: &ClipboardEvent, cut: bool) {
@@ -466,6 +563,32 @@ impl Cx {
         };
         self.chord(Key::Character("v".into()), Code::KeyV, mods);
     }
+}
+
+/// Pictures named `names`, as the source to insert at `caret` in `source`:
+/// each a paragraph of its own, set apart from the text around the caret.
+fn picture_lines(source: &str, caret: usize, names: &[String]) -> String {
+    let body = names
+        .iter()
+        .map(|n| {
+            let alt = n.rsplit_once('.').map_or(n.as_str(), |(s, _)| s);
+            format!("![{}]({n})", alt.replace('-', " "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let before = &source[..caret];
+    let after = &source[caret..];
+    let lead = match () {
+        _ if before.is_empty() || before.ends_with("\n\n") => "",
+        _ if before.ends_with('\n') => "\n",
+        _ => "\n\n",
+    };
+    let tail = match () {
+        _ if after.starts_with("\n\n") => "",
+        _ if after.starts_with('\n') || after.is_empty() => "\n",
+        _ => "\n\n",
+    };
+    format!("{lead}{body}{tail}")
 }
 
 fn document() -> Document {

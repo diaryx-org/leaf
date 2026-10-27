@@ -2485,15 +2485,18 @@ dependencies = [
 name = "leaf-dioxus-web"
 version = "0.5.1"
 dependencies = [
+ "base64 0.22.1",
  "blitz-dom",
  "console_error_panic_hook",
  "dioxus",
  "dioxus-native",
+ "image",
  "js-sys",
  "leaf-core",
  "leaf-dioxus",
  "parley",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 

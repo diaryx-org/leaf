@@ -9,7 +9,8 @@ WebGPU. It is the same editor as the Mac app's, on a document in memory
 cargo xtask web --serve 8000     # then open http://localhost:8000
 ```
 
-The page is `index.html`, `pkg/` and `fonts/`; serve all three. The first
+The page is `index.html`, `pkg/`, `fonts/` and `media/` (the demo's
+picture); serve all four. The first
 build installs `wasm-bindgen` and `wasm-split-cli`, at the versions the
 lockfile names, into the app's `target/tools`.
 
@@ -90,6 +91,14 @@ Tried in Chrome on a Mac, through WebGPU:
   source and its HTML on the system's clipboard, and a paste from another
   page or app brings its HTML in as formatting (⇧⌘V, its text alone).
 
+- Pictures, which the page loads itself, since the editor's way — reading
+  the file from disk — has no disk to read (`pictures.rs`, through the
+  widget's `Host::picture`): a path relative to the page (the demo's
+  `media/leaf.svg`), a `data:` URI, or a web address that allows it (CORS).
+- Dropping: text and HTML from another page or app go in where they land,
+  as a paste would, and a picture file goes in as a picture on its own
+  line, kept in the page's memory under its file name.
+
 Not tried yet: the dark appearance, Safari, Firefox, a phone or tablet,
 and a document long enough to test how fast it scrolls.
 
@@ -110,8 +119,9 @@ and a document long enough to test how fast it scrolls.
   `patches/`.
 - **Accessibility.** AccessKit has no web adapter, so a screen reader finds
   an empty canvas.
-- **Pictures.** The editor reads a picture's file from disk; a document in
-  memory has none, so a picture draws as a chip with its alt text.
+- **A picture on another site that does not allow CORS.** A canvas can show
+  only what the page may read, so such a picture is the editor's chip with
+  its alt text.
 - **Saving and opening.** ⌘S and ⌘O do nothing: the page has nowhere to keep
   a document yet.
 - **Colour emoji, and scripts the bundled faces lack.** Libertinus and

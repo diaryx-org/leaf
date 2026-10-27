@@ -12,6 +12,10 @@ to make it _bold_; **⌘I** for italics; **⌘Z** to undo.
 - Lists, as you see, with `inline code` and [links](https://diaryx.org).
 - Quotes, tables, code blocks and footnotes.[^1]
 - Formulas and diagrams, typeset in the page.
+- Pictures: a file served beside the page, a `data:` URI, or one dropped
+  on the page.
+
+![A leaf](media/leaf.svg)
 
 > A quote, set off by a bar in the margin.
 
