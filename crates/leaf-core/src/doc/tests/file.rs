@@ -636,3 +636,68 @@ fn the_highlight_cursor_answers_exactly_what_a_fresh_scan_would() {
         );
     }
 }
+
+// ── a save is whole or nothing ────────────────────────────────────────────
+
+/// A document opened from `body` in a temp directory of its own, removed
+/// when the returned guard drops.
+fn doc_in_dir(body: &str) -> (tempfile::TempDir, Doc) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("note.md");
+    std::fs::write(&path, body).unwrap();
+    let doc = Doc::open(path).unwrap();
+    (dir, doc)
+}
+
+#[test]
+fn a_save_replaces_the_file_whole_and_leaves_nothing_beside_it() {
+    let (dir, mut d) = doc_in_dir("old\n");
+    d.insert("new ");
+    assert!(d.save());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("note.md")).unwrap(),
+        "new old\n"
+    );
+    let names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["note.md"], "no temporary file is left beside it");
+}
+
+#[test]
+fn a_save_that_cannot_land_leaves_the_file_and_the_document_unsaved() {
+    let (dir, mut d) = doc_in_dir("old\n");
+    d.insert("new ");
+    // The folder goes, so the file beside the target cannot be made.
+    let gone = dir.path().join("note.md");
+    d.path = dir.path().join("gone").join("note.md");
+    assert!(!d.save());
+    assert!(d.dirty, "a save that did not land is not a save");
+    assert_eq!(std::fs::read_to_string(gone).unwrap(), "old\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_keeps_the_files_permissions_and_follows_a_link() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real.md");
+    let link = dir.path().join("link.md");
+    std::fs::write(&real, "old\n").unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let mut d = Doc::open(link.clone()).unwrap();
+    d.insert("new ");
+    assert!(d.save());
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), "new old\n");
+    let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "the file keeps its permissions");
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link stays a link"
+    );
+}
