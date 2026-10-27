@@ -292,6 +292,13 @@ impl LeafDocument {
         app::post(AppEvent::Close(page.window.id()));
     }
 
+    /// Clean again: AppKit keeps the change count, and needs no telling.
+    pub fn clean(&self) {}
+
+    /// The window came forward: AppKit watches the file itself
+    /// (`presentedItemDidChange`), and reads it again through `read`.
+    pub fn focused(&self, _page: &crate::page::Page) {}
+
     /// Bring its window forward.
     pub fn show(&self) {
         self.showWindows();

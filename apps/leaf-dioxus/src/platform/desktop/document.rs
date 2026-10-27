@@ -2,12 +2,18 @@
 //! under it.
 //!
 //! The Mac's `NSDocument` owns a file's life and asks the page only for
-//! bytes; here the app does that work itself, and as little of it as a
-//! desktop editor needs. Open reads the file; Save writes the page's source
-//! back to it, or asks where with the system's save dialog when the document
-//! has no file yet; Save As asks every time. The window's title is the
-//! file's name, with a `*` before it while it has changes no save has
-//! written.
+//! bytes; here leaf-core's own file API does that work, as it does for the
+//! terminal editor. Open is `Doc::open`, which notes what was read; Save is
+//! `Doc::save_as` to the document's file, which writes beside it and renames
+//! over, and only then marks the document saved; Save As asks where with the
+//! system's save dialog. The window's title is the file's name, with a `*`
+//! before it while the document is dirty — which undoing back to what was
+//! saved clears.
+//!
+//! The file is watched as leaf-core can watch it: when the window comes
+//! forward ([`Document::focused`]) a clean document takes what another
+//! program wrote, and a dirty one is told; a Save over such a change asks
+//! first.
 //!
 //! Closing asks first. The close button and File ▸ Close come to
 //! [`Document::ask_to_close`], which closes a document with nothing unsaved
@@ -19,43 +25,32 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use dioxus_native::winit::window::{Window, WindowId};
-use leaf_core::{Doc, Format};
+use leaf_core::{DiskState, Doc, Format};
 use unit::{Answer, Dialog};
 
 use crate::app::{self, AppEvent};
 use crate::page::Page;
 
-/// The formats a document is read and saved as, by their extensions: the
-/// first is the one Save As suggests.
+/// The formats Save As offers, by their extensions: the first is the one it
+/// suggests.
 pub const TYPES: [(Format, &str, &[&str]); 3] = [
     (Format::Markdown, "Markdown", &["md", "markdown"]),
     (Format::Djot, "Djot", &["dj", "djot"]),
     (Format::Html, "HTML", &["html", "htm"]),
 ];
 
-/// The format a file's extension names; Markdown for any other.
-pub fn format_of(path: &Path) -> Format {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    TYPES
-        .iter()
-        .find(|(_, _, exts)| exts.contains(&ext.as_str()))
-        .map_or(Format::Markdown, |(f, ..)| *f)
-}
-
 pub struct Document {
-    /// The file, once it has one.
+    /// The file, once it has one. The editor's `Doc::path` is not enough to
+    /// say: an untitled document's points into the app's resources, so the
+    /// sample's pictures load.
     file: RefCell<Option<PathBuf>>,
     format: Format,
-    /// The text read from the file, until the page takes it.
-    contents: RefCell<Option<String>>,
+    /// The document read from the file, until the page takes it.
+    opened: RefCell<Option<Doc>>,
     /// The page showing this document, once there is one.
     page: Cell<Option<WindowId>>,
-    /// Whether it has changes no save has written.
-    edited: Cell<bool>,
+    /// Whether the title shows it dirty.
+    dirty: Cell<bool>,
     /// Whether it opens on the bundled sample.
     sample: bool,
 }
@@ -66,24 +61,23 @@ impl Document {
         Rc::new(Self {
             file: RefCell::new(None),
             format,
-            contents: RefCell::new(None),
+            opened: RefCell::new(None),
             page: Cell::new(None),
-            edited: Cell::new(false),
+            dirty: Cell::new(false),
             sample,
         })
     }
 
-    /// The document in the file at `path`.
+    /// The document in the file at `path`, in the format its extension
+    /// names.
     pub fn read(path: &Path) -> Result<Rc<Self>, String> {
-        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let source =
-            String::from_utf8(bytes).map_err(|_| format!("{}: not UTF-8 text", path.display()))?;
+        let doc = Doc::open(path.to_path_buf()).map_err(|e| format!("{e:#}"))?;
         Ok(Rc::new(Self {
             file: RefCell::new(Some(path.to_path_buf())),
-            format: format_of(path),
-            contents: RefCell::new(Some(source)),
+            format: doc.format,
+            opened: RefCell::new(Some(doc)),
             page: Cell::new(None),
-            edited: Cell::new(false),
+            dirty: Cell::new(false),
             sample: false,
         }))
     }
@@ -96,10 +90,6 @@ impl Document {
     /// The page showing this document, if it has one yet.
     pub fn page(&self) -> Option<WindowId> {
         self.page.get().filter(|&id| app::is_open(id))
-    }
-
-    pub fn format(&self) -> Format {
-        self.format
     }
 
     /// Where the document is, for its pictures' relative paths: its file,
@@ -118,14 +108,13 @@ impl Document {
     }
 
     /// The document as the editor takes it, the first time a page asks: the
-    /// text read, an untitled document's nothing, or the sample.
+    /// file read, an untitled document's nothing, or the sample.
     pub fn take_doc(&self) -> Doc {
-        let source = match self.contents.borrow_mut().take() {
-            Some(s) => s,
-            None if self.sample => super::sample(),
-            None => String::new(),
+        let mut doc = match self.opened.borrow_mut().take() {
+            Some(d) => d,
+            None if self.sample => self.take_doc_from(super::sample()),
+            None => self.take_doc_from(String::new()),
         };
-        let mut doc = self.take_doc_from(source);
         // Settings ▸ Preserve line breaks in new windows.
         if app::settings().preserve {
             doc.set_line_flow(leaf_core::LineFlow::Preserve);
@@ -158,16 +147,26 @@ impl Document {
         }
     }
 
-    /// The editor made an edit: the title says so until it is saved.
+    /// The editor made an edit: the title says so.
     pub fn edited(&self) {
-        if !self.edited.replace(true) {
+        self.show_dirty(true);
+    }
+
+    /// The document is clean again — saved, or undone back to what was:
+    /// the title says so.
+    pub fn clean(&self) {
+        self.show_dirty(false);
+    }
+
+    fn show_dirty(&self, dirty: bool) {
+        if self.dirty.replace(dirty) != dirty {
             self.retitle();
         }
     }
 
     /// The title bar's text: the name, starred while it has unsaved changes.
     fn window_title(&self) -> String {
-        let star = if self.edited.get() { "*" } else { "" };
+        let star = if self.dirty.get() { "*" } else { "" };
         format!("{star}{} — Leaf", self.title())
     }
 
@@ -177,14 +176,45 @@ impl Document {
         }
     }
 
-    /// Ctrl+S: write the file, or ask where first if there is none.
+    /// Ctrl+S: write the file; ask where first if there is none, and
+    /// whether to write over it if another program changed it since.
     pub fn save(&self) {
-        match self.file() {
-            Some(path) => {
-                self.write(&path);
-            }
-            None => self.save_as(),
+        let Some(path) = self.file() else {
+            return self.save_as();
+        };
+        let Some(page) = self.page().and_then(app::page) else {
+            return;
+        };
+        let changed = page
+            .with_doc(|d| d.disk_state() == DiskState::Changed)
+            .unwrap_or(false);
+        if !changed {
+            self.write(&page, path);
+            return;
         }
+        let Some(unit) = page.unit() else { return };
+        let id = page.window.id();
+        let dialog = Dialog::new(format!("“{}” changed on disk", self.title()))
+            .message(
+                "Another program has changed the file since it was opened or saved. \
+                 Saving writes over those changes.",
+            )
+            .buttons("Save Anyway", "Cancel")
+            .destructive();
+        page.in_scope(|| {
+            unit.open_dialog(dialog, move |answer| {
+                if let Answer::Ok(_) = answer {
+                    let path = path.clone();
+                    app::on_turn(move || {
+                        if let Some(page) = app::page(id)
+                            && let Some(shell) = page.shell()
+                        {
+                            shell.document.write(&page, path);
+                        }
+                    });
+                }
+            })
+        });
     }
 
     /// Ctrl+Shift+S: ask where, then write there; the document's file is
@@ -205,53 +235,70 @@ impl Document {
             .map(|(_, n, e)| (*n, *e))
             .unwrap_or(("Markdown", &["md"]));
         super::save_dialog(&suggested, folder, (name, exts), move |path| {
-            let Some(page) = app::page(id) else { return };
-            if let Some(shell) = page.shell() {
-                shell.document.write_as(&path);
+            if let Some(page) = app::page(id)
+                && let Some(shell) = page.shell()
+            {
+                shell.document.write(&page, path);
             }
         });
     }
 
-    /// Write to `path` and make it the document's file.
-    fn write_as(&self, path: &Path) {
-        if self.write(path) {
-            *self.file.borrow_mut() = Some(path.to_path_buf());
-            if let Some(id) = self.page() {
-                app::post(AppEvent::Moved(id));
-            }
-            self.retitle();
+    /// Write the editor's document to `path` through leaf-core, which marks
+    /// it saved only once the bytes have landed, and says in the status line
+    /// if they did not. `path` is the document's file from then on.
+    fn write(&self, page: &Page, path: PathBuf) {
+        let landed = page
+            .with_editor(|ed, _| {
+                let landed = ed.doc().save_as(path.clone());
+                ed.refresh();
+                landed
+            })
+            .unwrap_or(false);
+        if !landed {
+            return;
         }
+        let moved = self.file().as_deref() != Some(path.as_path());
+        *self.file.borrow_mut() = Some(path);
+        if moved {
+            app::post(AppEvent::Moved(page.window.id()));
+        }
+        self.dirty.set(false);
+        self.retitle();
     }
 
-    /// Write the page's source to `path`: whether it got there. The
-    /// document is marked saved only once the write has landed, so a failed
-    /// save leaves it dirty and Close still asks.
-    fn write(&self, path: &Path) -> bool {
-        let Some(page) = self.page().and_then(app::page) else {
-            return false;
-        };
-        let Some(source) = page.source() else {
-            return false;
-        };
-        match replace_file(path, source.as_bytes()) {
-            Ok(()) => {
-                page.saved();
-                self.edited.set(false);
-                self.retitle();
-                true
-            }
-            Err(e) => {
-                page.say(&format!("Save failed: {e}"));
-                false
-            }
+    /// The window came forward: take what another program wrote to the
+    /// file, if nothing here is unsaved; otherwise say so, and Save will
+    /// ask.
+    pub fn focused(&self, page: &Page) {
+        if self.file().is_none() {
+            return;
         }
+        page.with_editor(|ed, _| {
+            let mut doc = ed.doc();
+            let said = match doc.disk_state() {
+                DiskState::Changed if doc.dirty => {
+                    Some("The file changed on disk — saving will ask".to_string())
+                }
+                DiskState::Changed => {
+                    doc.reload();
+                    Some("Reloaded from disk".to_string())
+                }
+                DiskState::Missing => Some(format!("{} is no longer on disk", doc.file_name())),
+                _ => None,
+            };
+            if let Some(s) = said {
+                doc.status = Some(s);
+                drop(doc);
+                ed.refresh();
+            }
+        });
     }
 
     /// The close button or File ▸ Close: close, after asking if what has
     /// not been saved would be lost.
     pub fn ask_to_close(&self, page: &Page) {
         let id = page.window.id();
-        let dirty = self.edited.get() || page.with_doc(|d| d.dirty).unwrap_or(true);
+        let dirty = page.with_doc(|d| d.dirty).unwrap_or(true);
         if !dirty {
             app::post(AppEvent::Close(id));
             return;
@@ -279,101 +326,9 @@ impl Document {
     }
 }
 
-/// Put `bytes` at `path` whole or not at all: written to a file beside it,
-/// then renamed over it, so a write that fails partway (a full disk) leaves
-/// the last saved file as it was. A file already there keeps its
-/// permissions, and a symbolic link is followed, so the file it names is the
-/// one replaced and the link stays a link.
-fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let dir = target
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temp = dir.join(format!(".{name}.leaf-save-{}", std::process::id()));
-    let written = (|| {
-        let mut file = std::fs::File::create(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        if let Ok(meta) = std::fs::metadata(&target) {
-            std::fs::set_permissions(&temp, meta.permissions())?;
-        }
-        std::fs::rename(&temp, &target)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    written
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("leaf-desktop-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    #[test]
-    fn a_save_replaces_the_file_whole_and_leaves_nothing_beside_it() {
-        let dir = scratch("replace");
-        let path = dir.join("note.md");
-        std::fs::write(&path, "old\n").unwrap();
-        replace_file(&path, b"new\n").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
-        let names: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(names, ["note.md"]);
-    }
-
-    #[test]
-    fn a_save_into_a_folder_that_is_not_there_fails() {
-        let dir = scratch("unwritable");
-        let path = dir.join("missing-folder").join("note.md");
-        assert!(replace_file(&path, b"new\n").is_err());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_save_keeps_the_files_permissions_and_follows_a_link() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = scratch("perms");
-        let real = dir.join("real.md");
-        let link = dir.join("link.md");
-        std::fs::write(&real, "old\n").unwrap();
-        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        replace_file(&link, b"new\n").unwrap();
-        let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
-        let still_link = std::fs::symlink_metadata(&link)
-            .unwrap()
-            .file_type()
-            .is_symlink();
-        let text = std::fs::read_to_string(&real).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(text, "new\n");
-        assert_eq!(mode, 0o600);
-        assert!(still_link);
-    }
-
-    #[test]
-    fn a_files_extension_names_its_format() {
-        assert_eq!(format_of(Path::new("a/notes.dj")), Format::Djot);
-        assert_eq!(format_of(Path::new("page.HTML")), Format::Html);
-        assert_eq!(format_of(Path::new("notes.md")), Format::Markdown);
-        assert_eq!(format_of(Path::new("README")), Format::Markdown);
-    }
 
     #[test]
     fn an_untitled_document_is_named_so_and_finds_pictures_in_the_resources() {
@@ -384,17 +339,29 @@ mod tests {
     }
 
     #[test]
-    fn a_read_document_takes_its_files_text_and_name() {
-        let dir = std::env::temp_dir().join(format!("leaf-desktop-read-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("note.dj");
+    fn a_read_document_takes_its_files_text_name_and_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.dj");
         std::fs::write(&path, "_hello_\n").unwrap();
         let d = Document::read(&path).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(d.title(), "note.dj");
-        assert_eq!(d.format(), Format::Djot);
+        assert_eq!(d.format, Format::Djot);
         let doc = d.take_doc();
         assert_eq!(doc.source, "_hello_\n");
         assert_eq!(doc.path, path);
+        assert_eq!(
+            doc.disk_state(),
+            DiskState::Unchanged,
+            "what was read is noted"
+        );
+    }
+
+    #[test]
+    fn the_title_is_starred_while_dirty_and_not_once_clean_again() {
+        let d = Document::untitled(Format::Markdown, false);
+        d.edited();
+        assert_eq!(d.window_title(), "*Untitled — Leaf");
+        d.clean();
+        assert_eq!(d.window_title(), "Untitled — Leaf");
     }
 }

@@ -424,6 +424,8 @@ impl Page {
         if chrome.dirty && chrome.revision != self.reported.get() {
             self.reported.set(chrome.revision);
             init.shell.document.edited();
+        } else if !chrome.dirty {
+            init.shell.document.clean();
         }
         platform::spelling::changed(self, &chrome);
         if self.chrome.borrow().as_ref() == Some(&chrome) {
@@ -436,30 +438,26 @@ impl Page {
     }
 
     /// The source for the platform to write, and the document clean as of
-    /// it; `None` if the editor has it borrowed this instant. For a platform
-    /// whose write cannot fail after this (the Mac's document system, which
-    /// keeps the change count itself).
+    /// it; `None` if the editor has it borrowed this instant. The Mac's
+    /// document system asks for it; Linux's saves through leaf-core instead.
     pub fn source_to_save(&self) -> Option<String> {
-        let source = self.source()?;
-        self.saved();
-        Some(source)
-    }
-
-    /// The source as it stands, still unsaved: for a platform that marks it
-    /// saved ([`Page::saved`]) only once its write has landed.
-    pub fn source(&self) -> Option<String> {
-        self.with_doc(|d| d.source.clone())
-    }
-
-    /// The source just read was written: the document is clean as of it.
-    /// If the editor has it borrowed this instant, it stays dirty, which
-    /// only costs a needless question at close.
-    pub fn saved(&self) {
-        self.with_doc(|d| d.dirty = false);
+        let source = self.with_doc(|d| {
+            d.dirty = false;
+            d.source.clone()
+        })?;
         if let Some(s) = self.shell() {
             s.stale.set(true);
         }
         app::post(AppEvent::Refresh(self.window.id()));
+        Some(source)
+    }
+
+    /// The window came forward: the document looks at its file, where the
+    /// platform leaves that to the app.
+    pub fn focused(&self) {
+        if let Some(init) = self.init() {
+            init.shell.document.focused(self);
+        }
     }
 
     /// Redraw: the status line says what changed outside the editor.

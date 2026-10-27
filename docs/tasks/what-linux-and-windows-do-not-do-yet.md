@@ -21,19 +21,23 @@ compiles the same module, untried. Still to do:
 - **Close's question has two answers.** Discard or Cancel; there is no
   Save in it, since unit's dialog has two buttons.
 - **No Print.** Export as PDF, then print from the viewer.
-- **The title keeps its `*`** after undoing back to what was saved; only a
-  save clears it.
 - **Lines drawn twice as tall** where the body face is not installed:
   [The editor and Blitz fall back to different faces](/docs/tasks/the-editor-and-blitz-fall-back-to-different-faces.md).
-- **No spelling checker and no Look Up**, and no check for a change on disk.
+- **No spelling checker and no Look Up.**
+
+Since then (2026-10-27): the document reads and saves through leaf-core's
+file API, as the terminal editor does, so a save is written beside the file
+and renamed over it, undoing back to what was saved clears the title's `*`,
+a window coming forward takes what another program wrote to a clean
+document (and warns a dirty one), and Save over such a change asks first.
 
 **What.** The desktop app off the Mac was gpui's,
 `archive/apps/leaf` over `archive/crates/leaf-gpui`. What it did that the
 Dioxus path does not:
 
-- **The app.** A check for a change on disk when the window is activated
-  (`archive/apps/leaf/src/main.rs`). The Open dialog and the guard before
-  a window with unsaved changes closes are done (above).
+- **The app.** Done (above): the Open dialog, the guard before a window
+  with unsaved changes closes, and the check for a change on disk when the
+  window is activated.
 - **Key conventions.** Ctrl+Y redoes, and the keys follow the CUA map
   (`archive/crates/leaf-gpui/src/lib.rs`, near line 378). Off Apple the editor
   takes Ctrl as ⌘ (`input.rs`, `CMD`), so Ctrl+←/→ goes to the line's edge
