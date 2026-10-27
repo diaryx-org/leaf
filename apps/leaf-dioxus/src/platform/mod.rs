@@ -16,10 +16,22 @@
 //! - `open_url`, `character_palette`, `font_families`, `later`,
 //!   `main_page`, and `defaults::{string, set, set_bool, remove}`.
 //! - `spelling`: the system's checker and substitutions, or none.
-//! - `lookup::show`, `lookup::force_click`: the system's dictionary.
-//! - `print::{print, export}`: putting the document on paper.
+//! - `lookup::{show, force_click, word_at, AVAILABLE}`: the system's
+//!   dictionary, or none.
+//! - `print::export`: putting the document on paper.
+//! - `open_panel`, `quit`, `QUITS_WITH_LAST_WINDOW`, and `shortcut`: what
+//!   the File menu does where the system does not, and its keys where
+//!   there is no menu bar to take them first.
+//!
+//! The Mac's is `macos`, AppKit through objc2; Linux's and Windows' is
+//! `desktop`, the app keeping its own files.
 
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::*;
+
+#[cfg(not(target_os = "macos"))]
+mod desktop;
+#[cfg(not(target_os = "macos"))]
+pub use desktop::*;

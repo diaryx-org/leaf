@@ -24,6 +24,12 @@
 //! `LEAF_TRACE=1` logs keys, pointer events and repaint timings to stderr;
 //! `LEAF_OUTLINE=1` outlines every visual line and run.
 
+// The shared code serves the Mac's platform, which has more to it — the
+// menu bar, the spelling checker, Look Up, the document system's Revert —
+// than Linux's and Windows' does yet. Off the Mac, what only it reaches is
+// unused; the Mac's build, which reaches all of it, keeps the lint.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 mod access;
 mod app;
 mod commands;

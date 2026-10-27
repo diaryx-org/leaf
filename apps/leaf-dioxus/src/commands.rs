@@ -14,8 +14,12 @@ use leaf_dioxus::{TableCommand, ZoomCommand};
 use crate::page::Chrome;
 use crate::settings::{ColumnWidth, TextSize};
 
-/// ⌘ in Dioxus's terms (`META`, as Blitz reports it).
+/// ⌘ in Dioxus's terms (`META`, as Blitz reports it); off the Mac, Ctrl,
+/// as the editor reads it (leaf-dioxus's `input.rs`).
+#[cfg(target_os = "macos")]
 pub const CMD: Modifiers = Modifiers::META;
+#[cfg(not(target_os = "macos"))]
+pub const CMD: Modifiers = Modifiers::CONTROL;
 pub const SHIFT: Modifiers = Modifiers::SHIFT;
 pub const ALT: Modifiers = Modifiers::ALT;
 pub const CTRL: Modifiers = Modifiers::CONTROL;
@@ -49,6 +53,11 @@ pub enum Command {
     PreserveBreaks,
     Zoom(ZoomCommand),
     ExportPdf,
+    /// Save, Save As and Close: on the Mac, the document system's own menu
+    /// items; elsewhere, the app's.
+    Save,
+    SaveAs,
+    Close,
     CheckDocument,
     /// A spelling guess: the UTF-16 range of the system's text, the word it
     /// held, and what to put there.
@@ -61,6 +70,9 @@ pub enum Command {
     Column(ColumnWidth),
     Size(TextSize),
     New(Format),
+    /// Open and Quit: the Mac's are the system's, as Save is.
+    Open,
+    Quit,
     OpenSample,
     Settings,
     Switch(Switch),
@@ -83,6 +95,8 @@ impl Command {
         matches!(
             self,
             Command::New(_)
+                | Command::Open
+                | Command::Quit
                 | Command::Column(_)
                 | Command::Size(_)
                 | Command::OpenSample
@@ -103,6 +117,11 @@ impl Command {
             Command::Zoom(ZoomCommand::Out) => Some((Code::Minus, CMD)),
             Command::Zoom(ZoomCommand::Reset) => Some((Code::Digit0, CMD)),
             Command::New(Format::Markdown) => Some((Code::KeyN, CMD)),
+            Command::Open => Some((Code::KeyO, CMD)),
+            Command::Save => Some((Code::KeyS, CMD)),
+            Command::SaveAs => Some((Code::KeyS, CMD | SHIFT)),
+            Command::Close => Some((Code::KeyW, CMD)),
+            Command::Quit => Some((Code::KeyQ, CMD)),
             Command::Settings => Some((Code::Comma, CMD)),
             _ => None,
         }
@@ -199,6 +218,7 @@ pub struct AppState {
 }
 
 /// A shortcut as a Mac menu shows it: ⌃⌥⇧⌘ then the key.
+#[cfg(target_os = "macos")]
 pub fn shortcut_label(code: &Code, mods: Modifiers) -> String {
     let mut s = String::new();
     for (m, glyph) in [(CTRL, "⌃"), (ALT, "⌥"), (SHIFT, "⇧"), (CMD, "⌘")] {
@@ -206,15 +226,32 @@ pub fn shortcut_label(code: &Code, mods: Modifiers) -> String {
             s.push_str(glyph);
         }
     }
-    let key = match code {
+    s.push_str(&key_label(code));
+    s
+}
+
+/// A shortcut as Linux and Windows menus show it: `Ctrl+Shift+B`.
+#[cfg(not(target_os = "macos"))]
+pub fn shortcut_label(code: &Code, mods: Modifiers) -> String {
+    let mut s = String::new();
+    for (m, name) in [(CTRL, "Ctrl+"), (ALT, "Alt+"), (SHIFT, "Shift+")] {
+        if mods.contains(m) {
+            s.push_str(name);
+        }
+    }
+    s.push_str(&key_label(code));
+    s
+}
+
+/// A key as a menu names it.
+fn key_label(code: &Code) -> String {
+    match code {
         Code::ArrowUp => "↑".to_string(),
         Code::ArrowDown => "↓".to_string(),
         Code::ArrowLeft => "←".to_string(),
         Code::ArrowRight => "→".to_string(),
         c => key_char(c).to_uppercase(),
-    };
-    s.push_str(&key);
-    s
+    }
 }
 
 /// The character a code's key types unshifted: what a menu's key
@@ -249,11 +286,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn a_shortcut_reads_as_a_mac_menu_writes_it() {
         assert_eq!(shortcut_label(&Code::Digit8, CMD | SHIFT), "⇧⌘8");
         assert_eq!(shortcut_label(&Code::KeyB, CMD), "⌘B");
         assert_eq!(shortcut_label(&Code::ArrowUp, ALT), "⌥↑");
         assert_eq!(shortcut_label(&Code::Digit1, CTRL), "⌃1");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn a_shortcut_reads_as_a_linux_menu_writes_it() {
+        assert_eq!(shortcut_label(&Code::Digit8, CMD | SHIFT), "Ctrl+Shift+8");
+        assert_eq!(shortcut_label(&Code::KeyB, CMD), "Ctrl+B");
+        assert_eq!(shortcut_label(&Code::ArrowUp, ALT), "Alt+↑");
     }
 
     #[test]

@@ -147,6 +147,36 @@ fn inserts() -> Vec<Node> {
     ]
 }
 
+/// File ▾ in the toolbar, where there is no menu bar to hold it (Linux and
+/// Windows): the Mac's app and File menus' commands that are not the
+/// system's there.
+pub fn file() -> Vec<Node> {
+    vec![
+        I("New Markdown Document", Command::New(Format::Markdown)),
+        I("New Djot Document", Command::New(Format::Djot)),
+        I("New HTML Document", Command::New(Format::Html)),
+        I("Open…", Command::Open),
+        Sep,
+        I("Save", Command::Save),
+        I("Save As…", Command::SaveAs),
+        I("Export as PDF…", Command::ExportPdf),
+        Sep,
+        I("Open Sample Document", Command::OpenSample),
+        I("Settings…", Command::Settings),
+        Sep,
+        I("Close", Command::Close),
+        I("Quit", Command::Quit),
+    ]
+}
+
+/// Commands with a key that a menu bar would answer before the editor, and
+/// that are not in [`file`]: where there is no menu bar, the page answers
+/// them (`platform::shortcut`).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub fn keyed() -> Vec<Node> {
+    vec![I("Link…", Command::Link)]
+}
+
 /// The menu bar: the app menu, File, Edit, Format, View, Window and Help,
 /// as the SwiftUI Mac app laid them out.
 pub fn bar() -> Vec<(&'static str, Vec<Node>)> {
@@ -467,7 +497,8 @@ mod tests {
         let Entry::Item(first) = &built[0] else {
             panic!()
         };
-        assert_eq!(first.shortcut.as_deref(), Some("⇧⌘8"));
+        let label = shortcut_label(&Code::Digit8, CMD | SHIFT);
+        assert_eq!(first.shortcut.as_deref(), Some(label.as_str()));
     }
 
     #[test]

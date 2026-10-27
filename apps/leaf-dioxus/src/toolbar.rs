@@ -155,6 +155,8 @@ fn Toolbar(props: ToolbarProps) -> Element {
         (.., true) => "Verse".into(),
         _ => "Body".into(),
     };
+    // File ▾, where there is no menu bar to hold its commands.
+    let file = cfg!(not(target_os = "macos")).then(|| popup("File".into(), "File", menus::file()));
     let rich = !c.source_view;
     let m = |k| c.marks.contains(k);
     let height = chrome_height();
@@ -162,6 +164,7 @@ fn Toolbar(props: ToolbarProps) -> Element {
         div { class: "toolbar", style: "height: {height}px",
             onmousedown: move |e: MouseEvent| e.prevent_default(),
             div { class: "tools", style: "height: {TOOLBAR}px",
+                {file}
                 {popup(style, "Style", menus::style())}
                 span { class: "gap" }
                 {chord("B", "Bold", "b", m(InlineKind::Strong), rich, "b", Code::KeyB, CMD)}

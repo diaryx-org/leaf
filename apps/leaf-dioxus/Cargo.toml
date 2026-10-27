@@ -91,6 +91,14 @@ twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "mai
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
 raw-window-handle = "0.6"
 
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# Linux's and Windows' Open and Save dialogs (`platform/desktop`): the XDG
+# desktop portal on Linux, so the dialog is the desktop's own, GNOME's or
+# KDE's or the compositor's.
+rfd = "0.17"
+# The clipboard, with its HTML flavour; Wayland's too.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # AppKit and Foundation, at the versions winit-appkit already uses.
 objc2 = "0.6"

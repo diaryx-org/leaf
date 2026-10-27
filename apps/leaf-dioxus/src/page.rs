@@ -316,6 +316,10 @@ impl Page {
                 if self.init().is_none() {
                     return false;
                 }
+                // Where there is no menu bar, the keys of its commands.
+                if platform::shortcut(self, &code, m) {
+                    return true;
+                }
                 let typed =
                     (key.state == ElementState::Pressed && !mods.meta_key() && !mods.control_key())
                         .then(|| key.text.as_ref().map(|t| t.to_string()))
@@ -481,12 +485,16 @@ impl Page {
         app::poll(self.window.id());
     }
 
-    /// The window's close button, or File ▸ Close. The platform's document
-    /// has been asked already where it has a say (`platform::Document`
-    /// says when), so the window goes.
+    /// The window's close button, or File ▸ Close: a document's window
+    /// goes once its platform document agrees (on the Mac it has been asked
+    /// already; elsewhere it asks if changes would be lost), Settings'
+    /// at once.
     pub fn close_requested(&self) {
         leaf_dioxus::trace(|| format!("close requested {:?}", self.window.id()));
-        app::post(AppEvent::Close(self.window.id()));
+        match self.init() {
+            Some(init) => init.shell.document.ask_to_close(self),
+            None => app::post(AppEvent::Close(self.window.id())),
+        }
     }
 
     /// The window has gone: so does its document.
@@ -502,6 +510,17 @@ impl Page {
         match c {
             Command::Link => crate::context::prompt_link(self),
             Command::ExportPdf => platform::print::export(self),
+            Command::Save => {
+                if let Some(s) = self.shell() {
+                    s.document.save();
+                }
+            }
+            Command::SaveAs => {
+                if let Some(s) = self.shell() {
+                    s.document.save_as();
+                }
+            }
+            Command::Close => self.close_requested(),
             Command::CheckDocument => platform::spelling::check_document(self),
             Command::Replace(loc, len, word, with) => {
                 platform::spelling::replace(self, loc, len, &word, &with)

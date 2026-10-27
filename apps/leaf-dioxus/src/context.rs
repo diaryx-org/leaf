@@ -64,7 +64,7 @@ pub fn items(page: &Page, cx: &Context) -> Vec<(Option<String>, Option<Command>)
         chord("v", Code::KeyV, CMD | SHIFT | ALT),
     ));
     v.push((Some("Select All".into()), chord("a", Code::KeyA, CMD)));
-    if let Some((label, c)) = look_up(page, cx) {
+    if let Some((label, c)) = look_up(page, cx).filter(|_| platform::lookup::AVAILABLE) {
         v.push((None, None));
         v.push((Some(label), Some(c)));
     }

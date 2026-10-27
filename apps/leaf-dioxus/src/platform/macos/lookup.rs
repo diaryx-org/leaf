@@ -18,6 +18,9 @@ use objc2_foundation::{NSAttributedString, NSDictionary, NSString, NSUserDefault
 use crate::page::Page;
 use crate::text;
 
+/// Whether the system has a dictionary to look a word up in.
+pub const AVAILABLE: bool = true;
+
 /// Look up the UTF-16 range `loc`..`loc + len` of the system's text.
 pub fn show(page: &Page, loc: usize, len: usize) {
     let Some(Some((word, rect, font))) = page.with_editor(|ed, _| {
