@@ -109,6 +109,10 @@ Tried in Chrome on a Mac, through WebGPU:
   pickers tried in Chrome through stand-ins, since a headless browser shows
   none.
 
+- A finger: a tap places the caret, and on a link or footnote follows it
+  (`motion.rs`, in the widget); a drag scrolls. Tried with Chrome's touch
+  emulation, not on a phone.
+- The editor's own find bar (⌘F), in the browser's find's place.
 - The dark appearance, following the system's as it changes
   (`prefers-color-scheme`, which winit reports as the window's theme).
 
