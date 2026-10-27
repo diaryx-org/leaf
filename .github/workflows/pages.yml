@@ -1,0 +1,124 @@
+name: Pages
+# Publish Leaf in a browser (apps/leaf-dioxus-web: the leaf-dioxus editor,
+# drawn by Blitz into a canvas through WebGPU) to GitHub Pages, as part of
+# cutting a release, at:
+#
+#     https://diaryx-org.github.io/leaf/
+#
+# It replaces what the archived workflow (archive/.github/workflows/pages.yml)
+# last deployed there, the archived leaf-web editor.
+#
+# Fires on `v*.*.*` tags, as mac-app.yml does. It can also be dispatched by
+# hand for any tag (`ref:`); dispatched with `ref` empty it builds the newest
+# `v*.*.*` tag. The workflow file is read from the branch it is dispatched
+# on, and the site is built from whatever `ref` names.
+#
+# Pages is already switched on (Settings -> Pages -> Source: "GitHub
+# Actions") for the archived demo; nothing here can switch it on.
+#
+# The site is the app's directory as `cargo xtask web --serve` serves it:
+# index.html, the split wasm in pkg/, the faces in fonts/ and the demo's
+# picture in media/. Every URL in it is relative, so it needs no base path.
+on:
+  push: { tags: [v*.*.*] }
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag (or any ref) to build the demo from. Empty = newest v*.*.* tag."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one in flight: a half-finished Pages
+# deployment is a broken site, unlike a cancelled build.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Leaf for the browser
+    runs-on: ubuntu-latest
+    steps:
+    # Full history, because a hand dispatch has to resolve `v*.*.*` tags that
+    # the shallow default clone would not have fetched.
+    - uses: actions/checkout@v7
+      with: { fetch-depth: 0 }
+
+    # On a tag push the checkout is already the tag. On a dispatch it is the
+    # branch the workflow was launched from — so move to the tag here, after
+    # the file has been read.
+    - name: Pick the ref to build
+      id: pick
+      env:
+        REQUESTED: ${{ inputs.ref }}
+      run: |
+        set -euo pipefail
+        if [ "${{ github.event_name }}" = "push" ]; then
+          ref="${{ github.ref_name }}"
+        elif [ -n "$REQUESTED" ]; then
+          ref="$REQUESTED"
+        else
+          ref=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)
+          if [ -z "$ref" ]; then
+            echo "::error::no v*.*.* tag exists to build from"; exit 1
+          fi
+          echo "newest v*.*.* tag: $ref"
+        fi
+        git checkout --detach "$ref"
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
+        echo "built from $ref ($(git rev-parse --short HEAD))" >> "$GITHUB_STEP_SUMMARY"
+
+    # A bare `rustup target add` from inside the checkout: rust-toolchain.toml
+    # pins the toolchain and outranks `rustup default`, so the target has to
+    # land on the resolved toolchain rather than on `stable`.
+    - name: Add wasm32 to the pinned toolchain
+      run: rustup target add wasm32-unknown-unknown
+    # The app is a workspace of its own, with its own target/, where the
+    # xtask also installs wasm-bindgen and wasm-split-cli (target/tools).
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: wasm32-unknown-unknown
+        workspaces: |
+          . -> target
+          apps/leaf-dioxus-web -> target
+
+    # Fat LTO, wasm-bindgen, the split, the custom sections stripped: what
+    # the module doc of xtask/src/web.rs lists.
+    - name: Build the split wasm
+      run: cargo xtask web
+
+    - name: Assemble the site
+      run: |
+        set -euo pipefail
+        mkdir -p _site
+        cd apps/leaf-dioxus-web
+        cp -R index.html pkg fonts media ../../_site/
+        cd ../..
+        # Pages runs Jekyll over the artifact unless told not to, and Jekyll
+        # drops paths it considers private.
+        touch _site/.nojekyll
+        du -sh _site
+        find _site -type f | sort
+
+    - uses: actions/upload-pages-artifact@v4
+      with: { path: _site }
+
+  deploy:
+    name: Deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # to publish the deployment
+      id-token: write # to prove to Pages that it came from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - id: deployment
+      uses: actions/deploy-pages@v4

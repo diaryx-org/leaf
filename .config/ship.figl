@@ -29,6 +29,9 @@ tag_starts
 > *
 > > workflow = mac-app.yml
 > > does = builds, signs and notarises Leaf.app, attaches its disk image to the release, and writes the tap's `leaf-editor` cask
+> *
+> > workflow = pages.yml
+> > does = builds Leaf for the browser (`cargo xtask web`) and deploys it to https://diaryx-org.github.io/leaf/, in place of what is there
 
 # The checks a release has to pass. `ship ci` runs them here, in this order,
 # with the same shell, and stops at the first that fails; `ship ci <id>` runs
