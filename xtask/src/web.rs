@@ -36,6 +36,10 @@ pub struct Args {
     /// `http.server`, on 127.0.0.1).
     #[arg(long, value_name = "PORT")]
     pub serve: Option<u16>,
+    /// One module, without fat LTO or the split: for trying a change, not
+    /// for serving. Built with the app's `quick` profile.
+    #[arg(long)]
+    pub quick: bool,
 }
 
 pub fn run_task(args: Args) -> Result<()> {
@@ -55,6 +59,47 @@ pub fn run_task(args: Args) -> Result<()> {
         &locked(&lock, "wasm-splitter")?,
     )?;
 
+    let pkg = app.join("pkg");
+    let split = app.join("target/split");
+    for dir in [&pkg, &split] {
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).with_context(|| format!("clearing {}", dir.display()))?;
+        }
+    }
+    if args.quick {
+        quick(&app, &bindgen, &pkg)?;
+    } else {
+        split_build(&app, &bindgen, &splitter, &pkg, &split)?;
+    }
+
+    println!("✓ Built {}", pkg.display());
+    match args.serve {
+        Some(port) => run(cmd("python3")
+            .args([
+                "-I",
+                "-m",
+                "http.server",
+                &port.to_string(),
+                "--bind",
+                "127.0.0.1",
+                "-d",
+            ])
+            .arg(&app)),
+        None => {
+            println!("  Serve {} with any static server.", app.display());
+            Ok(())
+        }
+    }
+}
+
+/// The steps the module's doc lists: the release build, split.
+fn split_build(
+    app: &Path,
+    bindgen: &Path,
+    splitter: &Path,
+    pkg: &Path,
+    split: &Path,
+) -> Result<()> {
     run(cargo()
         .args([
             "build",
@@ -70,14 +115,7 @@ pub fn run_task(args: Args) -> Result<()> {
         ]))?;
     let raw = app.join(format!("target/wasm32-unknown-unknown/release/{BIN}.wasm"));
 
-    let pkg = app.join("pkg");
-    let split = app.join("target/split");
-    for dir in [&pkg, &split] {
-        if dir.exists() {
-            std::fs::remove_dir_all(dir).with_context(|| format!("clearing {}", dir.display()))?;
-        }
-    }
-    run(cmd(&bindgen)
+    run(cmd(bindgen)
         .arg(&raw)
         .args([
             "--target",
@@ -87,17 +125,17 @@ pub fn run_task(args: Args) -> Result<()> {
             "--keep-lld-exports",
         ])
         .args(["--no-demangle", "--out-dir"])
-        .arg(&pkg))?;
+        .arg(pkg))?;
     let bindgened = pkg.join(format!("{BIN}_bg.wasm"));
-    run(cmd(&splitter)
+    run(cmd(splitter)
         .arg("split")
         .arg(&raw)
         .arg(&bindgened)
-        .arg(&split))?;
+        .arg(split))?;
 
     // The main module in wasm-bindgen's place, and the split modules beside
     // it, each without its custom sections.
-    for entry in std::fs::read_dir(&split)? {
+    for entry in std::fs::read_dir(split)? {
         let path = entry?.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
@@ -118,24 +156,31 @@ pub fn run_task(args: Args) -> Result<()> {
     let glue = std::fs::read_to_string(split.join("__wasm_split.js"))?;
     std::fs::write(pkg.join("__wasm_split.js"), point_glue(&glue))?;
 
-    println!("✓ Built {}", pkg.display());
-    match args.serve {
-        Some(port) => run(cmd("python3")
-            .args([
-                "-I",
-                "-m",
-                "http.server",
-                &port.to_string(),
-                "--bind",
-                "127.0.0.1",
-                "-d",
-            ])
-            .arg(&app)),
-        None => {
-            println!("  Serve {} with any static server.", app.display());
-            Ok(())
-        }
-    }
+    Ok(())
+}
+
+/// One module, unsplit, from the `quick` profile: the page loads it the same
+/// way, and a diagram's renderer is in it from the start.
+fn quick(app: &Path, bindgen: &Path, pkg: &Path) -> Result<()> {
+    run(cargo()
+        .args([
+            "build",
+            "--profile",
+            "quick",
+            "--no-default-features",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--manifest-path",
+        ])
+        .arg(app.join("Cargo.toml")))?;
+    let raw = app.join(format!("target/wasm32-unknown-unknown/quick/{BIN}.wasm"));
+    run(cmd(bindgen)
+        .arg(&raw)
+        .args(["--target", "web", "--no-typescript", "--out-dir"])
+        .arg(pkg))?;
+    let wasm = pkg.join(format!("{BIN}_bg.wasm"));
+    println!("  {BIN}_bg.wasm {:.1} MB", size(&wasm)?);
+    Ok(())
 }
 
 /// The version of `package` the lockfile names. One version only: a second

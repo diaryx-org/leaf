@@ -24,11 +24,17 @@ publish = false
 name = "leaf_dioxus_web"
 path = "src/main.rs"
 
+[features]
+# The Mermaid renderer in a wasm module of its own (`cargo xtask web`). Off
+# for `cargo xtask web --quick`, which builds one module without the splitter.
+default = ["split"]
+split = ["leaf-dioxus/wasm-split"]
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Default features off: the system clipboard is arboard's, which has no
 # browser; this host brings its own (`lib.rs`). And classic `vello` off, for
 # the hybrid renderer below.
-leaf-dioxus = { path = "../../crates/leaf-dioxus", default-features = false, features = ["wasm-split"] }
+leaf-dioxus = { path = "../../crates/leaf-dioxus", default-features = false }
 leaf-core = { path = "../../crates/leaf-core", default-features = false, features = ["syntax"] }
 dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
     "macro",
@@ -51,7 +57,11 @@ blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["
 parley = "=0.12.0"
 wasm-bindgen = "0.2"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
+web-sys = { version = "0.3", features = [
+    "Clipboard", "ClipboardEvent", "CompositionEvent", "CssStyleDeclaration", "DataTransfer",
+    "Document", "Element", "FocusEvent", "FocusOptions", "HtmlCanvasElement", "HtmlElement",
+    "HtmlTextAreaElement", "InputEvent", "KeyboardEvent", "Navigator", "Window",
+] }
 # A panic, in the browser's console rather than as `unreachable`.
 console_error_panic_hook = "0.1"
 
@@ -65,6 +75,15 @@ opt-level = 3
 lto = true
 codegen-units = 1
 debug = true
+
+# `cargo xtask web --quick`: optimised, but without the fat LTO and the debug
+# info the splitter needs, so a change rebuilds in a fraction of the time.
+[profile.quick]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = false
+incremental = true
 
 [patch.crates-io]
 # Blitz from diaryx-org's fork, its `leaf` branch, as the Mac app takes it
