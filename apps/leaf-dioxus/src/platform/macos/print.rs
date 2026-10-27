@@ -1,7 +1,7 @@
 //! The document on paper, the Mac's way: File ▸ Print… through the print
 //! panel, and File ▸ Export as PDF… through a save sheet. Both are the PDF
-//! `pdf.rs` lays out from the editor's own layout — Print's on the paper and
-//! margins Page Setup chose, Export's on the paper Settings names.
+//! `pdf.rs` has twig-export set — Print's on the paper and margins Page
+//! Setup chose, Export's on the paper Settings names.
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
@@ -21,7 +21,13 @@ pub fn operation(page: &Page, info: &NSPrintInfo) -> Option<Retained<NSPrintOper
         height: size.height as f32,
         margin: info.topMargin().max(36.0) as f32,
     };
-    let bytes = crate::pdf::of_page(page, paper)?;
+    let bytes = match crate::pdf::of_page(page, paper) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            page.say(&format!("Print failed: {e}"));
+            return None;
+        }
+    };
     let data = NSData::with_bytes(&bytes);
     let pdf = unsafe { PDFDocument::initWithData(PDFDocument::alloc(), &data) }?;
     unsafe {
@@ -79,12 +85,12 @@ pub fn export(page: &Page) {
                     margin: 72.0,
                 };
                 match crate::pdf::of_page(&page, paper) {
-                    Some(bytes) => {
+                    Ok(bytes) => {
                         if let Err(e) = std::fs::write(&path, bytes) {
                             page.say(&format!("Export failed: {e}"));
                         }
                     }
-                    None => page.say("Export failed: the document would not lay out"),
+                    Err(e) => page.say(&format!("Export failed: {e}")),
                 }
             });
         });

@@ -3,20 +3,37 @@ title: What Linux and Windows do not do yet
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 status: open
 created: 2026-10-26
-updated: 2026-10-26
+updated: 2026-10-27
 ---
 # What Linux and Windows do not do yet
 
-**Where.** `apps/leaf-dioxus` (it has no Linux or Windows module under
-`src/platform/` yet) and `crates/leaf-dioxus/src/input.rs`.
+**Where.** `apps/leaf-dioxus/src/platform/desktop` and
+`crates/leaf-dioxus/src/input.rs`.
+
+**Done (2026-10-27).** The app runs on Linux: `platform/desktop` keeps its
+own files (Open and Save through the XDG portal's dialogs, a `*` in the
+title while there are unsaved changes, and a Discard/Cancel question before
+such a window closes), stores settings in `<config>/leaf/settings`, uses
+the system clipboard, and exports a PDF through twig-export. A File menu
+in the toolbar and the Ctrl keys stand in for the menu bar. Windows
+compiles the same module, untried. Still to do:
+
+- **Close's question has two answers.** Discard or Cancel; there is no
+  Save in it, since unit's dialog has two buttons.
+- **No Print.** Export as PDF, then print from the viewer.
+- **The title keeps its `*`** after undoing back to what was saved; only a
+  save clears it.
+- **Lines drawn twice as tall** where the body face is not installed:
+  [The editor and Blitz fall back to different faces](/docs/tasks/the-editor-and-blitz-fall-back-to-different-faces.md).
+- **No spelling checker and no Look Up**, and no check for a change on disk.
 
 **What.** The desktop app off the Mac was gpui's,
 `archive/apps/leaf` over `archive/crates/leaf-gpui`. What it did that the
 Dioxus path does not:
 
-- **The app.** An Open dialog (`prompt_for_paths`), a guard before a window
-  with unsaved changes closes or the app quits, and a check for a change on
-  disk when the window is activated (`archive/apps/leaf/src/main.rs`).
+- **The app.** A check for a change on disk when the window is activated
+  (`archive/apps/leaf/src/main.rs`). The Open dialog and the guard before
+  a window with unsaved changes closes are done (above).
 - **Key conventions.** Ctrl+Y redoes, and the keys follow the CUA map
   (`archive/crates/leaf-gpui/src/lib.rs`, near line 378). Off Apple the editor
   takes Ctrl as ⌘ (`input.rs`, `CMD`), so Ctrl+←/→ goes to the line's edge

@@ -21,6 +21,7 @@ contents:
 - '[What iOS does not do yet](/docs/tasks/what-ios-does-not-do-yet.md)'
 - '[What Android does not do yet](/docs/tasks/what-android-does-not-do-yet.md)'
 - '[What Linux and Windows do not do yet](/docs/tasks/what-linux-and-windows-do-not-do-yet.md)'
+- '[The editor and Blitz fall back to different faces](/docs/tasks/the-editor-and-blitz-fall-back-to-different-faces.md)'
 - '[Tests leave their fixtures in the temp directory](/docs/tasks/tests-leave-their-fixtures-in-temp.md)'
 part_of: '[leaf](/README.md)'
 ---

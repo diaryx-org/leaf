@@ -856,6 +856,14 @@ fn new_editor(bytes: &[u8], format: Format) -> Result<Editor> {
         .map_err(|e| anyhow!("twig parse: {e}"))
 }
 
+/// `source` parsed as `format` with leaf's [`parse_extensions`]: the tree a
+/// document's editor reads, for a host that hands it to another reader of
+/// twig's documents, as Export as PDF hands it to twig-export.
+pub fn parse_tree(source: &str, format: Format) -> Result<twig::Document> {
+    twig::Document::parse_with_flags(source.as_bytes(), format.twig(), parse_extensions(format))
+        .map_err(|e| anyhow!("twig parse: {e}"))
+}
+
 /// Does `format` spell a table as a **pipe table** — the one grid twig's table
 /// editor knows how to emit?
 ///

@@ -19,10 +19,16 @@
 //!   for one window, done for as many as there are documents open.
 //! - [`menus`]: every menu, as data; [`commands`]: what each item does, and
 //!   whether it can.
-//! - [`pdf`]: Export as PDF and Print, from the editor's own layout.
+//! - [`pdf`]: Export as PDF and Print, set by twig-export.
 //!
 //! `LEAF_TRACE=1` logs keys, pointer events and repaint timings to stderr;
 //! `LEAF_OUTLINE=1` outlines every visual line and run.
+
+// The shared code serves the Mac's platform, which has more to it — the
+// menu bar, the spelling checker, Look Up, the document system's Revert —
+// than Linux's and Windows' does yet. Off the Mac, what only it reaches is
+// unused; the Mac's build, which reaches all of it, keeps the lint.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 mod access;
 mod app;
@@ -35,6 +41,7 @@ mod head;
 #[cfg(test)]
 mod headless;
 mod menus;
+#[cfg(test)]
 mod offscreen;
 mod page;
 mod pdf;
@@ -42,6 +49,8 @@ mod platform;
 mod prefs;
 mod renderer;
 mod settings;
+#[cfg(test)]
+mod sheet;
 mod shell;
 mod text;
 mod toolbar;

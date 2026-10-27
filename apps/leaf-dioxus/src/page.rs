@@ -316,6 +316,10 @@ impl Page {
                 if self.init().is_none() {
                     return false;
                 }
+                // Where there is no menu bar, the keys of its commands.
+                if platform::shortcut(self, &code, m) {
+                    return true;
+                }
                 let typed =
                     (key.state == ElementState::Pressed && !mods.meta_key() && !mods.control_key())
                         .then(|| key.text.as_ref().map(|t| t.to_string()))
@@ -432,17 +436,30 @@ impl Page {
     }
 
     /// The source for the platform to write, and the document clean as of
-    /// it; `None` if the editor has it borrowed this instant.
+    /// it; `None` if the editor has it borrowed this instant. For a platform
+    /// whose write cannot fail after this (the Mac's document system, which
+    /// keeps the change count itself).
     pub fn source_to_save(&self) -> Option<String> {
-        let source = self.with_doc(|d| {
-            d.dirty = false;
-            d.source.clone()
-        })?;
+        let source = self.source()?;
+        self.saved();
+        Some(source)
+    }
+
+    /// The source as it stands, still unsaved: for a platform that marks it
+    /// saved ([`Page::saved`]) only once its write has landed.
+    pub fn source(&self) -> Option<String> {
+        self.with_doc(|d| d.source.clone())
+    }
+
+    /// The source just read was written: the document is clean as of it.
+    /// If the editor has it borrowed this instant, it stays dirty, which
+    /// only costs a needless question at close.
+    pub fn saved(&self) {
+        self.with_doc(|d| d.dirty = false);
         if let Some(s) = self.shell() {
             s.stale.set(true);
         }
         app::post(AppEvent::Refresh(self.window.id()));
-        Some(source)
     }
 
     /// Redraw: the status line says what changed outside the editor.
@@ -481,12 +498,16 @@ impl Page {
         app::poll(self.window.id());
     }
 
-    /// The window's close button, or File ▸ Close. The platform's document
-    /// has been asked already where it has a say (`platform::Document`
-    /// says when), so the window goes.
+    /// The window's close button, or File ▸ Close: a document's window
+    /// goes once its platform document agrees (on the Mac it has been asked
+    /// already; elsewhere it asks if changes would be lost), Settings'
+    /// at once.
     pub fn close_requested(&self) {
         leaf_dioxus::trace(|| format!("close requested {:?}", self.window.id()));
-        app::post(AppEvent::Close(self.window.id()));
+        match self.init() {
+            Some(init) => init.shell.document.ask_to_close(self),
+            None => app::post(AppEvent::Close(self.window.id())),
+        }
     }
 
     /// The window has gone: so does its document.
@@ -502,6 +523,17 @@ impl Page {
         match c {
             Command::Link => crate::context::prompt_link(self),
             Command::ExportPdf => platform::print::export(self),
+            Command::Save => {
+                if let Some(s) = self.shell() {
+                    s.document.save();
+                }
+            }
+            Command::SaveAs => {
+                if let Some(s) = self.shell() {
+                    s.document.save_as();
+                }
+            }
+            Command::Close => self.close_requested(),
             Command::CheckDocument => platform::spelling::check_document(self),
             Command::Replace(loc, len, word, with) => {
                 platform::spelling::replace(self, loc, len, &word, &with)

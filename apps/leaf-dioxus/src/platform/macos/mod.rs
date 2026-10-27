@@ -299,6 +299,30 @@ pub fn new_document(format: Format) {
     }
 }
 
+/// File ▸ Open…: the document controller's Open panel. The menu bar's Open
+/// is the system's own item; this is for the commands that name it.
+pub fn open_panel() {
+    let controller = NSDocumentController::sharedDocumentController(mtm());
+    let _: () = unsafe { msg_send![&*controller, openDocument: None::<&AnyObject>] };
+}
+
+/// Quit, as the app menu's Quit does: each document asked, then the app.
+pub fn quit() {
+    NSApplication::sharedApplication(mtm()).terminate(None);
+}
+
+/// A Mac document app outlives its last window.
+pub const QUITS_WITH_LAST_WINDOW: bool = false;
+
+/// The menu bar has every command's key, before the window sees it.
+pub fn shortcut(
+    _page: &crate::page::Page,
+    _code: &dioxus::html::Code,
+    _mods: dioxus::html::Modifiers,
+) -> bool {
+    false
+}
+
 /// Help ▸ Open Sample Document: an untitled Markdown document holding it.
 pub fn open_sample() {
     document::sample_next();
@@ -403,6 +427,9 @@ pub mod clipboard {
             Err("the pasteboard refused the text".into())
         }
     }
+
+    /// The pasteboard keeps what was copied after the app quits.
+    pub fn release() {}
 
     pub fn read() -> leaf_dioxus::Clipboard {
         let board = NSPasteboard::generalPasteboard();

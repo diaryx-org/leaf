@@ -284,6 +284,14 @@ impl LeafDocument {
         let _: () = unsafe { msg_send![self, saveDocumentAs: None::<&AnyObject>] };
     }
 
+    /// The window's close button or File ▸ Close, as winit reports it:
+    /// AppKit has asked this document already (autosaved it, or asked about
+    /// an untitled one) before it let the window report it, so the window
+    /// goes.
+    pub fn ask_to_close(&self, page: &crate::page::Page) {
+        app::post(AppEvent::Close(page.window.id()));
+    }
+
     /// Bring its window forward.
     pub fn show(&self) {
         self.showWindows();

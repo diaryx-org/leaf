@@ -70,25 +70,34 @@ blitz-traits = "=0.3.0-beta.4"
 accesskit_xplat = "0.2"
 # The tree itself, where the editor's text goes in (`access.rs`).
 accesskit = "0.25"
-# Export as PDF and Print (`pdf.rs`): Blitz's paint recorded, and drawn again
-# as PDF pages by krilla, glyphs' characters read back from their fonts.
+# The renderer's scene (`renderer.rs`).
 anyrender = "0.14"
 # The windows' renderer, built here for its antialiasing (`renderer.rs`).
 anyrender_vello = "0.15"
 vello = { version = "0.11", default-features = false }
 # `apple-font-embolden`: glyphs thickened as macOS thickens its own text, and
 # not hinted, which the system never does — so the editor's text has the
-# weight of the text around it, on screen and in a PDF.
+# weight of the text around it.
 blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = ["apple-font-embolden"] }
-krilla = { version = "0.8", default-features = false, features = ["raster-images"] }
-kurbo = "0.13"
-peniko = "0.6"
 skrifa = "0.44"
-# The font `Editor::font_at` answers with, for Look Up and the PDF.
+# The font `Editor::font_at` answers with, for Look Up.
 parley = "=0.12.0"
+# Export as PDF and Print (`pdf.rs`): the document set by Typst, as every
+# paged format Diaryx writes is. `pdf` without `network`: a document's Typst
+# never reaches Typst Universe from the app. It brings diaryx-org's Typst
+# fork; a Typst crate named here must name the same source.
+twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "main", default-features = false, features = ["pdf"] }
 # Blitz's network provider and the editor's timers run on tokio.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
 raw-window-handle = "0.6"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# Linux's and Windows' Open and Save dialogs (`platform/desktop`): the XDG
+# desktop portal on Linux, so the dialog is the desktop's own, GNOME's or
+# KDE's or the compositor's.
+rfd = "0.17"
+# The clipboard, with its HTML flavour; Wayland's too.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # AppKit and Foundation, at the versions winit-appkit already uses.

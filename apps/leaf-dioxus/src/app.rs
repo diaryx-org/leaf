@@ -97,6 +97,66 @@ pub fn on_turn(f: impl FnOnce() + 'static) {
     post(AppEvent::Run(Box::new(f)));
 }
 
+/// A closure parked on the handler's thread until another thread answers
+/// it ([`park`], [`unpark`]): a system dialog, run off the handler so the
+/// windows keep drawing while it is up.
+type Parked = Box<dyn FnOnce(Box<dyn Any + Send>)>;
+
+thread_local! {
+    static PARKED: RefCell<HashMap<u64, Parked>> = RefCell::default();
+    static NEXT_PARKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Where another thread sends a parked closure its answer.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub struct Token {
+    id: u64,
+    proxy: BlitzShellProxy,
+}
+
+/// An answer for a parked closure, as it crosses to the handler's thread.
+struct Answer {
+    id: u64,
+    value: std::sync::Mutex<Option<Box<dyn Any + Send>>>,
+}
+
+/// Park `then` until another thread [`unpark`]s the token with its answer;
+/// it runs on the handler's turn.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub fn park<T: Send + 'static>(then: impl FnOnce(T) + 'static) -> Token {
+    let id = NEXT_PARKED.replace(NEXT_PARKED.get() + 1);
+    let parked: Parked = Box::new(move |value| {
+        if let Ok(value) = value.downcast::<T>() {
+            then(*value);
+        }
+    });
+    PARKED.with_borrow_mut(|p| p.insert(id, parked));
+    Token { id, proxy: proxy() }
+}
+
+/// Answer a parked closure, from any thread.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub fn unpark<T: Send + 'static>(token: Token, answer: T) {
+    token
+        .proxy
+        .send_event(BlitzShellEvent::embedder_event(Answer {
+            id: token.id,
+            value: std::sync::Mutex::new(Some(Box::new(answer))),
+        }));
+}
+
+/// Run the closure an answer is for.
+fn answered(event: &(dyn Any + Send + Sync)) {
+    let Some(answer) = event.downcast_ref::<Answer>() else {
+        return;
+    };
+    let value = answer.value.lock().ok().and_then(|mut v| v.take());
+    let parked = PARKED.with_borrow_mut(|p| p.remove(&answer.id));
+    if let (Some(value), Some(parked)) = (value, parked) {
+        parked(value);
+    }
+}
+
 /// Ask Blitz to poll `id`'s page: what an editor call changed is drawn.
 pub fn poll(id: WindowId) {
     proxy().send_event(BlitzShellEvent::Poll { window_id: id });
@@ -174,6 +234,8 @@ pub fn app_state() -> AppState {
 pub fn run_app(c: Command) {
     match c {
         Command::New(format) => platform::new_document(format),
+        Command::Open => platform::open_panel(),
+        Command::Quit => platform::quit(),
         Command::OpenSample => platform::open_sample(),
         Command::Settings => post(AppEvent::ShowSettings),
         Command::Column(column) => set_settings(Settings {
@@ -291,7 +353,13 @@ impl App {
                     p.settings_changed();
                 }
             }
-            AppEvent::Close(id) => self.close(id),
+            AppEvent::Close(id) => {
+                self.close(id);
+                if platform::QUITS_WITH_LAST_WINDOW && !pages().iter().any(|p| !p.is_settings()) {
+                    platform::clipboard::release();
+                    event_loop.exit();
+                }
+            }
             AppEvent::Head(id, name, attributes, contents) => {
                 if let Some(view) = self.blitz.windows.get_mut(&id) {
                     view.downcast_doc_mut::<DioxusDocument>()
@@ -612,7 +680,9 @@ impl ApplicationHandler for App {
                 continue;
             }
             match event {
-                BlitzShellEvent::Embedder(_) => {}
+                BlitzShellEvent::Embedder(e) => {
+                    guard(|| answered(&*e));
+                }
                 // Blitz's own handling of these, noting which windows'
                 // pages changed, for `redraw`.
                 BlitzShellEvent::Poll { window_id } => {
