@@ -25,9 +25,9 @@ name = "leaf_dioxus_web"
 path = "src/main.rs"
 
 [features]
-# The Mermaid renderer in a wasm module of its own (`cargo xtask web`). Off
-# for `cargo xtask web --quick`, which builds one module without the splitter.
-default = ["split"]
+# The Mermaid renderer in a wasm module of its own (`cargo xtask web
+# --split`), which only a build that runs the splitter can load. Off by
+# default: not sound yet (xtask/src/web.rs says why).
 split = ["leaf-dioxus/wasm-split"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -83,8 +83,8 @@ lto = true
 codegen-units = 1
 debug = true
 
-# `cargo xtask web --quick`: optimised, but without the fat LTO and the debug
-# info the splitter needs, so a change rebuilds in a fraction of the time.
+# `cargo xtask web --quick`: optimised, but without the fat LTO, so a change
+# rebuilds in a fraction of the time.
 [profile.quick]
 inherits = "release"
 lto = false

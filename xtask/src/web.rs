@@ -1,9 +1,16 @@
 //! `cargo xtask web` — build Leaf for the browser (`apps/leaf-dioxus-web`)
-//! into its `pkg/`, split: the Mermaid renderer in a wasm module of its own,
-//! fetched the first time a diagram is drawn.
+//! into its `pkg/`: the release build, fat LTO, through `wasm-bindgen`, its
+//! custom sections stripped.
 //!
-//! The steps are `dx build --wasm-split`'s, without `dx`, whose web build is
-//! made for dioxus-web rather than for Blitz in a canvas:
+//! `--split` puts the Mermaid renderer in a wasm module of its own, fetched
+//! the first time a diagram is drawn. It is not the default because it is
+//! not sound: code leaf-core shares with the renderer moves into that module,
+//! and until the module arrives a call to it does nothing rather than wait —
+//! the demo's picture drew no label row, and so no picture, until a document
+//! was opened after a diagram had loaded. Kept for finding out why.
+//!
+//! The split's steps are `dx build --wasm-split`'s, without `dx`, whose web
+//! build is made for dioxus-web rather than for Blitz in a canvas:
 //!
 //! 1. Cargo, for `wasm32-unknown-unknown`, with fat LTO, debug info and
 //!    `--emit-relocs` (the manifest's release profile and the flag below):
@@ -36,10 +43,14 @@ pub struct Args {
     /// `http.server`, on 127.0.0.1).
     #[arg(long, value_name = "PORT")]
     pub serve: Option<u16>,
-    /// One module, without fat LTO or the split: for trying a change, not
-    /// for serving. Built with the app's `quick` profile.
-    #[arg(long)]
+    /// One module, without fat LTO: for trying a change, not for serving.
+    /// Built with the app's `quick` profile.
+    #[arg(long, conflicts_with = "split")]
     pub quick: bool,
+    /// The Mermaid renderer in a module of its own — unsound for now; see
+    /// the module's doc.
+    #[arg(long)]
+    pub split: bool,
 }
 
 pub fn run_task(args: Args) -> Result<()> {
@@ -52,12 +63,6 @@ pub fn run_task(args: Args) -> Result<()> {
         "wasm-bindgen",
         &locked(&lock, "wasm-bindgen")?,
     )?;
-    let splitter = tool(
-        &tools,
-        "wasm-split-cli",
-        "wasm-split-cli",
-        &locked(&lock, "wasm-splitter")?,
-    )?;
 
     let pkg = app.join("pkg");
     let split = app.join("target/split");
@@ -67,9 +72,17 @@ pub fn run_task(args: Args) -> Result<()> {
         }
     }
     if args.quick {
-        quick(&app, &bindgen, &pkg)?;
-    } else {
+        one_module(&app, &bindgen, &pkg, "quick")?;
+    } else if args.split {
+        let splitter = tool(
+            &tools,
+            "wasm-split-cli",
+            "wasm-split-cli",
+            &locked(&lock, "wasm-splitter")?,
+        )?;
         split_build(&app, &bindgen, &splitter, &pkg, &split)?;
+    } else {
+        one_module(&app, &bindgen, &pkg, "release")?;
     }
 
     println!("✓ Built {}", pkg.display());
@@ -104,6 +117,8 @@ fn split_build(
         .args([
             "build",
             "--release",
+            "--features",
+            "split",
             "--target",
             "wasm32-unknown-unknown",
             "--manifest-path",
@@ -159,26 +174,31 @@ fn split_build(
     Ok(())
 }
 
-/// One module, unsplit, from the `quick` profile: the page loads it the same
-/// way, and a diagram's renderer is in it from the start.
-fn quick(app: &Path, bindgen: &Path, pkg: &Path) -> Result<()> {
+/// One module, unsplit, from `profile`: `release` for serving, its custom
+/// sections stripped, or `quick` for trying a change.
+fn one_module(app: &Path, bindgen: &Path, pkg: &Path, profile: &str) -> Result<()> {
     run(cargo()
         .args([
             "build",
             "--profile",
-            "quick",
-            "--no-default-features",
+            profile,
             "--target",
             "wasm32-unknown-unknown",
             "--manifest-path",
         ])
         .arg(app.join("Cargo.toml")))?;
-    let raw = app.join(format!("target/wasm32-unknown-unknown/quick/{BIN}.wasm"));
+    let raw = app.join(format!(
+        "target/wasm32-unknown-unknown/{profile}/{BIN}.wasm"
+    ));
     run(cmd(bindgen)
         .arg(&raw)
         .args(["--target", "web", "--no-typescript", "--out-dir"])
         .arg(pkg))?;
     let wasm = pkg.join(format!("{BIN}_bg.wasm"));
+    if profile == "release" {
+        let bytes = std::fs::read(&wasm)?;
+        std::fs::write(&wasm, strip_custom_sections(&bytes)?)?;
+    }
     println!("  {BIN}_bg.wasm {:.1} MB", size(&wasm)?);
     Ok(())
 }

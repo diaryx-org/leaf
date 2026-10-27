@@ -17,7 +17,7 @@ name: Pages
 # Actions") for the archived demo; nothing here can switch it on.
 #
 # The site is the app's directory as `cargo xtask web --serve` serves it:
-# index.html, the split wasm in pkg/, the faces in fonts/ and the demo's
+# index.html, the wasm in pkg/, the faces in fonts/ and the demo's
 # picture in media/. Every URL in it is relative, so it needs no base path.
 on:
   push: { tags: [v*.*.*] }
@@ -80,7 +80,7 @@ jobs:
     - name: Add wasm32 to the pinned toolchain
       run: rustup target add wasm32-unknown-unknown
     # The app is a workspace of its own, with its own target/, where the
-    # xtask also installs wasm-bindgen and wasm-split-cli (target/tools).
+    # xtask also installs wasm-bindgen (target/tools).
     - uses: Swatinem/rust-cache@v2
       with:
         key: wasm32-unknown-unknown
@@ -88,9 +88,9 @@ jobs:
           . -> target
           apps/leaf-dioxus-web -> target
 
-    # Fat LTO, wasm-bindgen, the split, the custom sections stripped: what
-    # the module doc of xtask/src/web.rs lists.
-    - name: Build the split wasm
+    # Fat LTO, wasm-bindgen, the custom sections stripped, in one module:
+    # the split (`--split`) is not sound yet (xtask/src/web.rs).
+    - name: Build the wasm
       run: cargo xtask web
 
     - name: Assemble the site
