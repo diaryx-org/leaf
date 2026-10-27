@@ -40,6 +40,7 @@ contents:
 - '[Android block views](/docs/tasks/closed/android-block-views.md)'
 - '[LeafUI''s own toolbar still defines every control a second time](/docs/tasks/closed/one-toolbar-definition.md)'
 - '[Ctrl+Z under Gboard undoes the keyboard''s text, not leaf''s step](/docs/tasks/closed/ctrl-z-under-gboard.md)'
+- '[`can_undo` counts edits, and twig counts steps](/docs/tasks/closed/can-undo-counts-edits-not-steps.md)'
 ---
 
 # Closed tasks
