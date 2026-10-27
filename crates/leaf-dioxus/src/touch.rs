@@ -201,13 +201,13 @@ impl Editor {
             max,
         };
         rt.spawn(scope, async move {
-            let mut last = std::time::Instant::now();
+            let mut last = crate::clock::Instant::now();
             loop {
-                tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+                crate::clock::sleep(std::time::Duration::from_millis(8)).await;
                 if ed.st.glide.get() != id {
                     return;
                 }
-                let now = std::time::Instant::now();
+                let now = crate::clock::Instant::now();
                 let dt = now.duration_since(last).as_secs_f64() * 1000.0;
                 last = now;
                 g.max = ed.max_top().max(0.0);

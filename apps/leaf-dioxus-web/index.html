@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Leaf</title>
+<link rel="icon" href="data:," />
+<style>
+  /* Blitz appends its canvas to the body and sizes its surface to the
+     canvas's CSS box, so the box is the whole page. */
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+  body { background: #fbfaf7; }
+  @media (prefers-color-scheme: dark) { body { background: #1d1d1f; } }
+  canvas { display: block; width: 100%; height: 100%; outline: none; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center;
+    font: 14px system-ui, sans-serif; color: #888; }
+  canvas ~ #loading, #loading:has(~ canvas) { display: none; }
+</style>
+</head>
+<body>
+<div id="loading">Loading Leaf…</div>
+<script type="module">
+  // wasm-pack's `--target web` output, and the faces the editor sets its
+  // text in, fetched in parallel with it. `start` runs the editor, which
+  // appends the canvas it draws into. The body's face first: SVG text falls
+  // back to the first face given.
+  import init, { start } from "./pkg/leaf_dioxus_web.js";
+  const FONTS = [
+    "LibertinusSerif-Regular.otf", "LibertinusSerif-Italic.otf",
+    "LibertinusSerif-Bold.otf", "LibertinusSerif-BoldItalic.otf",
+    "DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf",
+  ];
+  const font = async (name) => {
+    const response = await fetch(`./fonts/${name}`);
+    if (!response.ok) throw new Error(`${name}: ${response.status}`);
+    return new Uint8Array(await response.arrayBuffer());
+  };
+  // Blitz draws through WebGPU; its WebGL 2 path does not work yet
+  // (README.md). Say so, rather than leave a blank page and a panic.
+  const adapter = navigator.gpu && (await navigator.gpu.requestAdapter().catch(() => null));
+  if (!adapter) {
+    document.getElementById("loading").textContent =
+      "Leaf needs WebGPU, which this browser does not offer.";
+  } else {
+    Promise.all([init(), Promise.all(FONTS.map(font))])
+      .then(([, fonts]) => start(fonts))
+      .catch((e) => {
+        document.getElementById("loading").textContent = `Leaf could not start: ${e}`;
+      });
+  }
+</script>
+</body>
+</html>

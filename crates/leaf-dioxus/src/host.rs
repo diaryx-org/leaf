@@ -52,6 +52,39 @@ pub enum Request {
     Settings,
 }
 
+/// Where the caret is, for a host whose input method does not come through
+/// winit — a browser's, through a text field the host keeps beside the caret
+/// — in CSS pixels from the window's top left, and the text around it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputArea {
+    pub x: f64,
+    pub y: f64,
+    pub height: f64,
+    /// `None` while a composition is open: the field holds that itself.
+    pub around: Option<Around>,
+}
+
+/// The text as shown around the caret — in the rendered view the words
+/// without their markup, a line a row — that a host's text field holds, so
+/// that a screen reader reads the document and a keyboard's suggestions see
+/// its words: some lines either side of the caret's, with the caret and the
+/// selection's anchor as byte offsets into it, and `start`, where it starts
+/// in the whole text as shown, the offsets [`Editor::select_shown`] takes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Around {
+    pub text: String,
+    pub start: usize,
+    pub caret: usize,
+    pub anchor: usize,
+}
+
+/// A picture a host loaded itself: see [`Host::picture`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picture {
+    pub url: String,
+    pub size: (f32, f32),
+}
+
 /// The editor's host. See the module's doc for what each default does.
 ///
 /// The methods that take an [`Editor`] are called with nothing of the
@@ -72,6 +105,13 @@ pub trait Host {
     /// What the clipboard holds.
     fn read_clipboard(&self) -> Clipboard {
         system::read()
+    }
+
+    /// The caret moved, or the text around it changed: what the editor tells
+    /// winit's input method, for a host that brings its own. Called while
+    /// nothing of the editor's is borrowed, but must not call back into it.
+    fn input_area(&self, area: &InputArea) {
+        let _ = area;
     }
 
     /// ⌃⌘Space: open the system's emoji and symbols picker. Its choice comes
@@ -112,6 +152,19 @@ pub trait Host {
     /// LeafUI, the editor never touches the network: a remote source is the
     /// host's to fetch, and to answer here with the file it fetched to.
     fn locate_media(&self, doc: &Doc, dest: &str) -> Option<PathBuf> {
+        let _ = (doc, dest);
+        None
+    }
+
+    /// A picture the host loaded itself, for `dest` as written in `doc`: the
+    /// URL Blitz draws it from (a `data:` URI, or a web address that allows
+    /// it) and its natural size ([`picture_size`](crate::picture_size)
+    /// measures one). Asked before [`locate_media`](Self::locate_media), on
+    /// every repaint, for every medium, while the document is borrowed, so
+    /// an answer has to be at hand: a host that has to fetch a picture
+    /// answers `None` (the default), fetches it, and repaints when it has it.
+    /// The browser's host is one: it has no files.
+    fn picture(&self, doc: &Doc, dest: &str) -> Option<Picture> {
         let _ = (doc, dest);
         None
     }
@@ -321,6 +374,45 @@ mod tests {
         );
     }
 
+    /// A host with no files, which loaded the picture itself.
+    struct Loaded;
+
+    impl Host for Loaded {
+        fn picture(&self, _doc: &Doc, dest: &str) -> Option<Picture> {
+            (dest == "cat.png").then(|| Picture {
+                url: "data:image/png;base64,AAAA".into(),
+                size: (30.0, 20.0),
+            })
+        }
+    }
+
+    #[test]
+    fn a_picture_the_host_loaded_draws_from_its_url() {
+        let mut d = Doc::from_source(
+            "![a cat](cat.png)\n\n![a dog](dog.png)\n".into(),
+            Format::Markdown,
+        )
+        .expect("a document");
+        d.build_visual_unwrapped();
+        let block = |i: usize| {
+            crate::media::block(
+                &d.vmap.media[i],
+                &d.vmap.rows,
+                &|dest| crate::blocks::find_still(&Loaded, &d, dest),
+                0,
+                None,
+                &mut crate::text::Fonts::new(crate::text::Type::default()),
+                600.0,
+                |_| None,
+            )
+            .unwrap()
+        };
+        let still = block(0).still.expect("the host's picture");
+        assert_eq!(still.url, "data:image/png;base64,AAAA");
+        assert_eq!(still.size, (30.0, 20.0));
+        assert!(block(1).still.is_none(), "nothing loaded is a chip");
+    }
+
     #[test]
     fn a_picture_in_an_untitled_document_draws_from_where_the_host_says() {
         let dir = std::env::temp_dir().join(format!("agent-leaf-locate-{}", std::process::id()));
@@ -336,7 +428,7 @@ mod tests {
         let block = crate::media::block(
             &d.vmap.media[0],
             &d.vmap.rows,
-            &|dest| crate::blocks::locate(&vault, &d, dest),
+            &|dest| crate::blocks::find_still(&vault, &d, dest),
             0,
             None,
             &mut crate::text::Fonts::new(crate::text::Type::default()),

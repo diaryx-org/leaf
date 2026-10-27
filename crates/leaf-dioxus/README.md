@@ -142,8 +142,10 @@ is the Swift editor's defaults.
   the tree in place of the nodes under it. The requests that come back for
   that node or a run (`is_text_run`) go to `Editor::accessibility_action`.
   `apps/leaf-dioxus/src/access.rs` does all three.
-- **Under a finger** (iOS), a tap places the caret and raises the keyboard,
-  a drag scrolls, and a sideways drag, where `Editor::set_turns` allows it,
+- **Under a finger** (iOS, a browser on a phone), a tap places the caret
+  and raises the keyboard — and on a link or a footnote follows it, as
+  ⌘-click does, since a phone has no ⌘; a plain click does the same in a
+  document only to be read. A drag scrolls, and a sideways drag, where `Editor::set_turns` allows it,
   slides the page and is `Host::turn` when let go far enough. The keyboard is
   not asked for until that first tap.
 - **The renderer is a feature.** `vello`, on by default, is Blitz's classic

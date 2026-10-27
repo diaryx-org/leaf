@@ -1,9 +1,10 @@
 //! `cargo xtask sync-versions` — write the workspace version into the files no
 //! manifest parser will ever find, and the CI check that they agree.
 //!
-//! Two such files today: the manifests of the Dioxus apps,
-//! `apps/leaf-dioxus/Cargo.toml` (Leaf for the Mac) and
-//! `apps/leaf-dioxus-tui/Cargo.toml` (the terminal), each a workspace of its
+//! Three such files today: the manifests of the Dioxus apps,
+//! `apps/leaf-dioxus/Cargo.toml` (Leaf for the Mac),
+//! `apps/leaf-dioxus-tui/Cargo.toml` (the terminal) and
+//! `apps/leaf-dioxus-web/Cargo.toml` (the browser), each a workspace of its
 //! own, which `ship`'s bump of the root workspace does not reach; `cargo xtask
 //! mac` stamps the Mac app's version into the bundle's Info.plist.
 //! `.config/ship.figl` names this task as the bump's `post_bump` and lists the
@@ -18,6 +19,7 @@ use anyhow::{Context, Result, bail};
 const FOLLOWERS: &[(&str, &str)] = &[
     ("apps/leaf-dioxus/Cargo.toml", "version = \""),
     ("apps/leaf-dioxus-tui/Cargo.toml", "version = \""),
+    ("apps/leaf-dioxus-web/Cargo.toml", "version = \""),
 ];
 
 /// The version `[workspace.package]` states.

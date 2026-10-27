@@ -19,7 +19,7 @@ const SETTLE: Duration = Duration::from_millis(400);
 /// find the revision has moved on, and do nothing.
 pub fn recount(st: Rc<State>, rev: u64, mut words: Signal<Option<(u64, usize)>>) {
     spawn(async move {
-        tokio::time::sleep(SETTLE).await;
+        crate::clock::sleep(SETTLE).await;
         let doc = st.doc.borrow();
         if doc.revision() == rev {
             words.set(Some((rev, doc.counts().words)));

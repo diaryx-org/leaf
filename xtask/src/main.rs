@@ -20,6 +20,7 @@ mod mac;
 mod package;
 mod util;
 mod versions;
+mod web;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -41,6 +42,8 @@ enum Task {
     Mac(mac::Args),
     /// Build a signed, notarised Leaf.app in a .dmg for other Macs (target/package/).
     Package(package::Args),
+    /// Build Leaf for the browser into apps/leaf-dioxus-web/pkg, split.
+    Web(web::Args),
 
     /// Check each crate alone, in each feature shape a host builds.
     PackageIsolation,
@@ -65,6 +68,7 @@ fn main() -> Result<()> {
     match Cli::parse().task {
         Task::Mac(args) => mac::run_task(args),
         Task::Package(args) => package::run_task(args),
+        Task::Web(args) => web::run_task(args),
         Task::PackageIsolation => isolation::run_task(),
         Task::SyncVersions { check: false } => versions::run_task(),
         Task::SyncVersions { check: true } => versions::check(),

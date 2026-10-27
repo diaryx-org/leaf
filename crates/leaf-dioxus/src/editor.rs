@@ -17,10 +17,10 @@ use std::cell::{Cell, RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
 
 use crate::bridge::frame::Frame;
 use crate::bridge::rows::{Marks, RowHandle, RowView};
+use crate::clock::Instant;
 use dioxus::prelude::*;
 use dioxus_native::winit::window::Window;
 use leaf_core::{Doc, View};
@@ -372,6 +372,23 @@ pub fn use_shared_editor(
         ed.set_look(look());
         if !crate::touch::KEYBOARD_ON_TAP {
             ed.enable_ime();
+        }
+        // A diagram drawn in the background, arrived: repaint, while the
+        // editor lives.
+        #[cfg(all(target_arch = "wasm32", feature = "wasm-split"))]
+        {
+            let (st, sig) = (Rc::downgrade(&ed.st), ed.sig);
+            let (runtime, scope) = (
+                dioxus::core::Runtime::current(),
+                dioxus::core::current_scope_id(),
+            );
+            crate::picture::on_arrival(move || {
+                let Some(st) = st.upgrade() else {
+                    return false;
+                };
+                runtime.in_scope(scope, || Editor { st, sig }.refresh());
+                true
+            });
         }
         ed
     });

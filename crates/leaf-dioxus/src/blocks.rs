@@ -16,6 +16,7 @@
 use std::cell::RefCell;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use dioxus::prelude::*;
 use leaf_core::{Doc, View};
@@ -137,6 +138,18 @@ pub fn locate(host: &dyn Host, doc: &Doc, dest: &str) -> Option<PathBuf> {
         .or_else(|| media::resolve(dest, doc.path.parent()))
 }
 
+/// What a medium draws: the picture the host loaded itself, else the file
+/// [`locate`] finds, measured once.
+pub fn find_still(host: &dyn Host, doc: &Doc, dest: &str) -> Option<Rc<media::Still>> {
+    if let Some(p) = host.picture(doc, dest) {
+        return Some(Rc::new(media::Still {
+            url: p.url,
+            size: p.size,
+        }));
+    }
+    locate(host, doc, dest).and_then(|p| media::still(&p))
+}
+
 /// Every block in the document as it stands, reusing last frame's where
 /// nothing about one has changed.
 #[allow(clippy::too_many_arguments)]
@@ -190,7 +203,7 @@ pub fn build(
     // is a few numbers, worked out each frame from the sizes `media.rs`
     // caches by path; only its prefix's layout is kept from the last. The
     // host reads each source first; with no opinion, the editor's own rule.
-    let locate = |dest: &str| locate(host, doc, dest);
+    let find = |dest: &str| find_still(host, doc, dest);
     for m in &doc.vmap.media {
         let reuse = |p: &_| {
             old.iter().find_map(|b| match b {
@@ -198,7 +211,7 @@ pub fn build(
                 _ => None,
             })
         };
-        if let Some(b) = media::block(m, &doc.vmap.rows, &locate, caret, sel, fonts, width, reuse) {
+        if let Some(b) = media::block(m, &doc.vmap.rows, &find, caret, sel, fonts, width, reuse) {
             out.push(Block::Media(b));
         }
     }

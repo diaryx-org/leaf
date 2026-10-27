@@ -35,6 +35,11 @@ vello = ["dioxus-native/vello"]
 # cascade sends every unix that is not macOS to X11/Wayland, iOS included,
 # which is the same reason leaf-gpui gates it.
 system-clipboard = ["dep:arboard"]
+# In a browser, the Mermaid renderer in a wasm module of its own, fetched the
+# first time a diagram is drawn (`picture.rs`). Only for a build that runs
+# the splitter (`cargo xtask web`): without it, the wasm imports a loader no
+# page provides.
+wasm-split = ["dep:wasm_split"]
 
 [dependencies]
 dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
@@ -76,10 +81,6 @@ arboard = { version = "3.7", optional = true }
 # own typesetters, each a TeX or Mermaid source to a self-contained SVG.
 leaf-math = { path = "../leaf-math" }
 leaf-mermaid = { path = "../leaf-mermaid" }
-# A timer for work that should wait for the typing to stop (the word count).
-# Already in the tree: dioxus-native builds and enters a tokio runtime with
-# timers enabled, which is what makes `tokio::time::sleep` work in a task.
-tokio = { version = "1", default-features = false, features = ["time"] }
 # Text layout, for proportional rows (`text.rs`). The same parley Blitz shapes
 # with, at the version it pins, so both measure the same glyphs.
 parley = "=0.12.0"
@@ -96,3 +97,24 @@ accesskit = "0.25"
 # already in the tree through Blitz, at the formats it decodes.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
 usvg = { version = "0.48", default-features = false }
+
+# The clock (`clock.rs`): std's `Instant` off the web, `performance.now()` on
+# it, where std's panics. Already in the tree through winit.
+web-time = "1"
+
+# A timer for work that should wait for the typing to stop (the word count).
+# Already in the tree: dioxus-native builds and enters a tokio runtime with
+# timers enabled, which is what makes `tokio::time::sleep` work in a task.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", default-features = false, features = ["time"] }
+
+# In a browser, dioxus-native starts no tokio runtime, so the same timer is
+# the page's `setTimeout`; and which keys are a Mac's is the browser's to say
+# (`input.rs`). All three already in the tree through winit's web backend.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Navigator", "Window"] }
+# Dioxus's split points (`wasm-split`). Its macro names the crate
+# `wasm_split`, hence the rename.
+wasm_split = { package = "wasm-splitter", version = "=0.8.0-alpha.3", optional = true }

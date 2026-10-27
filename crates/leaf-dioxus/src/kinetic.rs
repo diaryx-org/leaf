@@ -13,7 +13,8 @@
 //! comes late moves the page as far as an on-time one would have.
 
 use std::collections::VecDeque;
-use std::time::Instant;
+
+use crate::clock::Instant;
 
 /// The speed kept per millisecond (`UIScrollView.DecelerationRate.normal`).
 pub const DECELERATION: f64 = 0.998;

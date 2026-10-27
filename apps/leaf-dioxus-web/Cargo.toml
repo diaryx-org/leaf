@@ -1,0 +1,109 @@
+# Leaf in a browser tab: the leaf-dioxus editor widget (crates/leaf-dioxus),
+# drawn by Blitz into a canvas through WebGPU, on `wasm32-unknown-unknown`.
+# The same editor as the Mac app's, measured and drawn by one engine; the
+# page around it is `index.html`. README.md says what works and what does not.
+#
+# A workspace of its own, for the reason the Mac app is one: dioxus-native's
+# alpha pins a winit beta and a wgpu tree that leaf's root workspace should
+# not resolve. Built for the browser into `pkg/`, split, and served from this
+# directory by any static server:
+#
+#     cargo xtask web --serve 8000
+#
+# There is nothing to build off the web: `main.rs` is empty there.
+[workspace]
+
+[package]
+name = "leaf-dioxus-web"
+version = "0.5.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "leaf_dioxus_web"
+path = "src/main.rs"
+
+[features]
+# The Mermaid renderer in a wasm module of its own (`cargo xtask web
+# --split`), which only a build that runs the splitter can load. Off by
+# default: not sound yet (xtask/src/web.rs says why).
+split = ["leaf-dioxus/wasm-split"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Default features off: the system clipboard is arboard's, which has no
+# browser; this host brings its own (`lib.rs`). And classic `vello` off, for
+# the hybrid renderer below.
+leaf-dioxus = { path = "../../crates/leaf-dioxus", default-features = false }
+leaf-core = { path = "../../crates/leaf-core", default-features = false, features = ["syntax"] }
+dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+] }
+# Blitz's hybrid renderer, the one Blitz's own wasm examples draw with, and
+# the one built for GPUs as small as WebGL 2's (README.md says what stands
+# between it and WebGL). It draws no bitmap glyph, so no colour emoji; the
+# faces this host brings have none anyway.
+dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features = [
+    "net", "svg", "system-fonts", "vello-hybrid",
+] }
+# Fonts for SVG text, which usvg sets from a database of its own
+# (`add_svg_fonts`, from the fork patched in below).
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["svg"] }
+# Blitz's font collection, built here from the faces the page brings — a
+# browser lists no system fonts. The parley Blitz and the editor pin.
+parley = "=0.12.0"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Clipboard", "ClipboardEvent", "CompositionEvent", "CssStyleDeclaration", "DataTransfer",
+    "Document", "Element", "FocusEvent", "FocusOptions", "HtmlCanvasElement", "HtmlElement",
+    "HtmlTextAreaElement", "InputEvent", "KeyboardEvent", "Navigator", "Window", "DragEvent",
+    "File", "FileList", "Blob", "BlobPropertyBag", "Response", "Storage", "Url",
+    "HtmlAnchorElement", "HtmlInputElement", "Location",
+] }
+wasm-bindgen-futures = "0.4"
+# Pictures, which the page loads itself (`pictures.rs`): their format, for
+# the `data:` URI Blitz decodes them from, and the URI's base64.
+image = { version = "0.25", default-features = false }
+base64 = "0.22"
+# A panic, in the browser's console rather than as `unreachable`.
+console_error_panic_hook = "0.1"
+
+# Stylo, parley and Vello want every optimisation they can get; the size is
+# brotli's to cut when the bundle is served (README.md).
+# What the splitter needs (`cargo xtask web`): fat LTO, so the call graph is
+# one module's, and debug info, so its functions have names. The xtask strips
+# both from what it writes into `pkg/`, so neither reaches the page.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = true
+
+# `cargo xtask web --quick`: optimised, but without the fat LTO, so a change
+# rebuilds in a fraction of the time.
+[profile.quick]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = false
+incremental = true
+
+[patch.crates-io]
+# Blitz from diaryx-org's fork, its `leaf` branch, as the Mac app takes it
+# (FORK.md there): the same engine on both, and the fork's fixes with it —
+# among them the hit test's skipping a node removed since the last layout,
+# which a browser reaches often. Its frames wait for `requestAnimationFrame`,
+# so a click can land between a change to the page and the layout that
+# follows it, and crates.io's Blitz then panics on the removed node. Every
+# Blitz crate in the graph, so none comes from crates.io beside them.
+blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }

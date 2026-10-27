@@ -35,7 +35,9 @@ To build one, check out `v0.5.1`, the last release that built them all.
 - **The Homebrew `leaf` formula** stays at 0.5.1, leaf-tui. The task "Ship
   the Dioxus terminal editor as leaf" replaces it.
 - **The web demo** at <https://diaryx-org.github.io/leaf/> stays as the last
-  release deployed it. The task "A web demo drawn by the Dioxus editor".
+  release deployed it until the next tag, whose `pages.yml` deploys
+  `apps/leaf-dioxus-web` there instead. The task "A web demo drawn by the
+  Dioxus editor".
 - **`@diaryx/leaf` on npm** stays at 0.1.18.
 - **SwiftPM.** The repository root has no `Package.swift` from this commit
   on, so a version range that resolves to a later tag fails. A pin to an
