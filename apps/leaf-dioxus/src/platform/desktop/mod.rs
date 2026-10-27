@@ -365,23 +365,48 @@ pub mod defaults {
 
 /// The system clipboard, with the HTML flavour beside the text, as the
 /// editor publishes both.
+///
+/// One clipboard for the life of the app: on X11 the copied text is served
+/// by the app that owns the selection, and dropping the last
+/// `arboard::Clipboard` gives that up — with no clipboard manager to take
+/// it, what was copied (or cut, and so gone from the document) would be
+/// gone. [`clipboard::release`] hands it over at quit.
 pub mod clipboard {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static BOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
+    }
+
+    /// `f` with the app's clipboard, made the first time it is asked for.
+    fn with<R>(f: impl FnOnce(&mut arboard::Clipboard) -> R) -> Result<R, String> {
+        BOARD.with_borrow_mut(|b| {
+            if b.is_none() {
+                *b = Some(arboard::Clipboard::new().map_err(|e| e.to_string())?);
+            }
+            Ok(f(b.as_mut().expect("made above")))
+        })
+    }
+
     pub fn write(text: &str, html: Option<&str>) -> Result<(), String> {
-        let mut board = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-        match html {
+        with(|board| match html {
             Some(html) => board.set_html(html, Some(text)),
             None => board.set_text(text),
-        }
+        })?
         .map_err(|e| e.to_string())
     }
 
     pub fn read() -> leaf_dioxus::Clipboard {
-        let Ok(mut board) = arboard::Clipboard::new() else {
-            return leaf_dioxus::Clipboard::default();
-        };
-        leaf_dioxus::Clipboard {
+        with(|board| leaf_dioxus::Clipboard {
             text: board.get_text().ok(),
             html: board.get().html().ok(),
-        }
+        })
+        .unwrap_or_default()
+    }
+
+    /// The app is quitting: give what was copied to a clipboard manager,
+    /// where there is one, before the selection's owner goes.
+    pub fn release() {
+        BOARD.with_borrow_mut(|b| drop(b.take()));
     }
 }

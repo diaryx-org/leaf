@@ -436,17 +436,30 @@ impl Page {
     }
 
     /// The source for the platform to write, and the document clean as of
-    /// it; `None` if the editor has it borrowed this instant.
+    /// it; `None` if the editor has it borrowed this instant. For a platform
+    /// whose write cannot fail after this (the Mac's document system, which
+    /// keeps the change count itself).
     pub fn source_to_save(&self) -> Option<String> {
-        let source = self.with_doc(|d| {
-            d.dirty = false;
-            d.source.clone()
-        })?;
+        let source = self.source()?;
+        self.saved();
+        Some(source)
+    }
+
+    /// The source as it stands, still unsaved: for a platform that marks it
+    /// saved ([`Page::saved`]) only once its write has landed.
+    pub fn source(&self) -> Option<String> {
+        self.with_doc(|d| d.source.clone())
+    }
+
+    /// The source just read was written: the document is clean as of it.
+    /// If the editor has it borrowed this instant, it stays dirty, which
+    /// only costs a needless question at close.
+    pub fn saved(&self) {
+        self.with_doc(|d| d.dirty = false);
         if let Some(s) = self.shell() {
             s.stale.set(true);
         }
         app::post(AppEvent::Refresh(self.window.id()));
-        Some(source)
     }
 
     /// Redraw: the status line says what changed outside the editor.

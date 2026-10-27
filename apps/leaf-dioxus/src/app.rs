@@ -356,6 +356,7 @@ impl App {
             AppEvent::Close(id) => {
                 self.close(id);
                 if platform::QUITS_WITH_LAST_WINDOW && !pages().iter().any(|p| !p.is_settings()) {
+                    platform::clipboard::release();
                     event_loop.exit();
                 }
             }

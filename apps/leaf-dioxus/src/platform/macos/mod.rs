@@ -428,6 +428,9 @@ pub mod clipboard {
         }
     }
 
+    /// The pasteboard keeps what was copied after the app quits.
+    pub fn release() {}
+
     pub fn read() -> leaf_dioxus::Clipboard {
         let board = NSPasteboard::generalPasteboard();
         let get = |ty| board.stringForType(ty).map(|s| s.to_string());

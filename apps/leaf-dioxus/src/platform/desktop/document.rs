@@ -223,16 +223,19 @@ impl Document {
         }
     }
 
-    /// Write the page's source to `path`: whether it got there.
+    /// Write the page's source to `path`: whether it got there. The
+    /// document is marked saved only once the write has landed, so a failed
+    /// save leaves it dirty and Close still asks.
     fn write(&self, path: &Path) -> bool {
         let Some(page) = self.page().and_then(app::page) else {
             return false;
         };
-        let Some(source) = page.source_to_save() else {
+        let Some(source) = page.source() else {
             return false;
         };
-        match std::fs::write(path, source) {
+        match replace_file(path, source.as_bytes()) {
             Ok(()) => {
+                page.saved();
                 self.edited.set(false);
                 self.retitle();
                 true
@@ -248,7 +251,7 @@ impl Document {
     /// not been saved would be lost.
     pub fn ask_to_close(&self, page: &Page) {
         let id = page.window.id();
-        let dirty = page.with_doc(|d| d.dirty).unwrap_or(true);
+        let dirty = self.edited.get() || page.with_doc(|d| d.dirty).unwrap_or(true);
         if !dirty {
             app::post(AppEvent::Close(id));
             return;
@@ -276,9 +279,93 @@ impl Document {
     }
 }
 
+/// Put `bytes` at `path` whole or not at all: written to a file beside it,
+/// then renamed over it, so a write that fails partway (a full disk) leaves
+/// the last saved file as it was. A file already there keeps its
+/// permissions, and a symbolic link is followed, so the file it names is the
+/// one replaced and the link stays a link.
+fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let dir = target
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temp = dir.join(format!(".{name}.leaf-save-{}", std::process::id()));
+    let written = (|| {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        if let Ok(meta) = std::fs::metadata(&target) {
+            std::fs::set_permissions(&temp, meta.permissions())?;
+        }
+        std::fs::rename(&temp, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("leaf-desktop-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_save_replaces_the_file_whole_and_leaves_nothing_beside_it() {
+        let dir = scratch("replace");
+        let path = dir.join("note.md");
+        std::fs::write(&path, "old\n").unwrap();
+        replace_file(&path, b"new\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(names, ["note.md"]);
+    }
+
+    #[test]
+    fn a_save_into_a_folder_that_is_not_there_fails() {
+        let dir = scratch("unwritable");
+        let path = dir.join("missing-folder").join("note.md");
+        assert!(replace_file(&path, b"new\n").is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_keeps_the_files_permissions_and_follows_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("perms");
+        let real = dir.join("real.md");
+        let link = dir.join("link.md");
+        std::fs::write(&real, "old\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        replace_file(&link, b"new\n").unwrap();
+        let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
+        let still_link = std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink();
+        let text = std::fs::read_to_string(&real).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(text, "new\n");
+        assert_eq!(mode, 0o600);
+        assert!(still_link);
+    }
 
     #[test]
     fn a_files_extension_names_its_format() {
