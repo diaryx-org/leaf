@@ -3417,6 +3417,7 @@ dependencies = [
  "anyrender",
  "anyrender_vello",
  "arboard",
+ "base64 0.22.1",
  "blitz-dom",
  "blitz-net",
  "blitz-paint",
@@ -4262,7 +4263,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -6659,7 +6660,7 @@ dependencies = [
 [[package]]
 name = "twig-export"
 version = "0.1.0"
-source = "git+https://github.com/diaryx-org/twig-export?branch=main#6a15bd1ab091ed4458712c4ccbaf10b7d19b87ae"
+source = "git+https://github.com/diaryx-org/twig-export?branch=main#7abc57cf9d0651969fc0ef659c54fc43013b31d1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6682,6 +6683,7 @@ dependencies = [
  "typst-kit",
  "typst-layout",
  "typst-pdf",
+ "typst-svg",
 ]
 
 [[package]]
