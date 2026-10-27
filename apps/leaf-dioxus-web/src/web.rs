@@ -9,27 +9,24 @@
 //!   editor measures with them through [`Type::faces`], and Blitz draws with
 //!   them through the collection [`font_context`] makes, and SVG text — a
 //!   diagram's labels — through usvg's database (`add_svg_fonts`).
-//! - **A clipboard.** arboard has no browser. Copy and Cut go to a clipboard
-//!   in the page, and the text to the system's as well; Paste reads the
-//!   page's, since reading the system's needs the `paste` event's data,
-//!   which winit's canvas does not let through.
-//!
-//! Keys reach the editor through winit's canvas, as on the Mac. The input
-//! method does not: winit's web backend has none, so a composition — an
-//! accent's dead key, a phone's keyboard, Japanese — does not reach the
-//! editor yet (README.md).
+//! - **The keyboard and the clipboard.** winit's web backend has no input
+//!   method and lets no `paste` through, and arboard has no browser; a text
+//!   field beside the caret holds the focus and hears all three
+//!   (`field.rs`).
 
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+use dioxus::core::{Runtime, current_scope_id};
 use dioxus::prelude::*;
 use dioxus_native::winit::event::WindowEvent;
 use dioxus_native::{Config, FontContext};
 use leaf_core::{Doc, Format};
-use leaf_dioxus::{Clipboard, Faces, Host, Look, Type, pressed, use_editor};
+use leaf_dioxus::{Clipboard, Faces, Host, InputArea, Look, Type, pressed, use_editor};
 use parley::fontique::{Collection, CollectionOptions, GenericFamily, SourceCache};
 use wasm_bindgen::prelude::*;
+
+use crate::field::Field;
 
 /// The faces the page brings, as `index.html` fetched them: Libertinus
 /// Serif for the body, in the book face's four styles, and DejaVu Sans Mono
@@ -116,30 +113,37 @@ fn look() -> Look {
     }
 }
 
-/// The page's [`Host`]: a clipboard of its own, and links opened in a new
-/// tab. The rest are the defaults: Save, Save As and the settings have
-/// nowhere to go yet.
-#[derive(Default)]
+/// The page's [`Host`]: the text field that brings the keyboard and the
+/// clipboard (`field.rs`), and links opened in a new tab. The rest are the
+/// defaults: Save, Save As and the settings have nowhere to go yet.
 struct Page {
-    board: RefCell<Clipboard>,
+    field: Rc<Field>,
 }
 
 impl Host for Page {
     fn write_clipboard(&self, text: &str, html: Option<&str>) -> Result<(), String> {
-        *self.board.borrow_mut() = Clipboard {
+        *self.field.board.borrow_mut() = Clipboard {
             text: Some(text.into()),
             html: html.map(Into::into),
         };
-        // The system's too, as text, for a paste outside the page. The
-        // promise settles later, and a refusal leaves the page's copy.
-        if let Some(window) = web_sys::window() {
+        // The system's too, as text, for a paste outside the page — unless
+        // this is the browser's own `copy` or `cut`, which carries both
+        // flavours, and which a later write of the text alone would undo.
+        // The promise settles later, and a refusal leaves the page's copy.
+        if !self.field.in_clipboard_event()
+            && let Some(window) = web_sys::window()
+        {
             let _ = window.navigator().clipboard().write_text(text);
         }
         Ok(())
     }
 
     fn read_clipboard(&self) -> Clipboard {
-        self.board.borrow().clone()
+        self.field.board.borrow().clone()
+    }
+
+    fn input_area(&self, area: &InputArea) {
+        self.field.place(area);
     }
 
     /// A web address, in a new tab. Anything else names a file beside the
@@ -156,11 +160,19 @@ impl Host for Page {
 
 #[allow(non_snake_case)]
 fn App() -> Element {
+    let field = use_hook(Field::new);
     let ed = use_editor(
         || Doc::from_source(DEMO.into(), Format::Markdown).expect("the demo document"),
         look,
-        || Rc::new(Page::default()) as Rc<dyn Host>,
+        {
+            let field = field.clone();
+            move || Rc::new(Page { field }) as Rc<dyn Host>
+        },
     );
+    use_hook({
+        let ed = ed.clone();
+        move || field.listen(ed, Runtime::current(), current_scope_id())
+    });
     let mut mods = Default::default();
     dioxus_native::use_window_event({
         let ed = ed.clone();

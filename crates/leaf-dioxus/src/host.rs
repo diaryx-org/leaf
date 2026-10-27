@@ -52,6 +52,31 @@ pub enum Request {
     Settings,
 }
 
+/// Where the caret is, for a host whose input method does not come through
+/// winit — a browser's, through a text field the host keeps beside the caret
+/// — in CSS pixels from the window's top left, and the text around it as
+/// the input method sees it: the caret's source line, with the caret and the
+/// selection's anchor as byte offsets into it, and where the line starts in
+/// the source. `None` while a composition is open, for the reason winit's
+/// input method gets none then (`ime.rs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputArea {
+    pub x: f64,
+    pub y: f64,
+    pub height: f64,
+    pub around: Option<Around>,
+}
+
+/// The text around the caret: see [`InputArea`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Around {
+    pub text: String,
+    /// Where `text` starts in the source.
+    pub start: usize,
+    pub caret: usize,
+    pub anchor: usize,
+}
+
 /// The editor's host. See the module's doc for what each default does.
 ///
 /// The methods that take an [`Editor`] are called with nothing of the
@@ -72,6 +97,13 @@ pub trait Host {
     /// What the clipboard holds.
     fn read_clipboard(&self) -> Clipboard {
         system::read()
+    }
+
+    /// The caret moved, or the text around it changed: what the editor tells
+    /// winit's input method, for a host that brings its own. Called while
+    /// nothing of the editor's is borrowed, but must not call back into it.
+    fn input_area(&self, area: &InputArea) {
+        let _ = area;
     }
 
     /// ⌃⌘Space: open the system's emoji and symbols picker. Its choice comes

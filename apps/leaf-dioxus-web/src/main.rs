@@ -6,6 +6,8 @@
 //! There is nothing to build off the web.
 
 #[cfg(target_arch = "wasm32")]
+mod field;
+#[cfg(target_arch = "wasm32")]
 mod web;
 
 fn main() {}

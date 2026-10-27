@@ -16,6 +16,7 @@ use dioxus_native::winit::window::{
 
 use crate::editor::Editor;
 use crate::find::{Focus, Outcome};
+use crate::host::{Around, InputArea};
 use crate::input::{Action, FindCommand, TableCommand, apply_key, apply_table};
 use crate::trace::trace;
 use crate::viewport::LINE;
@@ -26,11 +27,18 @@ impl Editor {
     /// or replayed by a menu item; then the input method told where the caret
     /// went.
     pub fn key(&self, key: Key, code: Code, mods: Modifiers) {
-        self.press(key, code, mods);
-        self.ime_area();
+        self.key_taken(key, code, mods);
     }
 
-    fn press(&self, key: Key, code: Code, mods: Modifiers) {
+    /// [`Self::key`], answering whether the key was one of the editor's — a
+    /// browser host lets the page have the rest (⌘R, ⌘L, F5).
+    pub fn key_taken(&self, key: Key, code: Code, mods: Modifiers) -> bool {
+        let taken = self.press(key, code, mods);
+        self.ime_area();
+        taken
+    }
+
+    fn press(&self, key: Key, code: Code, mods: Modifiers) -> bool {
         let st = &*self.st;
         st.composer.borrow_mut().settle(&mut st.doc.borrow_mut());
         // Typing goes to the find bar while it has focus; a key it does not
@@ -41,7 +49,7 @@ impl Editor {
             if o != Outcome::Ignored {
                 trace(|| format!("find key {key:?} -> {o:?}"));
                 self.run_find(o);
-                return;
+                return true;
             }
         }
         let action = apply_key(&mut st.doc.borrow_mut(), &key, code, mods);
@@ -53,17 +61,17 @@ impl Editor {
             st.goal.set(None);
         }
         let changed = match action {
-            Action::Ignored => return,
+            Action::Ignored => return false,
             Action::Handled => true,
             Action::Gesture(g) => host::run(&*st.host, &mut st.doc.borrow_mut(), g),
             // The host repaints, if what it did calls for it.
             Action::Request(r) => {
                 st.host.request(self, r);
-                return;
+                return true;
             }
             Action::CharacterPalette => {
                 st.host.character_palette();
-                return;
+                return true;
             }
             Action::Vertical { down, extend } => {
                 self.vertical(down, extend);
@@ -79,12 +87,13 @@ impl Editor {
             }
             Action::Find(cmd) => {
                 self.find_command(cmd);
-                return;
+                return true;
             }
         };
         if changed {
             self.refresh();
         }
+        true
     }
 
     /// ⌘F, ⌥⌘F, ⌘G, ⇧⌘G.
@@ -266,6 +275,18 @@ impl Editor {
             LogicalSize::new(2.0, l.height as f64).into(),
         );
         let around = ime::surrounding(&self.st.doc.borrow(), &self.st.composer.borrow());
+        let start = self.st.doc.borrow().caret;
+        self.st.host.input_area(&InputArea {
+            x: self.left() + x as f64,
+            y,
+            height: l.height as f64,
+            around: around.clone().map(|(text, caret, anchor)| Around {
+                text,
+                start: start - caret,
+                caret,
+                anchor,
+            }),
+        });
         if let Some(text) = around.and_then(|(t, c, a)| ImeSurroundingText::new(t, c, a).ok()) {
             data = data.with_surrounding_text(text);
         }

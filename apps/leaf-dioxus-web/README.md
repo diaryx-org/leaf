@@ -13,6 +13,10 @@ The page is `index.html`, `pkg/` and `fonts/`; serve all three. The first
 build installs `wasm-bindgen` and `wasm-split-cli`, at the versions the
 lockfile names, into the app's `target/tools`.
 
+`cargo xtask web --quick` builds one module, without the fat LTO and the
+split, in about a minute rather than five: for trying a change, not for
+serving.
+
 ## Size
 
 The main wasm is 17.5 MB, 4.5 MB with brotli (`brotli -q 11`); the fonts
@@ -54,7 +58,9 @@ Mac.
 
 What the canvas costs is what the browser does for a text field and does not
 do for a canvas: its input method, its accessibility tree, its find, and the
-clipboard's paste event. The list below says where each stands.
+clipboard's paste event. The page gets the first and the last back by
+keeping a text field of its own beside the caret (`field.rs`); the list
+below says where the rest stand.
 
 ## What works
 
@@ -62,7 +68,15 @@ Tried in Chrome on a Mac, through WebGPU:
 
 - Typing and Return, and the key chords: ⌘ on a Mac, iPhone or iPad, Ctrl
   elsewhere, read from the browser (`input.rs`). ⌘B, ⌘I, ⌘Z, ⌘C and ⌘V
-  tried.
+  tried. A chord the editor does not take (⌘R, ⌘L) is the browser's.
+- The input method, through a hidden text field that keeps the focus and
+  follows the caret (`field.rs`): its keys, its `beforeinput` and its
+  composition events become the editor's keys and winit's `Ime` events. A
+  dead key, a composition (Japanese, tried through Chrome's DevTools
+  protocol), an autocorrection that replaces the word behind the caret, and
+  a phone keyboard's deletes and undo, which arrive as `beforeinput` alone.
+  The field holds the caret's source line with the selection over it, for a
+  keyboard's suggestions to read.
 - The mouse: a click places the caret, a double-click selects a word; the
   wheel scrolls.
 - Headings, lists, quotes, tables, code with highlighting, footnotes,
@@ -71,24 +85,21 @@ Tried in Chrome on a Mac, through WebGPU:
   Serif for the body and DejaVu Sans Mono for code. A browser shows no system
   fonts to Blitz, so the same files go to parley, to Blitz's font collection
   and to SVG text (`blitz_dom::add_svg_fonts`, on the Blitz fork's `leaf`).
-- Copy and Paste within the page, through a clipboard of its own. Copy and
-  Cut write the text to the system's clipboard too, though that is not
-  checked yet.
+- The clipboard, through the field's `copy`, `cut` and `paste` events,
+  which carry both flavours without asking permission: a copy puts the
+  source and its HTML on the system's clipboard, and a paste from another
+  page or app brings its HTML in as formatting (⇧⌘V, its text alone).
 
 Not tried yet: the dark appearance, Safari, Firefox, a phone or tablet,
 and a document long enough to test how fast it scrolls.
 
 ## What does not work yet
 
-- **The input method.** winit's web backend has none, so a dead key (⌥E then
-  E), a phone's keyboard, dictation and every CJK input method reach the
-  editor as nothing. The fix is a hidden `<textarea>` that follows the caret
-  and turns its `beforeinput` and composition events into the editor's
-  `Ime` events (`ime.rs` already takes them); the archived web editor
-  (`archive/packages/leaf-web/src/editor.js`) shows how those events behave.
-- **Paste from outside the page.** winit's canvas cancels the key's default
-  action, so the browser never fires `paste`, and reading the system
-  clipboard otherwise needs a permission prompt.
+- **A real phone's keyboard, dictation, and Safari's and Firefox's input
+  methods**: the field's events are the standard ones, but only Chrome's
+  have been tried. A keyboard that moves the caret itself (iOS's spacebar
+  trackpad) moves the field's, which the document follows only at the next
+  input.
 - **WebGL.** Only WebGPU draws; where a browser has no WebGPU adapter, the
   page says so. Three things stand between the hybrid renderer and WebGL 2:
   wgpu takes WebGPU whenever `navigator.gpu` exists, even with no adapter
@@ -103,4 +114,7 @@ and a document long enough to test how fast it scrolls.
   memory has none, so a picture draws as a chip with its alt text.
 - **Saving and opening.** ⌘S and ⌘O do nothing: the page has nowhere to keep
   a document yet.
-- **Colour emoji.** The bundled faces have none.
+- **Colour emoji, and scripts the bundled faces lack.** Libertinus and
+  DejaVu cover Latin, Greek and Cyrillic; Chinese, Japanese, Korean and
+  emoji draw as boxes. A browser shows Blitz no system font, so each would
+  be a face the page fetches.
