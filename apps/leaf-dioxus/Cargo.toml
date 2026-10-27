@@ -82,11 +82,14 @@ blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = 
 skrifa = "0.44"
 # The font `Editor::font_at` answers with, for Look Up.
 parley = "=0.12.0"
-# Export as PDF and Print (`pdf.rs`): the document set by Typst, as every
-# paged format Diaryx writes is. `pdf` without `network`: a document's Typst
-# never reaches Typst Universe from the app. It brings diaryx-org's Typst
-# fork; a Typst crate named here must name the same source.
-twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "main", default-features = false, features = ["pdf"] }
+# Export as PDF, Print and the PDF preview (`pdf.rs`): the document set by
+# Typst, as every paged format Diaryx writes is. `pdf` without `network`: a
+# document's Typst never reaches Typst Universe from the app. `svg`: the
+# preview's pages. It brings diaryx-org's Typst fork; a Typst crate named
+# here must name the same source.
+twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "main", default-features = false, features = ["pdf", "svg"] }
+# The preview's pages, as `data:` URLs for Blitz to draw (`preview.rs`).
+base64 = "0.22"
 # Blitz's network provider and the editor's timers run on tokio.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
 raw-window-handle = "0.6"

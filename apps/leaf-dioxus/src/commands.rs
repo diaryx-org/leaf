@@ -53,6 +53,8 @@ pub enum Command {
     PreserveBreaks,
     Zoom(ZoomCommand),
     ExportPdf,
+    /// Show or hide the PDF preview beside the editor.
+    PdfPreview,
     /// Save, Save As and Close: on the Mac, the document system's own menu
     /// items; elsewhere, the app's.
     Save,
@@ -112,6 +114,7 @@ impl Command {
             Command::Chord(_, code, mods) => Some((*code, *mods)),
             Command::Link => Some((Code::KeyK, CMD)),
             Command::ExportPdf => Some((Code::KeyE, CMD | SHIFT)),
+            Command::PdfPreview => Some((Code::KeyP, CMD | ALT)),
             Command::CheckDocument => Some((Code::Semicolon, CMD)),
             Command::Zoom(ZoomCommand::In) => Some((Code::Equal, CMD)),
             Command::Zoom(ZoomCommand::Out) => Some((Code::Minus, CMD)),
@@ -205,6 +208,7 @@ pub fn status(c: &Command, chrome: Option<&Chrome>, app: &AppState) -> Status {
         Command::PreserveBreaks => Status::tick(chrome.preserve_breaks),
         Command::OpenLink | Command::CopyLink => enabled(chrome.link),
         Command::CheckDocument => enabled(rich),
+        Command::PdfPreview => Status::tick(chrome.preview),
         _ => Status::ON,
     }
 }

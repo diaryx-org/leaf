@@ -78,12 +78,7 @@ pub fn export(page: &Page) {
                 let Some(page) = crate::app::page(id) else {
                     return;
                 };
-                let (w, h) = crate::app::settings().paper.size();
-                let paper = Paper {
-                    width: w,
-                    height: h,
-                    margin: 72.0,
-                };
+                let paper = Paper::of(&crate::app::settings());
                 match crate::pdf::of_page(&page, paper) {
                     Ok(bytes) => {
                         if let Err(e) = std::fs::write(&path, bytes) {

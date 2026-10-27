@@ -19,7 +19,8 @@
 //!   for one window, done for as many as there are documents open.
 //! - [`menus`]: every menu, as data; [`commands`]: what each item does, and
 //!   whether it can.
-//! - [`pdf`]: Export as PDF and Print, set by twig-export.
+//! - [`pdf`]: Export as PDF and Print, set by twig-export; [`preview`]: the
+//!   same pages beside the editor, as it is edited.
 //!
 //! `LEAF_TRACE=1` logs keys, pointer events and repaint timings to stderr;
 //! `LEAF_OUTLINE=1` outlines every visual line and run.
@@ -47,6 +48,7 @@ mod page;
 mod pdf;
 mod platform;
 mod prefs;
+mod preview;
 mod renderer;
 mod settings;
 #[cfg(test)]

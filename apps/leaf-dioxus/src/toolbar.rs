@@ -2,7 +2,7 @@
 //! app on an iPad and Diaryx show (LeafToolbar, in `packages/leaf-swift`),
 //! in its order, then the display controls.
 //!
-//! Style ▾ · **B** *I* U · Format ▾ · Lists ▾ · Insert ▾ · Undo Redo … Source · Aa ▾
+//! Style ▾ · **B** *I* U · Format ▾ · Lists ▾ · Insert ▾ · Undo Redo … Source · PDF · Aa ▾
 //!
 //! Each tool is a unit button, which assistive tech reads and presses, and
 //! which leaves the keys with the editor when pressed. A tool that is a key
@@ -21,7 +21,7 @@ use leaf_dioxus::Editor;
 use unit::{Button, MenuButton, ToggleButton};
 
 use crate::app::{self, AppEvent};
-use crate::commands::{CMD, SHIFT};
+use crate::commands::{CMD, Command, SHIFT};
 use crate::menus::{self, Node};
 use crate::page::{Chrome, DocInit, TOOLBAR, chrome_height};
 
@@ -179,6 +179,11 @@ fn Toolbar(props: ToolbarProps) -> Element {
                 {icon(REDO, "Redo", c.can_redo, "z", Code::KeyZ, CMD | SHIFT)}
                 span { class: "grow" }
                 {chord("</>", "Source", "", c.source_view, true, "e", Code::KeyE, CMD)}
+                ToggleButton { class: "tool", label: "PDF Preview", pressed: c.preview,
+                    refuses_keys: true,
+                    onchange: move |_| app::post(AppEvent::Command(id, Command::PdfPreview)),
+                    "PDF"
+                }
                 {popup("Aa".into(), "Display", menus::display())}
             }
         }

@@ -1,5 +1,5 @@
-//! The document as a PDF, set by twig-export: what Export as PDF writes and
-//! Print prints.
+//! The document as a PDF, set by twig-export: what Export as PDF writes,
+//! Print prints, and the preview shows (`preview.rs`).
 //!
 //! twig-export lays the document out with Typst, the typesetter Diaryx sets
 //! every paged format with, so the PDF leaf writes is the one the CLI and
@@ -9,11 +9,17 @@
 //! the editor's: lines and pages break where Typst breaks them, and what
 //! twig-export does not draw yet (math, highlights, the presentation CSS in
 //! `style`) is not on it. See docs/proposals/what-you-see-is-what-twig-export-sets.md.
+//!
+//! One [`Typesetter`] sets every document, for the life of the app: it reads
+//! the system's fonts when it is first asked, which is most of the time a
+//! short document takes, and not again.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 use leaf_core::Format;
 use twig_export::config::Config;
+use twig_export::pdf::Typesetter;
 
 /// A sheet and its margin, in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -21,6 +27,19 @@ pub struct Paper {
     pub width: f32,
     pub height: f32,
     pub margin: f32,
+}
+
+impl Paper {
+    /// The paper the display choices name, at an inch's margin: what Export
+    /// as PDF writes on, and the preview shows.
+    pub fn of(settings: &crate::settings::Settings) -> Paper {
+        let (width, height) = settings.paper.size();
+        Paper {
+            width,
+            height,
+            margin: 72.0,
+        }
+    }
 }
 
 /// The display choices a PDF follows: the body face, by its family name,
@@ -51,15 +70,46 @@ pub fn render(
     ty: &Type,
     paper: Paper,
 ) -> Result<Vec<u8>, String> {
+    let typst = typst(source, format, ty, paper)?;
+    typesetter()
+        .pdf(&typst, root(path))
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// The same document as [`render`] sets, each page an SVG the size of the
+/// PDF's page, in points: what the preview draws.
+pub fn pages(
+    source: &str,
+    format: Format,
+    path: Option<&Path>,
+    ty: &Type,
+    paper: Paper,
+) -> Result<Vec<String>, String> {
+    let typst = typst(source, format, ty, paper)?;
+    typesetter()
+        .svg(&typst, root(path))
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// The app's typesetter, made by the first document set.
+fn typesetter() -> &'static Typesetter {
+    static TYPESETTER: OnceLock<Typesetter> = OnceLock::new();
+    TYPESETTER.get_or_init(Typesetter::new)
+}
+
+/// The document as twig-export writes it in Typst.
+fn typst(source: &str, format: Format, ty: &Type, paper: Paper) -> Result<String, String> {
     let tree = leaf_core::parse_tree(source, format).map_err(|e| e.to_string())?;
-    let typst = twig_export::render_parsed(tree, source, &config(ty, paper))
+    Ok(twig_export::render_parsed(tree, source, &config(ty, paper))
         .map_err(|e| format!("{e:#}"))?
-        .typst;
-    let root = path
-        .and_then(Path::parent)
+        .typst)
+}
+
+/// The folder a document at `path` finds its pictures in.
+fn root(path: Option<&Path>) -> &Path {
+    path.and_then(Path::parent)
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    twig_export::pdf::compile_in(&typst, root).map_err(|e| format!("{e:#}"))
+        .unwrap_or(Path::new("."))
 }
 
 /// The document in `page`, in the display choices, on `paper`, as a PDF;

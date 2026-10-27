@@ -9,6 +9,9 @@
 //! the platform's title bar is transparent over the page, the toolbar's
 //! band runs up behind it (`platform::TITLE_BAR`).
 //!
+//! With the PDF preview shown, the editor has the window's left half and
+//! the pages its right (`preview.rs`).
+//!
 //! What the menus and the toolbar show — the marks in force, the heading,
 //! whether there is anything to undo — is the [`Chrome`], read off the
 //! document after every turn that repainted it.
@@ -29,6 +32,7 @@ use unit::{Keys, Theme, Unit, UnitRoot, use_unit};
 use crate::app::{self, AppEvent};
 use crate::commands::Command;
 use crate::platform;
+use crate::preview::{self, Preview, Sheets};
 use crate::shell::Shell;
 
 /// The toolbar's row, under the title bar's band.
@@ -61,6 +65,8 @@ pub struct Chrome {
     pub link: bool,
     pub mark_color: Option<MarkColor>,
     pub preserve_breaks: bool,
+    /// The PDF preview is shown: the page's, not the document's.
+    pub preview: bool,
 }
 
 impl Chrome {
@@ -82,6 +88,7 @@ impl Chrome {
             link: d.link_destination_at_caret().is_some(),
             mark_color: d.mark_color_at_caret(),
             preserve_breaks: d.line_flow() == LineFlow::Preserve,
+            preview: false,
         }
     }
 }
@@ -93,6 +100,7 @@ pub struct Made {
     pub unit: Rc<Cell<Option<Unit>>>,
     pub editor: Rc<RefCell<Option<Editor>>>,
     pub chrome: Rc<Cell<Option<Signal<Chrome>>>>,
+    pub sheets: Rc<Cell<Option<Signal<Sheets>>>>,
 }
 
 /// What a document's page is made with.
@@ -119,6 +127,7 @@ impl DocInit {
 pub fn DocumentPage() -> Element {
     let init = use_context::<DocInit>();
     let chrome = use_signal(Chrome::default);
+    let sheets = use_signal(Sheets::default);
     let ed = use_shared_editor(
         || init.doc.clone(),
         || init.shell.look(),
@@ -127,6 +136,7 @@ pub fn DocumentPage() -> Element {
     use_hook(|| {
         *init.made.editor.borrow_mut() = Some(ed.clone());
         init.made.chrome.set(Some(chrome));
+        init.made.sheets.set(Some(sheets));
     });
     let appearance = app::settings().appearance;
     rsx! {
@@ -135,6 +145,8 @@ pub fn DocumentPage() -> Element {
             {ed.render()}
             style { {themed(crate::toolbar::CSS, appearance)} }
             {crate::toolbar::render(&ed, &chrome.read())}
+            style { {themed(preview::CSS, appearance)} }
+            preview::Pane { sheets }
         }
     }
 }
@@ -202,6 +214,8 @@ pub struct Page {
     composing: Cell<bool>,
     /// Where the pointer last was, in the page's CSS pixels.
     pointer: Cell<Option<(f64, f64)>>,
+    /// The PDF preview beside a document's editor.
+    pub preview: Preview,
 }
 
 impl Page {
@@ -214,6 +228,7 @@ impl Page {
             reported: Cell::new(0),
             composing: Cell::new(false),
             pointer: Cell::new(None),
+            preview: Preview::default(),
         }
     }
 
@@ -267,6 +282,14 @@ impl Page {
         let ed = self.editor()?;
         let shell = self.shell()?.clone();
         Some(self.in_scope(|| f(&ed, &shell)))
+    }
+
+    /// Change what the PDF preview draws, inside the page's runtime; not
+    /// without a document's page.
+    pub fn with_sheets(&self, f: impl FnOnce(Signal<Sheets>)) {
+        if let Some(sheets) = self.init().and_then(|i| i.made.sheets.get()) {
+            self.in_scope(|| f(sheets));
+        }
     }
 
     /// Read or change the document; `None` without one, or while the
@@ -392,19 +415,20 @@ impl Page {
         (size.width as f64 / s, size.height as f64 / s)
     }
 
-    /// Put the editor's box below the toolbar, the window's width, and tell
-    /// the overlay the page's size.
+    /// Put the editor's box below the toolbar, the window's width less the
+    /// PDF preview's, and tell the overlay the page's size.
     pub fn place(&self) {
         let (w, h) = self.size();
         if let Some(unit) = self.unit() {
             self.in_scope(|| unit.set_viewport(w, h));
         }
         let top = chrome_height();
+        let pane = preview::place(self, w);
         self.with_editor(|ed, _| {
             ed.set_bounds(Some(Bounds {
                 left: 0.0,
                 top,
-                width: w,
+                width: w - pane,
                 height: (h - top).max(0.0),
             }))
         });
@@ -417,10 +441,12 @@ impl Page {
         if !init.shell.stale.replace(false) {
             return;
         }
-        let Some(chrome) = self.with_doc(Chrome::of) else {
+        let Some(mut chrome) = self.with_doc(Chrome::of) else {
             init.shell.stale.set(true);
             return;
         };
+        chrome.preview = self.preview.shown();
+        preview::update(self);
         if chrome.dirty && chrome.revision != self.reported.get() {
             self.reported.set(chrome.revision);
             init.shell.document.edited();
@@ -493,6 +519,7 @@ impl Page {
         };
         self.window.set_theme(theme);
         self.with_editor(|ed, shell| ed.set_look(shell.look()));
+        preview::update(self);
         app::poll(self.window.id());
     }
 
@@ -521,6 +548,7 @@ impl Page {
         match c {
             Command::Link => crate::context::prompt_link(self),
             Command::ExportPdf => platform::print::export(self),
+            Command::PdfPreview => preview::toggle(self),
             Command::Save => {
                 if let Some(s) = self.shell() {
                     s.document.save();

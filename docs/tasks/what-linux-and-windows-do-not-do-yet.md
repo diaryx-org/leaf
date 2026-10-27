@@ -30,6 +30,9 @@ file API, as the terminal editor does, so a save is written beside the file
 and renamed over it, undoing back to what was saved clears the title's `*`,
 a window coming forward takes what another program wrote to a clean
 document (and warns a dirty one), and Save over such a change asks first.
+File ▸ PDF Preview (Ctrl+Alt+P, or the toolbar's PDF) shows the pages
+Export as PDF writes beside the editor, set again as it is edited
+(`preview.rs`); tried on Linux, not yet on the Mac or Windows.
 
 **What.** The desktop app off the Mac was gpui's,
 `archive/apps/leaf` over `archive/crates/leaf-gpui`. What it did that the
