@@ -16,7 +16,7 @@ use dioxus_native::winit::window::{
 
 use crate::editor::Editor;
 use crate::find::{Focus, Outcome};
-use crate::host::{Around, InputArea};
+use crate::host::InputArea;
 use crate::input::{Action, FindCommand, TableCommand, apply_key, apply_table};
 use crate::trace::trace;
 use crate::viewport::LINE;
@@ -275,17 +275,11 @@ impl Editor {
             LogicalSize::new(2.0, l.height as f64).into(),
         );
         let around = ime::surrounding(&self.st.doc.borrow(), &self.st.composer.borrow());
-        let start = self.st.doc.borrow().caret;
         self.st.host.input_area(&InputArea {
             x: self.left() + x as f64,
             y,
             height: l.height as f64,
-            around: around.clone().map(|(text, caret, anchor)| Around {
-                text,
-                start: start - caret,
-                caret,
-                anchor,
-            }),
+            around: self.shown_around(),
         });
         if let Some(text) = around.and_then(|(t, c, a)| ImeSurroundingText::new(t, c, a).ok()) {
             data = data.with_surrounding_text(text);

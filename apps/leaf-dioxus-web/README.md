@@ -76,8 +76,9 @@ Tried in Chrome on a Mac, through WebGPU:
   dead key, a composition (Japanese, tried through Chrome's DevTools
   protocol), an autocorrection that replaces the word behind the caret, and
   a phone keyboard's deletes and undo, which arrive as `beforeinput` alone.
-  The field holds the caret's source line with the selection over it, for a
-  keyboard's suggestions to read.
+  The field holds the document's text as shown — the words without their
+  markup — forty lines either side of the caret, with the selection over
+  it, for a keyboard's suggestions to read.
 - The mouse: a click places the caret, a double-click selects a word; the
   wheel scrolls.
 - Headings, lists, quotes, tables, code with highlighting, footnotes,
@@ -108,7 +109,10 @@ Tried in Chrome on a Mac, through WebGPU:
   pickers tried in Chrome through stand-ins, since a headless browser shows
   none.
 
-Not tried yet: the dark appearance, Safari, Firefox, a phone or tablet,
+- The dark appearance, following the system's as it changes
+  (`prefers-color-scheme`, which winit reports as the window's theme).
+
+Not tried yet: Safari, Firefox, a phone or tablet,
 and a document long enough to test how fast it scrolls.
 
 ## What does not work yet
@@ -126,8 +130,12 @@ and a document long enough to test how fast it scrolls.
   `Bgra8Unorm` surface off Android, which wgpu's WebGL backend does not
   offer. The last is a change to the vendored renderer in the Blitz fork's
   `patches/`.
-- **Accessibility.** AccessKit has no web adapter, so a screen reader finds
-  an empty canvas.
+- **Accessibility, beyond the text.** AccessKit has no web adapter, so the
+  document's structure (headings, lists, links) reaches a screen reader
+  as nothing more than its text: what it reads is the field, which holds
+  the text as shown around the caret and moves its selection with the
+  caret, as the Mac's text area does through AccessKit (`access.rs`). Not
+  yet tried with a screen reader.
 - **A picture on another site that does not allow CORS.** A canvas can show
   only what the page may read, so such a picture is the editor's chip with
   its alt text.

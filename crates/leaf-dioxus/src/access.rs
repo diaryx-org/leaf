@@ -201,6 +201,14 @@ impl Text {
         }
     }
 
+    /// The byte of [`value`](Self::value) that (line, character) is at.
+    pub(crate) fn byte_of(&self, line: usize, ch: usize) -> usize {
+        let line = line.min(self.lines.len() - 1);
+        let start: usize = self.lines[..line].iter().map(|l| l.text.len() + 1).sum();
+        let l = &self.lines[line];
+        start + l.chars.get(ch).map_or(l.text.len(), |c| c.0)
+    }
+
     /// The (line, character) at byte `at` of [`value`](Self::value): the
     /// character that starts at or after it.
     pub(crate) fn locate(&self, at: usize) -> (usize, usize) {
@@ -496,7 +504,63 @@ pub fn is_text_run(id: NodeId) -> bool {
     id.0 >= RUN_IDS
 }
 
+/// How many lines either side of the caret's [`Editor::shown_around`]
+/// gives: enough to read on from the caret, few enough to hand over at
+/// every key.
+const AROUND: usize = 40;
+
 impl Editor {
+    /// The text as shown around the caret, for a host whose text field
+    /// stands in for the document (a browser's, `InputArea`): the caret's
+    /// line and [`AROUND`] either side, with the caret and the selection's
+    /// anchor in it (the anchor kept inside it), and where it starts in the
+    /// whole text as shown — the offsets [`select_shown`](Self::select_shown)
+    /// takes. `None` while a composition is open, whose marked text the field
+    /// holds itself.
+    pub(crate) fn shown_around(&self) -> Option<crate::host::Around> {
+        if self.st.composer.borrow().marked().is_some() {
+            return None;
+        }
+        let doc = self.st.doc.borrow();
+        let text = Text::of(&doc);
+        let (cl, cc) = text.position(&doc, doc.caret);
+        let (al, ac) = text.position(&doc, doc.anchor.unwrap_or(doc.caret));
+        let first = cl.saturating_sub(AROUND);
+        let last = (cl + AROUND).min(text.lines.len() - 1);
+        let (al, ac) = match al {
+            l if l < first => (first, 0),
+            l if l > last => (last, text.lines[last].len()),
+            _ => (al, ac),
+        };
+        let start = text.byte_of(first, 0);
+        let end = text.byte_of(last, text.lines[last].len());
+        let value = text.value();
+        Some(crate::host::Around {
+            text: value[start..end].to_owned(),
+            start,
+            caret: text.byte_of(cl, cc) - start,
+            anchor: text.byte_of(al, ac) - start,
+        })
+    }
+
+    /// Select from byte `from` to byte `to` of the text as shown — the
+    /// offsets [`InputArea`](crate::InputArea)'s text is at, from its start —
+    /// as the source it shows: what a browser's text field selected before
+    /// an input, such as the word an autocorrection replaces.
+    pub fn select_shown(&self, from: usize, to: usize) {
+        let mut doc = self.st.doc.borrow_mut();
+        let text = Text::of(&doc);
+        let (l0, c0) = text.locate(from.min(to));
+        let (l1, c1) = text.locate(from.max(to));
+        let start = text.offset(&doc, l0, c0);
+        let end = if to != from {
+            text.end(&doc, l1, c1)
+        } else {
+            start
+        };
+        doc.select_range(start, end);
+    }
+
     /// Make `node` — the editor's in the host's accessibility tree, the
     /// element [`TEXT_ID`] names — the document's text area, and answer its
     /// text runs, which the host puts in the tree in place of the nodes it
@@ -685,6 +749,24 @@ mod tests {
             node: run_id(node),
             character_index,
         }
+    }
+
+    #[test]
+    fn a_place_in_the_text_is_a_byte_of_its_value_and_back() {
+        let d = rendered("# Title\n\nSome **bold** é text.\n");
+        let t = Text::of(&d);
+        let value = t.value();
+        let at = value.find("bold").unwrap();
+        assert_eq!(t.locate(at), (1, 5));
+        assert_eq!(t.byte_of(1, 5), at);
+        // Past the é, two bytes for one character.
+        let after = value.find("text").unwrap();
+        assert_eq!(t.byte_of(t.locate(after).0, t.locate(after).1), after);
+        // The end of a line is its length.
+        assert_eq!(t.byte_of(0, 5), "Title".len());
+        // Back to the source: the word shown, past its hidden markup.
+        let (l, c) = t.locate(at);
+        assert_eq!(&d.source[t.offset(&d, l, c)..][..4], "bold");
     }
 
     #[test]

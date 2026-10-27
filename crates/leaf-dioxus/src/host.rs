@@ -54,24 +54,25 @@ pub enum Request {
 
 /// Where the caret is, for a host whose input method does not come through
 /// winit — a browser's, through a text field the host keeps beside the caret
-/// — in CSS pixels from the window's top left, and the text around it as
-/// the input method sees it: the caret's source line, with the caret and the
-/// selection's anchor as byte offsets into it, and where the line starts in
-/// the source. `None` while a composition is open, for the reason winit's
-/// input method gets none then (`ime.rs`).
+/// — in CSS pixels from the window's top left, and the text around it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputArea {
     pub x: f64,
     pub y: f64,
     pub height: f64,
+    /// `None` while a composition is open: the field holds that itself.
     pub around: Option<Around>,
 }
 
-/// The text around the caret: see [`InputArea`].
+/// The text as shown around the caret — in the rendered view the words
+/// without their markup, a line a row — that a host's text field holds, so
+/// that a screen reader reads the document and a keyboard's suggestions see
+/// its words: some lines either side of the caret's, with the caret and the
+/// selection's anchor as byte offsets into it, and `start`, where it starts
+/// in the whole text as shown, the offsets [`Editor::select_shown`] takes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Around {
     pub text: String,
-    /// Where `text` starts in the source.
     pub start: usize,
     pub caret: usize,
     pub anchor: usize,

@@ -31,12 +31,15 @@
 //!   the page's memory ([`Pictures::keep`]) and into the document as a
 //!   picture of its own, on its own line; a document file is opened.
 //!
-//! The field holds the caret's source line, with the document's selection
-//! over the same text ([`InputArea`]), so a keyboard's suggestions and an
-//! autocorrection see the words around the caret. When the browser moves
-//! the field's selection itself before an input — an autocorrection names
-//! the word it replaces that way — the document's selection follows it
-//! first.
+//! The field holds the document's text as shown around the caret — its
+//! words without their markup, a line a row — with the document's selection
+//! over the same text ([`InputArea`]). A screen reader reads the document
+//! there, and follows the caret as it moves, since the field's selection
+//! moves with it; a keyboard's suggestions and an autocorrection see the
+//! words around the caret. When the browser moves the field's selection
+//! itself before an input — an autocorrection names the word it replaces
+//! that way — the document's selection follows it first
+//! ([`Editor::select_shown`]).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -75,7 +78,7 @@ pub struct Field {
 
 #[derive(Default)]
 struct Mirror {
-    /// Where the line starts in the source, in bytes.
+    /// Where `text` starts in the whole text as shown, in bytes.
     base: usize,
     text: String,
     /// The caret and the anchor in `text`, in UTF-16 code units, the
@@ -439,7 +442,7 @@ impl Cx {
         }
         let (a, b) = (m.base + bytes(&m.text, start), m.base + bytes(&m.text, end));
         drop(m);
-        self.run(|ed| ed.doc().select_range(a, b));
+        self.run(|ed| ed.select_shown(a, b));
     }
 
     fn composition(&self, e: &CompositionEvent, end: bool) {
