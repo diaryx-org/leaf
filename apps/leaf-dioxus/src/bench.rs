@@ -198,3 +198,36 @@ fn bench_a_refresh() {
         }
     }
 }
+
+/// A letter typed on the pages, as the window types it: the edit, the
+/// source tree's reparse with it, and the blocks the pages are set from.
+#[test]
+#[ignore = "a benchmark: run it in release, with --ignored --nocapture"]
+fn bench_a_keystroke() {
+    for kb in [100usize, 400, 1000] {
+        let base = document(kb * 1024);
+        let mut d = leaf_core::Doc::from_source(base.clone(), Format::Markdown).unwrap();
+        if d.view != leaf_core::View::Wysiwyg {
+            d.toggle_view();
+        }
+        d.set_typeset(true);
+        d.caret = base[..base.len() / 2].rfind("fox").unwrap() + 3;
+        let (mut typed, mut blocks) = (Vec::new(), Vec::new());
+        for c in "jumped".chars() {
+            let t = Instant::now();
+            d.insert(&c.to_string());
+            typed.push(t.elapsed().as_secs_f64() * 1000.0);
+            let t = Instant::now();
+            std::hint::black_box(d.top_level());
+            blocks.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        typed.sort_by(f64::total_cmp);
+        blocks.sort_by(f64::total_cmp);
+        println!(
+            "=== {kb} KB: a letter typed {:.2} ms, the blocks asked {:.2} ms (medians of {})",
+            typed[typed.len() / 2],
+            blocks[blocks.len() / 2],
+            typed.len()
+        );
+    }
+}
