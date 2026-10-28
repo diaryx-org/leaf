@@ -534,6 +534,9 @@ pub struct PagesView {
     /// How far up from the window's bottom the view stops: the editor's
     /// status line, under the page view.
     pub bottom: f64,
+    /// How far down from under the toolbar the view starts: the editor's
+    /// find bar, while it is open over the page view.
+    pub inset: f64,
     /// Whether it is the page view, which is the editor's place, rather than
     /// the preview beside it.
     pub editing: bool,
@@ -556,7 +559,12 @@ pub struct PagesView {
 impl PagesView {
     /// The view's height, in a window `height` CSS pixels tall.
     pub fn height(&self, window: f64) -> f64 {
-        (window - crate::page::chrome_height() - self.bottom).max(0.0)
+        (window - self.top() - self.bottom).max(0.0)
+    }
+
+    /// The view's top in the window: under the toolbar, and the find bar.
+    pub fn top(&self) -> f64 {
+        crate::page::chrome_height() + self.inset
     }
 
     /// The pages placed down the view.
@@ -636,7 +644,7 @@ pub fn Pages(props: PagesProps) -> Element {
     if v.width <= 0.0 {
         return rsx! {};
     }
-    let top = crate::page::chrome_height();
+    let top = v.top();
     let (left, width, bottom) = (v.left, v.width, v.bottom);
     let spread = v.spread();
     let s = spread.scale;

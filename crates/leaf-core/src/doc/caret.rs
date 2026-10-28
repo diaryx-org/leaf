@@ -83,7 +83,28 @@ impl Doc {
     /// double-click gesture. Anchors on the run's start with the caret at its
     /// end so a following Shift-motion extends from the far edge.
     pub fn select_word_at(&mut self, offset: usize) {
-        let (s, e) = word_range_at(&self.source, offset.min(self.source.len()));
+        let src = &self.source;
+        let mut off = offset.min(src.len());
+        while off > 0 && !src.is_char_boundary(off) {
+            off -= 1;
+        }
+        // At a line's end the character under the press is the line break:
+        // the press means the last word on the line, not the break; on an
+        // empty line there is nothing to select.
+        if src[off..]
+            .chars()
+            .next()
+            .is_none_or(|c| c == '\n' || c == '\r')
+        {
+            match src[..off].chars().next_back() {
+                Some(c) if c != '\n' && c != '\r' => off -= c.len_utf8(),
+                _ => {
+                    self.place_caret(off, false);
+                    return;
+                }
+            }
+        }
+        let (s, e) = word_range_at(src, off);
         self.anchor = Some(s);
         self.caret = e;
         self.goal_col = None;

@@ -536,3 +536,20 @@ fn the_rich_views_end_is_after_the_last_letter() {
     d.insert("!");
     assert_eq!(d.source, "one\n\ntwo!\n");
 }
+
+/// A double-click past a line's last letter selects its last word, not the
+/// line break; on an empty line it selects nothing.
+#[test]
+fn a_double_click_at_a_lines_end_selects_its_last_word() {
+    let mut d = wysiwyg_doc("dbl", "Second paragraph.\n\nNext\n");
+    d.select_word_at(17);
+    assert_eq!(d.selected_text(), Some("."));
+    d.select_word_at(15);
+    assert_eq!(d.selected_text(), Some("paragraph"));
+    // An empty line: a caret, no selection.
+    d.select_word_at(18);
+    assert_eq!(d.selected_text(), None);
+    let mut d = wysiwyg_doc("dbl2", "one two\n");
+    d.select_word_at(7);
+    assert_eq!(d.selected_text(), Some("two"));
+}

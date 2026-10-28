@@ -203,6 +203,13 @@ fn switch(page: &Page, mode: Mode) {
     }
     p.mode.set(mode);
     p.drawn.set(None);
+    // Another view is another scale: start from the top, and the caret's
+    // reveal scrolls it into view from there.
+    page.with_view(|mut v| {
+        let mut v = v.write();
+        v.scroll.x = 0.0;
+        v.scroll.y = 0.0;
+    });
     page.place();
     // The toolbar's tools and the menus' ticks follow; so do the pages.
     if let Some(s) = page.shell() {
@@ -216,6 +223,22 @@ fn switch(page: &Page, mode: Mode) {
 /// way, if there is one. And draw the caret on them where it is now.
 pub fn update(page: &Page) {
     let p = &page.preview;
+    // The find bar is the editor's, at the top of its box: edited on the
+    // pages, they start below it while it is open.
+    let inset = if p.mode().edits() {
+        page.with_editor(|ed, _| ed.bar_height()).unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    if page.with_view_peek(|v| v.inset) != inset {
+        let screen = page.size().1;
+        page.with_view(|mut v| {
+            let mut v = v.write();
+            v.inset = inset;
+            v.fit(screen);
+        });
+        measure(page);
+    }
     caret(page);
     if p.busy.get() {
         return;
@@ -516,7 +539,7 @@ pub fn pinch(page: &Page, delta: f64, at: Option<(f64, f64)>) -> bool {
         return false;
     }
     let screen = page.size().1;
-    let top = crate::page::chrome_height();
+    let top = page.with_view_peek(|v| v.top());
     let mut took = false;
     page.with_view(|mut v| {
         let (x, y) = at.unwrap_or((0.0, 0.0));
@@ -591,7 +614,7 @@ pub fn stop_fling(page: &Page) {
 
 /// Whether the pages are shown under window point (`x`, `y`).
 pub fn under(page: &Page, (x, y): (f64, f64)) -> bool {
-    y >= crate::page::chrome_height()
+    y >= page.with_view_peek(|v| v.top())
         && page.with_view_peek(|v| v.width > 0.0 && x >= v.left && x <= v.left + v.width)
 }
 
