@@ -16,8 +16,9 @@
 //!
 //! A caret the editor places where no glyph is (an empty paragraph, a
 //! line's hidden markup) is drawn beside the nearest glyph of the source.
-//! The view scrolls itself rather than leave it to Blitz, so that it can
-//! keep the caret in view.
+//! The view scrolls and zooms itself (`unit::scroll`), as the editor
+//! scrolls, rather than leave it to Blitz: so that it can keep the caret in
+//! view, and zoom about the pointer.
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
@@ -33,8 +34,15 @@ use crate::app::{self, AppEvent};
 
 /// Space around the pages and between them, in CSS pixels.
 const PAD: f64 = 16.0;
-/// The widest a page is drawn, in CSS pixels, however wide the view.
+/// The widest a page is drawn, in CSS pixels, however wide the view, at
+/// zoom 1.
 const WIDEST: f64 = 920.0;
+
+/// The least and the most the pages zoom.
+pub const ZOOMS: (f64, f64) = (0.25, 4.0);
+
+/// How far a zoom command zooms.
+pub const ZOOM_STEP: f64 = 1.25;
 
 /// A page as set: a picture of it, its size in points, and its glyphs.
 #[derive(Clone, Debug)]
@@ -405,8 +413,10 @@ pub struct PagesView {
     pub error: Option<String>,
     pub caret: Option<PageBox>,
     pub selection: Vec<PageBox>,
-    /// How far the pages are scrolled up, in CSS pixels.
-    pub scroll: f64,
+    /// Where the pages are scrolled to and how far they are zoomed: the
+    /// pages laid out at the view's width ([`Spread`]) are the content at
+    /// zoom 1.
+    pub scroll: unit::scroll::Scroll,
 }
 
 impl PagesView {
@@ -415,28 +425,34 @@ impl PagesView {
         (window - crate::page::chrome_height() - self.bottom).max(0.0)
     }
 
-    /// The scroll that keeps `b` in a view `height` tall: as it is, if `b`
-    /// is in view already.
-    pub fn reveal(&self, b: PageBox, height: f64) -> f64 {
+    /// Bring the scroll up to date with the view's size and the pages', in
+    /// a window `window` CSS pixels tall, and keep it within them.
+    pub fn fit(&mut self, window: f64) {
         let spread = Spread::of(&self.sheets, self.width);
-        let (Some(&top), s) = (spread.tops.get(b.page), spread.scale) else {
-            return self.scroll;
-        };
-        let (y0, y1) = (top + b.top * s, top + (b.top + b.height) * s);
-        let margin = 3.0 * b.height * s;
-        if y0 < self.scroll {
-            (y0 - margin).max(0.0)
-        } else if y1 > self.scroll + height {
-            y1 + margin - height
-        } else {
-            self.scroll
-        }
+        let height = self.height(window);
+        let s = &mut self.scroll;
+        s.view = (self.width, height);
+        s.content = (self.width, spread.height);
+        s.zooms = ZOOMS;
+        s.zoom = s.zoom.clamp(ZOOMS.0, ZOOMS.1);
+        s.clamp();
     }
 
-    /// `scroll`, kept within the pages for a view `height` tall.
-    pub fn clamped(&self, scroll: f64, height: f64) -> f64 {
+    /// A box on a page as the content's, at zoom 1: left, top, width,
+    /// height.
+    pub fn content_box(&self, b: &PageBox) -> (f64, f64, f64, f64) {
         let spread = Spread::of(&self.sheets, self.width);
-        scroll.clamp(0.0, (spread.height - height).max(0.0))
+        let s = spread.scale;
+        let x = spread.lefts.get(b.page).copied().unwrap_or(PAD) + b.x * s;
+        let y = spread.tops.get(b.page).copied().unwrap_or(PAD) + b.top * s;
+        (x, y, b.width * s, b.height * s)
+    }
+
+    /// Scroll just far enough that `b` is in view, with a few lines' room.
+    pub fn reveal(&mut self, b: PageBox) {
+        let rect = self.content_box(&b);
+        let margin = 3.0 * rect.3 * self.scroll.zoom;
+        self.scroll.reveal(rect, margin);
     }
 }
 
@@ -456,7 +472,7 @@ pub const CSS: &str = "
 .pages { position: fixed; z-index: 2; box-sizing: border-box; overflow: hidden;
          background: var(--desk-bg); color: var(--desk-text);
          border-left: 1px solid var(--field-border); }
-.pages .spread { position: absolute; left: 0; right: 0; }
+.pages .spread { position: absolute; }
 .pages .sheet { position: absolute; display: block; background: white;
                 box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3); }
 .pages .caret { position: absolute; width: 1.5px; background: #1d4ed8; }
@@ -488,21 +504,22 @@ pub fn Pages(props: PagesProps) -> Element {
         (None, true) => Some("Setting the pages…".to_string()),
         (None, false) => None,
     };
+    let z = v.scroll.zoom;
     let at = |b: &PageBox| {
-        let x = spread.lefts.get(b.page).copied().unwrap_or(PAD) + b.x * s;
-        let y = spread.tops.get(b.page).copied().unwrap_or(PAD) + b.top * s;
-        (x, y, b.width * s, b.height * s)
+        let (x, y, w, h) = v.content_box(b);
+        (x * z, y * z, w * z, h * z)
     };
     let caret = v.caret.map(|b| at(&b));
     let selection: Vec<_> = v.selection.iter().map(at).collect();
-    let scroll = v.scroll;
-    let total = spread.height;
+    let (ox, oy) = (v.scroll.x, v.scroll.y);
+    let (total_w, total_h) = (width * z, spread.height * z);
     // A press, or a drag, at a point in the window: the line and the byte it
     // lands on, as the editor's target.
     let land = move |x: f64, y: f64| -> Option<(Target, usize)> {
         let v = view.peek();
         let spread = Spread::of(&v.sheets, v.width);
-        let (page, px, py) = spread.on_page(&v.sheets, x - v.left, y - top + v.scroll)?;
+        let (cx, cy) = v.scroll.to_content(x - v.left, y - top);
+        let (page, px, py) = spread.on_page(&v.sheets, cx, cy)?;
         let (line, at) = v.geometry.hit(page, px, py)?;
         Some((Target::Offset(at), line))
     };
@@ -534,27 +551,30 @@ pub fn Pages(props: PagesProps) -> Element {
                     point(id, Pointer::Tap { at, line, x: 0.0 });
                 }
             },
+            // The wheel scrolls, as the editor's does; with ⌃ (or ⌘), as a
+            // pinch does, it zooms about the pointer.
             onwheel: move |e: WheelEvent| {
                 e.prevent_default();
-                let dy = match e.delta() {
-                    dioxus::html::geometry::WheelDelta::Pixels(d) => d.y,
-                    dioxus::html::geometry::WheelDelta::Lines(d) => d.y * 20.0,
-                    dioxus::html::geometry::WheelDelta::Pages(d) => d.y * 400.0,
-                };
-                let mut v = view.write();
                 let window = crate::app::page(id).map_or(800.0, |p| p.size().1);
-                let h = v.height(window);
-                // As the editor scrolls: a wheel turned down moves the page
-                // up, toward the end.
-                v.scroll = v.clamped(v.scroll - dy, h);
+                let mut v = view.write();
+                v.fit(window);
+                let (dx, dy) = unit::scroll::wheel_delta(e.delta(), v.scroll.view.1);
+                let m = e.modifiers();
+                if m.ctrl() || m.meta() {
+                    let p = e.client_coordinates();
+                    let (px, py) = (p.x - v.left, p.y - top);
+                    v.scroll.zoom_at(unit::scroll::zoom_factor(dy), px, py);
+                } else {
+                    v.scroll.wheel(dx, dy);
+                }
             },
             if let Some(n) = note {
                 div { class: "note", "{n}" }
             }
-            div { class: "spread", style: "top: {-scroll}px; height: {total}px",
+            div { class: "spread", style: "left: {-ox}px; top: {-oy}px; width: {total_w}px; height: {total_h}px",
                 for (i, sheet) in v.sheets.iter().enumerate() {
                     img { key: "{i}", class: "sheet", src: "{sheet.url}", alt: "Page {i + 1}",
-                        style: "left: {spread.lefts[i]}px; top: {spread.tops[i]}px; width: {sheet.width * s}px; height: {sheet.height * s}px",
+                        style: "left: {spread.lefts[i] * z}px; top: {spread.tops[i] * z}px; width: {sheet.width * s * z}px; height: {sheet.height * s * z}px",
                     }
                 }
                 for (i, (x, y, w, h)) in selection.into_iter().enumerate() {
@@ -750,6 +770,46 @@ mod tests {
             ed.pointer(press);
             assert_eq!(ed.doc().selection(), Some((words, words + "words".len())));
         });
+    }
+
+    /// Zoomed in, the pages scroll across as well as down; a caret on a
+    /// later page is brought into view at the zoom; and a zoom about a point
+    /// keeps that point of the pages where it was.
+    #[test]
+    fn the_pages_zoom_and_keep_the_caret_in_view() {
+        let sheet = Sheet {
+            url: "".into(),
+            width: 600.0,
+            height: 800.0,
+        };
+        let mut v = PagesView {
+            width: 640.0,
+            sheets: vec![sheet.clone(), sheet],
+            ..PagesView::default()
+        };
+        let window = crate::page::chrome_height() + 500.0;
+        v.fit(window);
+        assert_eq!(v.scroll.view, (640.0, 500.0));
+        assert!(v.scroll.zoom_at(2.0, 320.0, 250.0));
+        let ((x0, x1), _) = v.scroll.range();
+        assert!(x1 > x0, "zoomed past the view's width: {x0}..{x1}");
+        let under = v.scroll.to_content(100.0, 100.0);
+        v.scroll.zoom_at(1.5, 100.0, 100.0);
+        let back = v.scroll.to_view(under.0, under.1);
+        assert!((back.0 - 100.0).abs() < 1e-6 && (back.1 - 100.0).abs() < 1e-6);
+        let caret = PageBox {
+            page: 1,
+            x: 300.0,
+            top: 400.0,
+            width: 0.0,
+            height: 12.0,
+        };
+        v.reveal(caret);
+        let (x, y, _, h) = v.content_box(&caret);
+        let (vx, vy) = v.scroll.to_view(x, y);
+        let z = v.scroll.zoom;
+        assert!((0.0..=640.0).contains(&vx), "{vx}");
+        assert!(vy >= 0.0 && vy + h * z <= 500.0, "{vy}");
     }
 
     #[test]

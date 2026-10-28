@@ -230,8 +230,8 @@ pub struct State {
     /// [`Editor::drawn_rect_of`] measures.
     pub lines: crate::row::LineBoxes,
     /// The finger's recent positions while it scrolls, for its speed when
-    /// it lets go; see `kinetic.rs`.
-    pub tracker: RefCell<crate::kinetic::Tracker>,
+    /// it lets go; see [`unit::scroll`].
+    pub tracker: RefCell<unit::scroll::Tracker>,
     /// Which glide is the page's: each one started, or a finger landing,
     /// moves it on, and a glide that finds it moved stops.
     pub glide: Cell<u64>,
@@ -698,8 +698,23 @@ impl Editor {
     /// positive delta moving toward the top. Down to where the last row sits
     /// mid-viewport, as a page with room under it.
     pub fn scroll(&self, dy: f64) {
-        let to = (*self.sig.top.peek() - dy).clamp(0.0, self.max_top());
-        self.scroll_to(to);
+        let mut s = self.scroller();
+        s.wheel(0.0, dy);
+        self.scroll_to(s.y);
+    }
+
+    /// The viewport over the rows, as every view of leaf's scrolls: with
+    /// half a viewport of room under the last row, so that it can come up
+    /// to the middle.
+    fn scroller(&self) -> unit::scroll::Scroll {
+        let height = *self.sig.height.peek();
+        unit::scroll::Scroll {
+            y: *self.sig.top.peek(),
+            view: (0.0, height),
+            content: (0.0, self.sig.layout.peek().height()),
+            slack: height / 2.0,
+            ..Default::default()
+        }
     }
 
     /// Where the viewport starts, in CSS pixels down the document.
@@ -719,7 +734,7 @@ impl Editor {
     /// The furthest down the viewport goes: to where the last row sits
     /// mid-viewport.
     pub(crate) fn max_top(&self) -> f64 {
-        (self.sig.layout.peek().height() - *self.sig.height.peek() / 2.0).max(0.0)
+        self.scroller().range().1.1
     }
 
     /// How tall the scrolled content is, for a host that scrolls the editor:
@@ -775,6 +790,12 @@ impl Editor {
                 height,
             }
         })
+    }
+
+    /// The window the editor is in: for a host with more than one, to find
+    /// which the editor's requests come from.
+    pub fn window_id(&self) -> dioxus_native::winit::window::WindowId {
+        self.st.window.id()
     }
 
     /// Move by the host's lines rather than the rows (see

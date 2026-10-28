@@ -11,6 +11,15 @@ use std::time::Duration;
 
 pub use web_time::Instant;
 
+/// Milliseconds since the first time this was asked: the times a finger's
+/// throw is read from (`unit::scroll::Tracker`).
+pub fn ms() -> f64 {
+    thread_local! {
+        static START: Instant = Instant::now();
+    }
+    START.with(|start| start.elapsed().as_secs_f64() * 1000.0)
+}
+
 /// Wait `d`, without holding up the thread.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn sleep(d: Duration) {

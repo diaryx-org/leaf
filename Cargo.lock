@@ -3804,6 +3804,7 @@ dependencies = [
  "tokio",
  "unicode-segmentation",
  "unicode-width 0.2.0",
+ "unit",
  "usvg 0.48.1",
  "wasm-bindgen-futures",
  "wasm-splitter",
@@ -3846,7 +3847,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "twig-export",
- "unit 0.0.0 (git+https://github.com/diaryx-org/unit?branch=claude%2Fleaf-gaps)",
+ "unit",
  "vello",
 ]
 
@@ -3867,7 +3868,7 @@ dependencies = [
  "leaf-raster",
  "libc",
  "tokio",
- "unit 0.0.0 (git+https://github.com/diaryx-org/unit?branch=main)",
+ "unit",
 ]
 
 [[package]]
@@ -8144,14 +8145,6 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
-
-[[package]]
-name = "unit"
-version = "0.0.0"
-source = "git+https://github.com/diaryx-org/unit?branch=claude%2Fleaf-gaps#0bc7a469a9ee36e945959a3ce251b145d33527c7"
-dependencies = [
- "dioxus",
-]
 
 [[package]]
 name = "unit"

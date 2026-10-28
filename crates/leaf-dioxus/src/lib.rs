@@ -60,7 +60,6 @@ mod host;
 mod ime;
 mod input;
 mod keys;
-mod kinetic;
 mod link;
 mod media;
 mod motion;

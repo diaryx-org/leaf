@@ -393,6 +393,9 @@ impl Page {
                 }
                 true
             }
+            // A trackpad's pinch, over the pages: they zoom about the
+            // pointer.
+            WindowEvent::PinchGesture { delta, .. } => preview::pinch(self, *delta, self.pointer()),
             // A force click: the trackpad's Look Up, where the system gives
             // Look Up to one.
             WindowEvent::TouchpadPressure { stage, .. } => {

@@ -45,6 +45,10 @@ dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
     "signals",
     "hooks",
 ] }
+# Scrolling as every view of leaf's does it (`unit::scroll`): the wheel, the
+# offset's bounds, and a finger's throw carried on after it lets go. Only
+# Dioxus beneath it, so it builds wherever the editor does.
+unit = { git = "https://github.com/diaryx-org/unit", branch = "main" }
 # What the editor needs Blitz to do to draw it correctly, and no more; the rest
 # of dioxus-native's features (accessibility, Blitz's own clipboard and file
 # inputs, woff, …) are the host's to choose.

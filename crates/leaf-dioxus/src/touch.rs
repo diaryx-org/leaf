@@ -69,7 +69,7 @@ impl Editor {
             st.caught.set(self.gliding());
             self.stop_glide();
             st.tracker.borrow_mut().reset();
-            st.tracker.borrow_mut().push(y);
+            st.tracker.borrow_mut().push(crate::clock::ms(), y);
             let grip = st.touch_mode.get().then(|| self.grip_at(x, y)).flatten();
             st.touch_mode.set(true);
             st.gripped.set(grip.is_some());
@@ -112,8 +112,8 @@ impl Editor {
         // A scroll let go: the page carries on at the finger's speed, or
         // springs back from past an end.
         if st.touch.get().is_some_and(|t| t.scrolling) {
-            st.tracker.borrow_mut().push(y);
-            let vel = -st.tracker.borrow().velocity();
+            st.tracker.borrow_mut().push(crate::clock::ms(), y);
+            let vel = -st.tracker.borrow().velocity(crate::clock::ms());
             st.touch.set(None);
             self.start_glide(vel);
             return;
@@ -155,8 +155,8 @@ impl Editor {
             // it is pulled.
             let raw = t.top - dy;
             let max = self.max_top().max(0.0);
-            self.scroll_to(crate::kinetic::rubber(raw, 0.0, max, self.bounds().height));
-            st.tracker.borrow_mut().push(y);
+            self.scroll_to(unit::scroll::rubber(raw, 0.0, max, self.bounds().height));
+            st.tracker.borrow_mut().push(crate::clock::ms(), y);
         }
         st.touch.set(Some(t));
     }
@@ -194,7 +194,7 @@ impl Editor {
         let id = st.glide.get() / 2 * 2 + 3;
         st.glide.set(id);
         let ed = self.clone();
-        let mut g = crate::kinetic::Glide {
+        let mut g = unit::scroll::Glide {
             pos: top,
             vel: if still { 0.0 } else { vel },
             min: 0.0,

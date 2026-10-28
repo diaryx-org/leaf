@@ -4,7 +4,6 @@
 use std::collections::BTreeSet;
 
 use crate::bridge::style::STYLESHEET;
-use dioxus::html::geometry::WheelDelta;
 use dioxus::prelude::*;
 
 use crate::blocks::{self, Block};
@@ -317,11 +316,7 @@ fn render(ed: &Editor) -> Element {
             // The wheel and the trackpad, in CSS pixels: a line is 20.
             onwheel: move |e: WheelEvent| {
                 e.prevent_default();
-                wheel.scroll(match e.delta() {
-                    WheelDelta::Pixels(v) => v.y,
-                    WheelDelta::Lines(v) => v.y * 20.0,
-                    WheelDelta::Pages(v) => v.y * height,
-                });
+                wheel.scroll(unit::scroll::wheel_delta(e.delta(), height).1);
             },
             onmousedown: move |e: MouseEvent| e.prevent_default(),
             onclick: move |e: MouseEvent| e.prevent_default(),

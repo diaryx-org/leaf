@@ -61,6 +61,12 @@ impl Shell {
     /// ⌘+, ⌘−, ⌘0: the text set larger or smaller, and the column with it,
     /// since its measure is counted in characters.
     pub fn zoom(&self, ed: &Editor, z: ZoomCommand) {
+        // In the page view, the pages are what zooms.
+        if let Some(page) = app::page(ed.window_id())
+            && crate::preview::zoom(&page, z)
+        {
+            return;
+        }
         let was = self.zoom.get();
         let now = match z {
             ZoomCommand::In => zoom_step(was, true),

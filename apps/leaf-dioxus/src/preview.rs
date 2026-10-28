@@ -105,7 +105,9 @@ pub fn place(page: &Page, width: f64) -> f64 {
             v.width = pane;
             v.bottom = bottom;
             v.editing = mode == Mode::Pages;
-            v.scroll = v.clamped(v.scroll, v.height(screen));
+        }
+        if v.peek().scroll.view != (pane, v.peek().height(screen)) {
+            v.write().fit(screen);
         }
     });
     measure(page);
@@ -117,7 +119,7 @@ pub fn place(page: &Page, width: f64) -> f64 {
 fn measure(page: &Page) {
     let screen = page.size().1;
     let points = page.with_view_peek(|v| {
-        let scale = Spread::of(&v.sheets, v.width).scale;
+        let scale = Spread::of(&v.sheets, v.width).scale * v.scroll.zoom;
         v.height(screen) / scale
     });
     page.preview.lines.screen.set(points);
@@ -205,6 +207,7 @@ fn show(page: &Page, set: Result<Vec<Set>, String>) {
         page.with_view(|mut v| v.write().error = e);
         return;
     };
+    let screen = page.size().1;
     let geometry = Rc::new(Geometry::new(
         &set.iter()
             .map(|s| (s.height, s.glyphs.clone()))
@@ -229,6 +232,7 @@ fn show(page: &Page, set: Result<Vec<Set>, String>) {
         v.sheets = sheets;
         v.geometry = geometry;
         v.error = None;
+        v.fit(screen);
     });
     measure(page);
     caret(page);
@@ -259,10 +263,60 @@ fn caret(page: &Page) {
             None => Vec::new(),
         };
         if moved && let Some(b) = v.caret {
-            let height = v.height(screen);
-            v.scroll = v.clamped(v.reveal(b, height), height);
+            v.fit(screen);
+            v.reveal(b);
         }
     });
+}
+
+/// Zoom the pages in, out, or to their width, about the view's middle, if
+/// the page view is shown: whether it was, and so took the command.
+pub fn zoom(page: &Page, z: leaf_dioxus::ZoomCommand) -> bool {
+    use leaf_dioxus::ZoomCommand;
+    if page.preview.mode() != Mode::Pages {
+        return false;
+    }
+    let screen = page.size().1;
+    page.with_view(|mut v| {
+        let mut v = v.write();
+        v.fit(screen);
+        let (px, py) = (v.scroll.view.0 / 2.0, v.scroll.view.1 / 2.0);
+        let to = match z {
+            ZoomCommand::In => v.scroll.zoom * crate::pages::ZOOM_STEP,
+            ZoomCommand::Out => v.scroll.zoom / crate::pages::ZOOM_STEP,
+            ZoomCommand::Reset => 1.0,
+        };
+        v.scroll.zoom_to(to, px, py);
+    });
+    measure(page);
+    true
+}
+
+/// A trackpad's pinch, by `delta` (positive spreads the fingers), at the
+/// pointer `at` in the window: the pages zoom about it, if they are shown
+/// and it is over them. Whether they took it.
+pub fn pinch(page: &Page, delta: f64, at: Option<(f64, f64)>) -> bool {
+    if page.preview.mode() == Mode::Off || !delta.is_finite() {
+        return false;
+    }
+    let screen = page.size().1;
+    let top = crate::page::chrome_height();
+    let mut took = false;
+    page.with_view(|mut v| {
+        let (x, y) = at.unwrap_or((0.0, 0.0));
+        let (left, width) = (v.peek().left, v.peek().width);
+        if at.is_none() || x < left || x > left + width || y < top {
+            return;
+        }
+        let mut v = v.write();
+        v.fit(screen);
+        v.scroll.zoom_at(1.0 + delta, x - left, y - top);
+        took = true;
+    });
+    if took {
+        measure(page);
+    }
+    took
 }
 
 /// An SVG as a URL Blitz draws a picture from.
