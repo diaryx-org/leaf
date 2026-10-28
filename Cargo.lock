@@ -371,7 +371,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -1996,7 +1996,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2186,7 +2186,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6083,7 +6083,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7044,7 +7044,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7062,7 +7062,7 @@ version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8c27177b12a6399ffc08b98f76f7c9a1f4fe9fc967c784c5a071fa8d93cf7e1"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7546,7 +7546,7 @@ dependencies = [
 [[package]]
 name = "twig-export"
 version = "0.1.0"
-source = "git+https://github.com/diaryx-org/twig-export?branch=main#ebf2ec8c8022302c9ca86ddb03b25867b5355ed1"
+source = "git+https://github.com/diaryx-org/twig-export?branch=main#ce8f475d22a815f336435eada54f5b468b9564be"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7646,7 +7646,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 [[package]]
 name = "typst"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "arrayvec",
  "comemo",
@@ -7675,7 +7675,7 @@ dependencies = [
 [[package]]
 name = "typst-eval"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "comemo",
  "ecow",
@@ -7694,7 +7694,7 @@ dependencies = [
 [[package]]
 name = "typst-html"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "az",
  "bumpalo",
@@ -7716,7 +7716,7 @@ dependencies = [
 [[package]]
 name = "typst-kit"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "dirs",
  "ecow",
@@ -7737,7 +7737,7 @@ dependencies = [
 [[package]]
 name = "typst-layout"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "az",
  "bumpalo",
@@ -7772,7 +7772,7 @@ dependencies = [
 [[package]]
 name = "typst-library"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "arrayvec",
  "az",
@@ -7838,7 +7838,7 @@ dependencies = [
 [[package]]
 name = "typst-macros"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -7849,7 +7849,7 @@ dependencies = [
 [[package]]
 name = "typst-pdf"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "az",
  "bytemuck",
@@ -7877,7 +7877,7 @@ dependencies = [
 [[package]]
 name = "typst-realize"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "arrayvec",
  "bumpalo",
@@ -7895,7 +7895,7 @@ dependencies = [
 [[package]]
 name = "typst-svg"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "base64 0.22.1",
  "comemo",
@@ -7921,7 +7921,7 @@ dependencies = [
 [[package]]
 name = "typst-syntax"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "ecow",
  "rustc-hash 2.1.3",
@@ -7939,7 +7939,7 @@ dependencies = [
 [[package]]
 name = "typst-timing"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "parking_lot",
  "serde",
@@ -7949,7 +7949,7 @@ dependencies = [
 [[package]]
 name = "typst-utils"
 version = "0.15.1"
-source = "git+https://github.com/diaryx-org/typst?branch=twig#d2a62e1602b41444c6b50c94da21d8d797ac498e"
+source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01046726a59013433ee7c308"
 dependencies = [
  "libm",
  "once_cell",
@@ -9274,7 +9274,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
