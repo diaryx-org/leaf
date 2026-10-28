@@ -16,6 +16,7 @@ contents:
 - '[The leaf-dioxus editor in a terminal](/docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md)'
 - '[An edit format shared by leaf and the core](/docs/proposals/an-edit-format-shared-by-leaf-and-the-core.md)'
 - '[What you see is what twig-export sets](/docs/proposals/what-you-see-is-what-twig-export-sets.md)'
+- '[Prestructured pages: Typst sets every view, from templates](/docs/proposals/prestructured-pages.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Proposals
