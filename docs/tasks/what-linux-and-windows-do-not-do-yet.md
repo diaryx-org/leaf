@@ -21,8 +21,8 @@ compiles the same module, untried. Still to do:
 - **Close's question has two answers.** Discard or Cancel; there is no
   Save in it, since unit's dialog has two buttons.
 - **No Print.** Export as PDF, then print from the viewer.
-- **Lines drawn twice as tall** where the body face is not installed:
-  [The editor and Blitz fall back to different faces](/docs/tasks/the-editor-and-blitz-fall-back-to-different-faces.md).
+- **A quote's wrapped lines drawn twice as tall** now and then:
+  [A quote's bar breaks a line Blitz was told not to wrap](/docs/tasks/a-quotes-bar-breaks-a-line-blitz-was-told-not-to-wrap.md).
 - **No spelling checker and no Look Up.**
 
 Since then (2026-10-27): the document reads and saves through leaf-core's
