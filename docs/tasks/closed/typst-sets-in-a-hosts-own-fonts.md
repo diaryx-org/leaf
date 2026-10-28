@@ -1,7 +1,9 @@
 ---
 title: Typst sets in a host's own fonts
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 created: 2026-10-28
+status: done
+updated: 2026-10-28
 ---
 # Typst sets in a host's own fonts
 
@@ -20,3 +22,7 @@ IntoIterator<Item = Vec<u8>>)` that puts each file's faces
 (`typst::text::Font::iter`) into its `FontStore` before the embedded and the
 system's ones; then, in leaf-pages's `typeset::typesetter()`, pass
 `Setup::fonts` to it, and drop the trace that says they were not taken.
+
+**Done.** twig-export's `Typesetter::with_fonts` (9274314) puts a host's
+files ahead of the embedded faces and the system's, and leaf-pages's
+`typeset::typesetter()` hands it `Setup::fonts`.

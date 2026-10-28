@@ -110,25 +110,19 @@ fn is_ours(t: &Template) -> bool {
     twig_export::templates::builtin(t.key()).is_some()
 }
 
-/// The process's typesetter: the host's folder of templates, if it has
-/// one, and today, which many templates date a document by.
+/// The process's typesetter: the host's own faces ahead of the embedded
+/// and the system's, the host's folder of templates, if it has one, and
+/// today, which many templates date a document by.
 fn typesetter() -> &'static Typesetter {
     static TYPESETTER: OnceLock<Typesetter> = OnceLock::new();
     TYPESETTER.get_or_init(|| {
         let setup = crate::setup();
-        if !setup.fonts.is_empty() {
-            leaf_dioxus::trace(|| {
-                format!(
-                    "typeset: {} fonts of the host's not taken: twig-export takes none yet",
-                    setup.fonts.len()
-                )
-            });
-        }
         let packages = match &setup.packages {
             Some(dir) => Packages::new([dir.clone()]),
             None => Packages::default(),
         };
         Typesetter::new()
+            .with_fonts(setup.fonts.iter().cloned())
             .with_packages(packages)
             .with_today(Some(today()))
     })

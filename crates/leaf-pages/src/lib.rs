@@ -160,10 +160,6 @@ pub struct Setup {
     /// Font files (TrueType or OpenType, a collection or a face), found
     /// before Typst's own and the system's: a host's own faces, which the
     /// system has not got.
-    ///
-    /// Not taken by Typst yet: twig-export's `Typesetter` has no way to be
-    /// handed fonts (docs/tasks/typst-sets-in-a-hosts-own-fonts.md). Until
-    /// it does, these are kept, and only the system's are found.
     pub fonts: Vec<Vec<u8>>,
 }
 
