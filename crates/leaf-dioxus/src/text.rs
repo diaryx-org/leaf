@@ -208,7 +208,7 @@ impl Fonts {
     pub fn char_width(&mut self) -> f32 {
         const SAMPLE: &str = "abcdefghijklmnopqrstuvwxyz ";
         let w = self
-            .build(&[plain(SAMPLE)], Kind::Prose, None)
+            .build(&[plain(SAMPLE)], Kind::Prose, None, false)
             .layout
             .width();
         w / SAMPLE.len() as f32
@@ -218,7 +218,7 @@ impl Fonts {
     pub fn cell_width(&mut self) -> f32 {
         const SAMPLE: &str = "0000000000";
         let w = self
-            .build(&[plain(SAMPLE)], Kind::Cells, None)
+            .build(&[plain(SAMPLE)], Kind::Cells, None, false)
             .layout
             .width();
         w / SAMPLE.len() as f32
@@ -227,14 +227,16 @@ impl Fonts {
     /// Lay one row out `width` pixels wide.
     pub fn layout(&mut self, v: &RowView, width: f32, kind: Kind) -> RowLayout {
         let narrowest = self.ty.size * 4.0;
-        self.lay(v, width, kind, Alignment::Start, narrowest)
+        self.lay(v, width, kind, Alignment::Start, narrowest, true)
     }
 
     /// The same, with its lines aligned within `width` — a table cell's
     /// `:-:` or `--:`.
     /// A table cell's width is the table's to choose, so it is kept as
     /// given: laid out any wider, its aligned text would be hit-tested
-    /// further right than it is drawn.
+    /// further right than it is drawn. And its words are never broken
+    /// inside: the table measured its column to fit them, and a width that
+    /// rounding leaves a hair under a word's would otherwise break it.
     pub fn layout_aligned(
         &mut self,
         v: &RowView,
@@ -242,10 +244,11 @@ impl Fonts {
         kind: Kind,
         align: Alignment,
     ) -> RowLayout {
-        self.lay(v, width, kind, align, 0.0)
+        self.lay(v, width, kind, align, 0.0, false)
     }
 
-    /// A row's lines, broken no narrower than `narrowest` pixels.
+    /// A row's lines, broken no narrower than `narrowest` pixels, and inside
+    /// a word too long for a line if `break_words`.
     fn lay(
         &mut self,
         v: &RowView,
@@ -253,12 +256,13 @@ impl Fonts {
         kind: Kind,
         align: Alignment,
         narrowest: f32,
+        break_words: bool,
     ) -> RowLayout {
         let split = v.runs.iter().take_while(|r| is_prefix(r)).count();
         let (prefix, body) = v.runs.split_at(split);
         let repeat = prefix.iter().any(|r| has_class(r, "gutter"));
 
-        let pre = self.build(prefix, kind, None);
+        let pre = self.build(prefix, kind, None, false);
         // Not `pre.layout.width()` alone: parley gives even empty text a
         // few pixels of width, which hung every wrapped paragraph's lines
         // that far in.
@@ -269,7 +273,7 @@ impl Fonts {
         };
         let line = self.ty.line();
         let max = (kind != Kind::Cells).then(|| (width - prefix_w).max(narrowest));
-        let mut body = self.build(body, kind, max);
+        let mut body = self.build(body, kind, max, break_words);
         if align != Alignment::Start && max.is_some() {
             body.layout.align(align, AlignmentOptions::default());
         }
@@ -320,7 +324,7 @@ impl Fonts {
     }
 
     /// One parley layout over `runs`, with each run's style from its classes.
-    fn build(&mut self, runs: &[Run], kind: Kind, max: Option<f32>) -> Built {
+    fn build(&mut self, runs: &[Run], kind: Kind, max: Option<f32>, break_words: bool) -> Built {
         let mut text = String::new();
         let mut ranges = Vec::with_capacity(runs.len());
         for r in runs {
@@ -342,9 +346,11 @@ impl Fonts {
             ty.leading,
         )));
         // A word too long for a line of its own breaks where it must, as
-        // CSS's `overflow-wrap: anywhere`, rather than running out of the
+        // CSS's `overflow-wrap: break-word`, rather than running out of the
         // column.
-        b.push_default(StyleProperty::OverflowWrap(OverflowWrap::Anywhere));
+        if break_words {
+            b.push_default(StyleProperty::OverflowWrap(OverflowWrap::BreakWord));
+        }
         for (r, range) in runs.iter().zip(&ranges) {
             for property in style_of(&r.class, kind == Kind::Source || ty.grid.is_some(), ty) {
                 b.push(property, range.clone());
@@ -902,7 +908,7 @@ mod tests {
         );
 
         let fonts: Vec<u64> = f
-            .build(&[plain("abc")], Kind::Prose, None)
+            .build(&[plain("abc")], Kind::Prose, None, false)
             .layout
             .lines()
             .flat_map(|line| line.items().collect::<Vec<_>>())
