@@ -135,7 +135,8 @@ pub fn lay_out(
     known: &HashSet<u128>,
 ) -> Result<Reflowed, String> {
     let started = std::time::Instant::now();
-    let (chunks, notes) = plan(source, blocks);
+    let blocks = with_hole(blocks, hole);
+    let (chunks, notes) = plan(source, &blocks);
     let all: Vec<&Chunk> = chunks.iter().chain(notes.iter()).collect();
 
     // What each chunk is set from, as a key: its text, the stand-in in it,
@@ -278,6 +279,27 @@ fn place(set: &Set, y: f64, known: &HashSet<u128>, pieces: &mut Vec<Tiled>, line
         });
     }
     lines.extend(set.lines.iter().map(|l| l.shifted(y)));
+}
+
+/// The document's blocks, and the stand-in's line as a block of its own,
+/// empty, where it is in none: an empty document's, or a new paragraph's
+/// below the last block. Without it no chunk holds the stand-in, nothing
+/// is set where the caret is, and there is no caret.
+fn with_hole(blocks: &[TopBlock], hole: Option<usize>) -> Vec<TopBlock> {
+    let mut out = blocks.to_vec();
+    if let Some(h) = hole
+        && !blocks.iter().any(|b| b.span.start <= h && h <= b.span.end)
+    {
+        let at = blocks.partition_point(|b| b.span.start < h);
+        out.insert(
+            at,
+            TopBlock {
+                kind: TopKind::Block,
+                span: h..h,
+            },
+        );
+    }
+    out
 }
 
 /// The chunks of the document's blocks, and the notes.
@@ -726,6 +748,33 @@ mod tests {
             let b = whole.caret_box(at, &src).unwrap().top;
             assert!((a - b).abs() < 0.5, "paragraph {i}: {a} chunked, {b} whole");
         }
+    }
+
+    /// An empty document has its caret: the stand-in is set, as a line
+    /// of its own, though there is no block to set it in.
+    #[test]
+    fn an_empty_document_has_a_caret() {
+        for (src, at) in [("", 0), ("\n", 0), ("\n\n", 1)] {
+            let b = blocks(src);
+            let out = lay_out(src, &b, Some(at), &how(), &HashSet::new()).unwrap();
+            let caret = out.geometry.caret_box(at, src);
+            assert!(caret.is_some_and(|c| c.height > 0.0), "{src:?}: {caret:?}");
+        }
+    }
+
+    /// A new paragraph below the last block has its caret on a line of its
+    /// own, under the block's, not at the end of it.
+    #[test]
+    fn a_new_last_paragraph_has_a_caret_below() {
+        let src = "Hello\n\nWorld\n\n";
+        let b = blocks(src);
+        let out = lay_out(src, &b, Some(src.len()), &how(), &HashSet::new()).unwrap();
+        let world = out.geometry.caret_box(7, src).expect("World's caret");
+        let caret = out.geometry.caret_box(src.len(), src).expect("a caret");
+        assert!(
+            caret.top > world.top + world.height / 2.0,
+            "{caret:?} under {world:?}"
+        );
     }
 
     /// An edit in one chunk sets that chunk again, and keeps the others.
