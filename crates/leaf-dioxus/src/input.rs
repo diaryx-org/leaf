@@ -148,7 +148,7 @@ fn mac_keys() -> bool {
 /// retired `SUPER`, which Blitz reported it as through 0.3.0-beta.3.
 /// Matching the other one, every ⌘ chord fell through to the plain keys: ⌘I
 /// typed an `i`, ⌘↓ moved one row.
-fn cmd() -> Modifiers {
+pub(crate) fn cmd() -> Modifiers {
     if mac_keys() {
         Modifiers::META
     } else {

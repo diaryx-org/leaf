@@ -321,7 +321,10 @@ impl Field {
     }
 
     fn key(&mut self, key: &Key, mods: Modifiers) -> FieldEdit {
-        let cmd = mods.contains(Modifiers::META);
+        // The command key: ⌘ on a Mac's keys, ⌃ elsewhere, as the editor
+        // reads it (`input.rs`). A chord of it is the field's only for
+        // paste and clear; the rest fall through to the document's.
+        let cmd = mods.contains(crate::input::cmd());
         match key {
             Key::Character(c) if cmd && c == "v" => FieldEdit::Paste,
             // ⌘A in a field clears it on the next keystroke in a Mac text
@@ -493,11 +496,25 @@ mod tests {
         };
         // ⌘V leaves the field as it was: the clipboard is the host's.
         assert_eq!(
-            f.key(&Key::Character("v".into()), Modifiers::META),
+            f.key(&Key::Character("v".into()), crate::input::cmd()),
             Outcome::Paste
         );
         assert_eq!(f.replacement.text, "");
         assert_eq!(f.commit("new"), Outcome::Edited);
         assert_eq!(f.replacement.text, "new");
+    }
+
+    /// ⌥⌘F with the query focused is the document's — the replace row —
+    /// not an `f` typed into the query: ⌃⌥F off a Mac's keys.
+    #[test]
+    fn a_command_chord_in_a_field_is_the_documents() {
+        let mut f = Find {
+            open: true,
+            focus: Focus::Query,
+            ..Find::default()
+        };
+        let mods = crate::input::cmd() | Modifiers::ALT;
+        assert_eq!(f.key(&Key::Character("f".into()), mods), Outcome::Ignored);
+        assert_eq!(f.query.text, "");
     }
 }
