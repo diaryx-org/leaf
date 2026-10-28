@@ -24,12 +24,53 @@ impl Doc {
     /// rows and runs but no caret in them, and still needs to know which of those
     /// runs a reader can follow.
     pub fn link_destination_at(&mut self, off: usize) -> Option<String> {
-        self.nodes()
+        let link = self
+            .nodes_at(off)
             .into_iter()
             .filter(|n| matches!(n.kind.as_str(), "link" | "url" | "email"))
             .filter(|n| n.span.start <= off && off < n.span.end)
-            .max_by_key(|n| n.span.start)
-            .and_then(|n| n.destination.or(n.text))
+            .max_by_key(|n| n.span.start)?;
+        let n = self.node(link.node_id)?;
+        n.destination.or(n.text)
+    }
+
+    /// The nodes whose spans reach `off`, root first: twig's walk from the
+    /// root down to `off` and to the byte before it, which reads no more of
+    /// the tree than those paths, where a marshal of every node read the
+    /// whole document for each question a toolbar asks after a keystroke.
+    /// The byte before is for a span that ends at `off`: the caret at the end
+    /// of a heading's or a quote's last line. A footnote's definition lies
+    /// outside the root's tree, where the walk finds only the document:
+    /// there, every node whose span reaches `off`.
+    pub(super) fn nodes_at(&mut self, off: usize) -> Vec<QueryMatch> {
+        let mut out = self.editor.ancestors_at(off).unwrap_or_default();
+        if off > 0 {
+            for m in self.editor.ancestors_at(off - 1).unwrap_or_default() {
+                if !out.iter().any(|o| o.node_id == m.node_id) {
+                    out.push(m);
+                }
+            }
+        }
+        if out.iter().all(|m| m.kind == Kind::Doc) {
+            return self
+                .nodes()
+                .into_iter()
+                .filter(|n| n.span.start <= off && off <= n.span.end)
+                .map(|n| QueryMatch {
+                    node_id: n.id.0,
+                    span: n.span,
+                    content_span: n.content_span,
+                    kind: n.kind,
+                })
+                .collect();
+        }
+        out
+    }
+
+    /// The node `id` names, with its payload (a heading's level, a link's
+    /// destination), read alone.
+    pub(super) fn node(&mut self, id: u32) -> Option<FlatNode> {
+        self.editor.subtree(NodeId(id)).ok()?.into_iter().next()
     }
 
     /// The heading the caret is under — the nearest heading at or above it,
@@ -449,7 +490,7 @@ impl Doc {
     /// in none.
     pub(super) fn code_block_start_at_caret(&mut self) -> Option<usize> {
         let off = self.caret;
-        self.nodes()
+        self.nodes_at(off)
             .into_iter()
             .filter(|n| n.kind == Kind::CodeBlock && n.span.start <= off && off <= n.span.end)
             .max_by_key(|n| n.span.start)
@@ -459,7 +500,7 @@ impl Doc {
     /// The source range of the text inside the link covering `off` — what sits
     /// between its `[` and `]`. `None` when twig reports no link there.
     pub(super) fn link_text_span(&mut self, off: usize) -> Option<std::ops::Range<usize>> {
-        self.nodes()
+        self.nodes_at(off)
             .into_iter()
             // Two links can touch (`[a](x)[b](y)`), and then one's `span.end` is
             // the other's `span.start`; the link that starts latest at or before

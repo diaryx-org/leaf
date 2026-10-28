@@ -13,6 +13,7 @@
 //! it is: an edit draws again only the pages it moved.
 
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -23,7 +24,7 @@ use twig_export::pdf::Glyph;
 
 use crate::app;
 use crate::page::Page;
-use crate::pages::{Geometry, PageLines, Sheet};
+use crate::pages::{Geometry, PageLines, Piece, Sheet};
 use crate::pdf::{Paper, Type};
 
 /// The share of the window's width the preview takes.
@@ -73,6 +74,8 @@ pub struct Preview {
     drawn: Cell<Option<(usize, Option<usize>, u64)>>,
     /// Which setting of the pages is on show, counting up.
     set: Cell<u64>,
+    /// The pictures of the pieces on show, by key.
+    pictures: RefCell<HashMap<u128, Rc<str>>>,
     /// The source the pages on show were set from: until the pages of an
     /// edit are set, the caret is drawn through the edit onto these.
     laid: RefCell<Rc<str>>,
@@ -101,11 +104,13 @@ struct Setting {
 }
 
 /// One page as the worker sets it, for the view to take on its turn.
+/// The pages as the worker sets them, for the view to take on its turn:
+/// each page's size, the lines of their glyphs, and their pieces, each with
+/// its picture as a `data:` URL if the window had none of its key.
 struct Set {
-    url: String,
-    width: f64,
-    height: f64,
-    glyphs: Vec<Glyph>,
+    sheets: Vec<Sheet>,
+    geometry: Geometry,
+    pieces: Vec<(crate::typeset::Tiled, Option<String>)>,
 }
 
 /// The pages' own part of the window's width, their view told where it is:
@@ -127,7 +132,11 @@ pub fn place(page: &Page, width: f64) -> f64 {
         let lines = mode
             .edits()
             .then(|| page.preview.lines.clone() as Rc<dyn leaf_dioxus::Lines>);
-        page.with_editor(|ed, _| ed.set_lines(lines));
+        page.with_editor(|ed, _| {
+            ed.set_lines(lines);
+            // The pages are drawn over it: it need not draw the document.
+            ed.set_drawn(!mode.edits());
+        });
         page.with_doc(|d| d.set_typeset(mode.edits()));
     }
     let screen = page.size().1;
@@ -271,7 +280,10 @@ pub fn update(page: &Page) {
             crate::pdf::Sheet::Paper(Paper::of(&settings)),
         )
     };
-    let Some((source, setting)) = page
+    // Reflowed, in a template of this process's own, a chunk at a time
+    // (`reflow.rs`): the document's top-level blocks are what it is cut by.
+    let chunked = matches!(sheet, crate::pdf::Sheet::Reflow { .. }) && crate::reflow::chunks(&ty);
+    let Some((source, setting, blocks)) = page
         .with_doc(|d| {
             let setting = Setting {
                 revision: d.revision(),
@@ -281,7 +293,11 @@ pub fn update(page: &Page) {
                 ty,
                 sheet,
             };
-            (p.from.borrow().as_ref() != Some(&setting)).then(|| (d.source.clone(), setting))
+            let chunked = chunked && matches!(d.format, Format::Markdown | Format::Djot);
+            (p.from.borrow().as_ref() != Some(&setting)).then(|| {
+                let blocks = chunked.then(|| d.top_level());
+                (d.source.clone(), setting, blocks)
+            })
         })
         .flatten()
     else {
@@ -289,14 +305,24 @@ pub fn update(page: &Page) {
     };
     *p.from.borrow_mut() = Some(setting.clone());
     p.busy.set(true);
+    let known: HashSet<u128> = p.pictures.borrow().keys().copied().collect();
     let id = page.window.id();
-    let token = app::park(move |(source, set): (String, Result<Vec<Set>, String>)| {
+    let started = std::time::Instant::now();
+    let token = app::park(move |(source, set): (String, Result<Set, String>)| {
         let Some(page) = app::page(id) else { return };
+        let arrived = std::time::Instant::now();
         page.preview.busy.set(false);
         if set.is_ok() {
             *page.preview.laid.borrow_mut() = Rc::from(source);
         }
         take(&page, set);
+        leaf_dioxus::trace(|| {
+            format!(
+                "pages set {:.1} ms, taken {:.1} ms",
+                (arrived - started).as_secs_f64() * 1000.0,
+                arrived.elapsed().as_secs_f64() * 1000.0
+            )
+        });
         update(&page);
         // The pages are a signal's: the window's page runs again to draw
         // them, now, not at the next event that happens to poll it.
@@ -309,21 +335,66 @@ pub fn update(page: &Page) {
             Some(at) => format!("{}{STAND_IN}{}", &source[..at], &source[at..]),
             None => source.clone(),
         };
-        let layout = crate::pdf::layout(&set_from, s.format, Some(&s.path), &s.ty, s.sheet);
-        let set: Result<Vec<Set>, String> = layout.map(|l| {
-            l.svg()
+        if let (Some(blocks), crate::pdf::Sheet::Reflow { width }) = (&blocks, s.sheet) {
+            let how = crate::reflow::How {
+                format: s.format,
+                ty: s.ty.clone(),
+                width,
+                root: crate::typeset::root(Some(&s.path)).to_path_buf(),
+            };
+            let t = std::time::Instant::now();
+            let laid = crate::reflow::lay_out(&source, blocks, s.hole, &how, &known);
+            let t_lay = t.elapsed();
+            let set = laid.map(|r| Set {
+                sheets: vec![r.sheet],
+                geometry: r.geometry,
+                pieces: r
+                    .pieces
+                    .into_iter()
+                    .map(|mut t| {
+                        let url = t.svg.take().map(|svg| data_url(&svg));
+                        (t, url)
+                    })
+                    .collect(),
+            });
+            leaf_dioxus::trace(|| format!("reflow: laid {t_lay:?}, pictures by {:?}", t.elapsed()));
+            app::unpark(token, (source, set));
+            return;
+        }
+        let layout = crate::pdf::layout(&set_from, s.format, Some(&s.path), &s.ty, s.sheet, &known);
+        let set: Result<Set, String> = layout.map(|l| {
+            let sheets = l
+                .pages
                 .iter()
-                .zip(l.pages())
-                .map(|(svg, page)| Set {
-                    url: data_url(svg),
-                    width: page.width,
-                    height: page.height,
-                    glyphs: match s.hole {
-                        Some(at) => unhole(page.glyphs, at),
-                        None => page.glyphs,
-                    },
+                .map(|p| Sheet {
+                    width: p.width,
+                    height: p.height,
                 })
-                .collect()
+                .collect();
+            let lines: Vec<(f64, Vec<Glyph>)> = l
+                .pages
+                .into_iter()
+                .map(|p| {
+                    let glyphs = match s.hole {
+                        Some(at) => unhole(p.glyphs, at),
+                        None => p.glyphs,
+                    };
+                    (p.height, glyphs)
+                })
+                .collect();
+            let pieces = l
+                .tiles
+                .into_iter()
+                .map(|mut t| {
+                    let url = t.svg.take().map(|svg| data_url(&svg));
+                    (t, url)
+                })
+                .collect();
+            Set {
+                sheets,
+                geometry: Geometry::new(&lines),
+                pieces,
+            }
         });
         app::unpark(token, (source, set));
     });
@@ -332,7 +403,7 @@ pub fn update(page: &Page) {
 /// What stands in for the text of a line that has none, where the caret
 /// is: a no-break space, which Typst sets as a glyph of a space's width and
 /// draws as nothing.
-const STAND_IN: &str = "\u{a0}";
+pub(crate) const STAND_IN: &str = "\u{a0}";
 
 /// Where to set a stand-in for the caret, if it is on a line with no text
 /// for Typst to set: a new paragraph, an empty heading, list item or quote.
@@ -401,9 +472,10 @@ fn unhole(glyphs: Vec<Glyph>, at: usize) -> Vec<Glyph> {
         .collect()
 }
 
-/// The pages as set, or why they could not be: a page that has not changed
-/// keeps the picture on show.
-fn take(page: &Page, set: Result<Vec<Set>, String>) {
+/// The pages as set, or why they could not be: a piece the window has the
+/// picture of already keeps it, and only the pictures of these pages are
+/// kept.
+fn take(page: &Page, set: Result<Set, String>) {
     let p = &page.preview;
     let Ok(set) = set else {
         let e = set.err();
@@ -411,12 +483,34 @@ fn take(page: &Page, set: Result<Vec<Set>, String>) {
         return;
     };
     let screen = page.size().1;
-    let geometry = Rc::new(Geometry::new(
-        &set.iter()
-            .map(|s| (s.height, s.glyphs.clone()))
-            .collect::<Vec<_>>(),
-    ));
+    let geometry = Rc::new(set.geometry);
     *p.lines.geometry.borrow_mut() = geometry.clone();
+    let pieces: Vec<Piece> = {
+        let mut pictures = p.pictures.borrow_mut();
+        let mut kept = HashMap::with_capacity(set.pieces.len());
+        let pieces = set
+            .pieces
+            .into_iter()
+            .filter_map(|(t, url)| {
+                let url = match url {
+                    Some(u) => Rc::from(u),
+                    None => kept.get(&t.key).or_else(|| pictures.get(&t.key)).cloned()?,
+                };
+                kept.insert(t.key, Rc::clone(&url));
+                Some(Piece {
+                    page: t.page,
+                    top: t.top,
+                    height: t.height,
+                    width: t.width,
+                    key: t.key,
+                    url,
+                })
+            })
+            .collect();
+        *pictures = kept;
+        pieces
+    };
+    let set = set.sheets;
     p.set.set(p.set.get() + 1);
     // Set at a new width, the text moves under the reader: where the caret
     // is on the screen, if it is on it, to keep it there.
@@ -428,19 +522,8 @@ fn take(page: &Page, set: Result<Vec<Set>, String>) {
     });
     page.with_view(|mut v| {
         let mut v = v.write();
-        let sheets = set
-            .into_iter()
-            .enumerate()
-            .map(|(i, s)| Sheet {
-                url: match v.sheets.get(i) {
-                    Some(old) if *old.url == *s.url => old.url.clone(),
-                    _ => Rc::from(s.url),
-                },
-                width: s.width,
-                height: s.height,
-            })
-            .collect();
-        v.sheets = sheets;
+        v.sheets = set;
+        v.pieces = pieces;
         v.geometry = geometry;
         v.error = None;
         v.fit(screen);
@@ -631,7 +714,7 @@ fn dark(page: &Page) -> bool {
 }
 
 /// An SVG as a URL Blitz draws a picture from.
-fn data_url(svg: &str) -> String {
+pub(crate) fn data_url(svg: &str) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(svg);
     format!("data:image/svg+xml;base64,{b64}")
 }
@@ -698,9 +781,10 @@ mod tests {
                 dark: false,
             },
             crate::pdf::Sheet::Reflow { width: 400.0 },
+            &Default::default(),
         )
         .expect("a layout");
-        let glyphs = unhole(layout.pages()[0].glyphs.clone(), 7);
+        let glyphs = unhole(layout.pages.clone()[0].glyphs.clone(), 7);
         let hello = glyphs.iter().find(|g| g.source == Some(0..1)).unwrap();
         let caret = glyphs
             .iter()
@@ -742,19 +826,44 @@ mod tests {
                 height: 792.0,
                 margin: 72.0,
             }),
+            &Default::default(),
         )
         .expect("a layout");
-        let svg = layout.svg();
-        assert_eq!(svg.len(), 1);
-        let url = data_url(&svg[0]);
-        let b64 = url.strip_prefix("data:image/svg+xml;base64,").unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .unwrap();
-        assert!(bytes.starts_with(b"<svg"));
-        assert!(svg[0].contains(r#"viewBox="0 0 612 792""#));
+        // A piece a block, each its picture, as wide as the page.
+        assert_eq!(layout.pages.len(), 1);
+        assert_eq!(layout.tiles.len(), 2, "the heading and the paragraph");
+        for t in &layout.tiles {
+            let svg = t.svg.as_deref().expect("a picture for a key not known");
+            let url = data_url(svg);
+            let b64 = url.strip_prefix("data:image/svg+xml;base64,").unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .unwrap();
+            assert!(bytes.starts_with(b"<svg"));
+            assert_eq!(t.width, 612.0);
+        }
+        // A key the window has is sent with no picture.
+        let known = layout.tiles.iter().map(|t| t.key).collect();
+        let again = crate::pdf::layout(
+            source,
+            Format::Markdown,
+            None,
+            &Type {
+                template: crate::settings::Template::default(),
+                size: 12.0,
+                dark: false,
+            },
+            crate::pdf::Sheet::Paper(crate::pdf::Paper {
+                width: 612.0,
+                height: 792.0,
+                margin: 72.0,
+            }),
+            &known,
+        )
+        .expect("a layout");
+        assert!(again.tiles.iter().all(|t| t.svg.is_none()));
 
-        let pages = layout.pages();
+        let pages = layout.pages.clone();
         let g = Geometry::new(&[(pages[0].height, pages[0].glyphs.clone())]);
         let one = g.caret_box(5, source).expect("after the heading");
         let a = g.caret_box(7, source).expect("before the paragraph");

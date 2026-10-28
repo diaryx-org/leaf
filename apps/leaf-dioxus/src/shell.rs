@@ -84,6 +84,21 @@ impl Shell {
 }
 
 impl Host for Shell {
+    /// The caret on the pages, which the editor does not draw under them.
+    fn caret_area(&self, ed: &Editor) -> Option<(f64, f64, f64)> {
+        let page = app::page(ed.window_id())?;
+        page.with_view_peek(|v| {
+            let b = v.caret?;
+            let (x, y, _, h) = v.content_box(&b);
+            let z = v.scroll.zoom;
+            Some((
+                v.left + x * z - v.scroll.x,
+                v.top() + y * z - v.scroll.y,
+                h * z,
+            ))
+        })
+    }
+
     fn request(&self, ed: &Editor, request: Request) {
         trace(|| format!("request {request:?}"));
         match request {

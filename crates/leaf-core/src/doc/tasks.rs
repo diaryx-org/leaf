@@ -20,8 +20,17 @@ impl Doc {
     /// [`task_checked_at_caret`](Self::task_checked_at_caret) for an arbitrary
     /// offset — what a frontend asks before deciding a click landed on a box.
     pub fn task_checked_at(&mut self, offset: usize) -> Option<bool> {
-        self.innermost_list_item(offset.min(self.source.len()))?
-            .checked
+        let offset = offset.min(self.source.len());
+        // Out of every list, which the walk to the offset says without the
+        // marshal of the whole tree the item's own state needs.
+        let in_list = self
+            .nodes_at(offset)
+            .iter()
+            .any(|m| m.kind == Kind::ListItem || m.kind == Kind::TaskListItem);
+        if !in_list {
+            return None;
+        }
+        self.innermost_list_item(offset)?.checked
     }
 
     /// Tick or untick the task item at the caret (the checkbox's keyboard half).

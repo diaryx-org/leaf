@@ -296,6 +296,20 @@ impl Doc {
         if self.selection().is_some() {
             return;
         }
+        // Only beside a block picture, a directive or a table is there an edge
+        // to open a paragraph at. The walk to the caret says whether one is
+        // there, which a map a revision behind would have to be rebuilt to
+        // say: a frontend that draws no frame between keystrokes (Leaf's
+        // pages) types a run of letters without building it once.
+        let beside = self.nodes_at(self.caret).iter().any(|n| {
+            matches!(
+                n.kind,
+                Kind::Image | Kind::DisplayMath | Kind::Table | Kind::Container | Kind::Other(_)
+            )
+        });
+        if !beside {
+            return;
+        }
         // The map may be a revision behind (nothing has drawn since the last
         // edit), and this asks it about offsets — a stale answer would splice a
         // break into the wrong place. Free when it is already current, which it

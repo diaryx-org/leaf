@@ -94,8 +94,9 @@ pub fn layout(
     path: Option<&Path>,
     ty: &Type,
     sheet: Sheet,
+    known: &std::collections::HashSet<u128>,
 ) -> Result<Laid, String> {
-    crate::typeset::layout(&job(source, format, path, ty, sheet))
+    crate::typeset::layout(&job(source, format, path, ty, sheet), known)
 }
 
 fn job(source: &str, format: Format, path: Option<&Path>, ty: &Type, sheet: Sheet) -> Job {
@@ -209,9 +210,16 @@ mod tests {
     #[test]
     fn a_run_too_long_for_a_line_stays_on_the_page() {
         let src = format!("This is a test{} and more words.\n", "!".repeat(300));
-        let layout =
-            layout(&src, Format::Markdown, None, &ty(), Sheet::Paper(US_LETTER)).expect("a layout");
-        let pages = layout.pages();
+        let layout = layout(
+            &src,
+            Format::Markdown,
+            None,
+            &ty(),
+            Sheet::Paper(US_LETTER),
+            &Default::default(),
+        )
+        .expect("a layout");
+        let pages = layout.pages.clone();
         let right = pages[0]
             .glyphs
             .iter()
@@ -253,9 +261,10 @@ mod tests {
                     None,
                     &ty,
                     Sheet::Reflow { width: 400.0 },
+                    &Default::default(),
                 )
                 .expect("a layout");
-                let pages = set.pages();
+                let pages = set.pages.clone();
                 assert_eq!(pages.len(), 1, "{template:?}");
                 assert_eq!(pages[0].width, 400.0, "{template:?}");
             }

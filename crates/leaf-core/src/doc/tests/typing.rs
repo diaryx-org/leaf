@@ -576,3 +576,29 @@ fn typeset_enter_writes_no_empty_paragraph_but_the_carets() {
     d.insert("new");
     assert_eq!(d.source, "one\n\nnew\n\ntwo\n");
 }
+
+/// The top-level blocks, footnote definitions among them, in source order.
+#[test]
+fn the_top_level_is_every_block_and_definition_in_order() {
+    let src = "---\ntitle: T\n---\n\n# Head\n\nText[^a] and [b][r].\n\n- one\n- two\n\n[^a]: The note.\n\n[r]: /url\n";
+    let mut d = wysiwyg_doc("top", src);
+    let kinds: Vec<(TopKind, &str)> = d
+        .top_level()
+        .into_iter()
+        .map(|b| (b.kind, &src[b.span.clone()]))
+        .collect();
+    assert_eq!(kinds[0].0, TopKind::Frontmatter);
+    assert_eq!(kinds[1], (TopKind::Block, "# Head"));
+    assert!(
+        kinds
+            .iter()
+            .any(|(k, t)| *k == TopKind::Footnote && t.starts_with("[^a]:"))
+    );
+    assert!(
+        kinds
+            .iter()
+            .any(|(k, t)| *k == TopKind::Reference && t.starts_with("[r]:"))
+    );
+    let starts: Vec<_> = d.top_level().iter().map(|b| b.span.start).collect();
+    assert!(starts.windows(2).all(|w| w[0] < w[1]));
+}

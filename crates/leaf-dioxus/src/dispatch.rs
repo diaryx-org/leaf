@@ -54,8 +54,21 @@ impl Editor {
                 return true;
             }
         }
+        // Not drawn, a letter typed leaves core's map to the next key that
+        // moves by it (`Editor::set_drawn`); any other key has it first.
+        let typed = matches!(key, Key::Character(_))
+            && !mods.intersects(Modifiers::CONTROL | Modifiers::META | Modifiers::ALT);
+        if !typed {
+            self.ensure_map();
+        }
+        let t = std::time::Instant::now();
         let action = apply_key(&mut st.doc.borrow_mut(), &key, code, mods);
-        trace(|| format!("key {key:?} {code:?} {mods:?} -> {action:?}"));
+        trace(|| {
+            format!(
+                "key {key:?} {code:?} {mods:?} -> {action:?} in {:.1?}",
+                t.elapsed()
+            )
+        });
         if !matches!(
             action,
             Action::Vertical { .. } | Action::Page { .. } | Action::Ignored
@@ -282,6 +295,29 @@ impl Editor {
     /// the accent menu open beside it, and what text surrounds it, so
     /// press-and-hold can see the letter it offers accents for.
     pub fn ime_area(&self) {
+        // Not drawn, the host knows where the caret is, and the rows, which
+        // are not kept, are not asked.
+        if !self.st.drawn.get() {
+            let Some((x, y, height)) = self.st.host.caret_area(self) else {
+                return;
+            };
+            let mut data = ImeRequestData::default().with_cursor_area(
+                LogicalPosition::new(x, y).into(),
+                LogicalSize::new(2.0, height).into(),
+            );
+            let around = ime::surrounding(&self.st.doc.borrow(), &self.st.composer.borrow());
+            self.st.host.input_area(&InputArea {
+                x,
+                y,
+                height,
+                around: None,
+            });
+            if let Some(text) = around.and_then(|(t, c, a)| ImeSurroundingText::new(t, c, a).ok()) {
+                data = data.with_surrounding_text(text);
+            }
+            let _ = self.st.window.request_ime_update(ImeRequest::Update(data));
+            return;
+        }
         let Some((row, line, x)) = self.caret_at() else {
             return;
         };

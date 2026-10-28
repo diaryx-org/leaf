@@ -619,6 +619,26 @@ impl<'a> HighlightCursor<'a> {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct VisualKey(u64, Option<(u64, Option<usize>, Option<Reveal>)>);
 
+/// A top-level block of a document, as [`Doc::top_level`] gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TopBlock {
+    pub kind: TopKind,
+    pub span: Range<usize>,
+}
+
+/// What a top-level block is, as a host laying blocks out apart tells them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TopKind {
+    /// The frontmatter, which sets nothing on the page.
+    Frontmatter,
+    /// A block of the document: a paragraph, a heading, a list, a table.
+    Block,
+    /// A footnote's definition, `[^1]: …`, which sets where it is called.
+    Footnote,
+    /// A link reference definition, `[a]: /url`, which sets nothing.
+    Reference,
+}
+
 pub struct Doc {
     editor: Editor,
     pub format: Format,

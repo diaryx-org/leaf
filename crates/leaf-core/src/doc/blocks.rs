@@ -70,11 +70,12 @@ impl Doc {
     /// block is not a heading.
     pub fn current_heading_level(&mut self) -> Option<u32> {
         let caret = self.caret;
-        self.nodes()
+        let h = self
+            .nodes_at(caret)
             .into_iter()
             .filter(|n| n.kind == Kind::Heading)
-            .find(|n| n.span.start <= caret && caret <= n.span.end)
-            .and_then(|n| n.level)
+            .find(|n| n.span.start <= caret && caret <= n.span.end)?;
+        self.node(h.node_id)?.level
     }
 
     /// The inline marks in force at the caret (or over the selection) — what a
@@ -626,7 +627,7 @@ impl Doc {
         let off = self.caret.min(self.source.len());
         // A quote's span stops short of its closing newline, so the end of its
         // last line is `span.end` itself, and has to count.
-        self.nodes()
+        self.nodes_at(off)
             .into_iter()
             .any(|n| n.kind == Kind::BlockQuote && n.span.start <= off && off <= n.span.end)
     }

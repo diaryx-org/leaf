@@ -557,7 +557,9 @@ fn redraw(view: &mut View<Renderer>, frame: &mut Frame) {
     if owed {
         view.is_visible = true;
     }
+    let start = std::time::Instant::now();
     view.handle_winit_event(WindowEvent::RedrawRequested);
+    leaf_dioxus::trace(|| format!("redraw {:.1} ms", start.elapsed().as_secs_f64() * 1000.0));
     if owed {
         view.is_visible = false;
     }
@@ -598,7 +600,6 @@ impl ApplicationHandler for App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let _ = event_loop;
         let page = page(window_id);
         match &event {
             // Never Blitz's, which would drop the window and quit with the
@@ -628,6 +629,7 @@ impl ApplicationHandler for App {
             if guard(|| p.window_event(&event, mods)).unwrap_or(true) {
                 poll(window_id);
                 self.settle();
+                self.proxy_wake_up(event_loop);
                 return;
             }
         }
@@ -660,6 +662,10 @@ impl ApplicationHandler for App {
         }
         poll(window_id);
         self.settle();
+        // What other threads sent meanwhile, and the poll just asked for:
+        // winit on Wayland wakes the loop for them only once input stops, so
+        // pages set in a few milliseconds waited out a run of typing.
+        self.proxy_wake_up(event_loop);
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -697,11 +703,15 @@ impl ApplicationHandler for App {
                 // Blitz's own handling of these, noting which windows'
                 // pages changed, for `redraw`.
                 BlitzShellEvent::Poll { window_id } => {
+                    let start = std::time::Instant::now();
                     if let Some(view) = self.blitz.windows.get_mut(&window_id)
                         && guard(|| view.poll()).unwrap_or(false)
                     {
                         self.frames.entry(window_id).or_default().changed = true;
                     }
+                    leaf_dioxus::trace(|| {
+                        format!("poll {:.1} ms", start.elapsed().as_secs_f64() * 1000.0)
+                    });
                 }
                 BlitzShellEvent::RequestRedraw { doc_id } => {
                     for (id, view) in &self.blitz.windows {
@@ -723,6 +733,9 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // What other threads sent, whatever woke the loop (see the end of
+        // `window_event`).
+        self.proxy_wake_up(event_loop);
         self.blitz.about_to_wait(event_loop);
     }
 

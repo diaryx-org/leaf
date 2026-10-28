@@ -587,10 +587,12 @@ impl Page {
         if !init.shell.stale.replace(false) {
             return;
         }
+        let t0 = std::time::Instant::now();
         let Some(mut chrome) = self.with_doc(Chrome::of) else {
             init.shell.stale.set(true);
             return;
         };
+        let t_chrome = t0.elapsed();
         // ⌘E, or the editor's own command, turns the source view on or off:
         // the window shows it beside the pages, or goes back.
         preview::follow(self, chrome.source_view);
@@ -603,7 +605,14 @@ impl Page {
         } else if !chrome.dirty {
             init.shell.document.clean();
         }
+        let t_update = t0.elapsed();
         platform::spelling::changed(self, &chrome);
+        leaf_dioxus::trace(|| {
+            format!(
+                "sync: chrome {t_chrome:.1?}, pages {t_update:.1?}, all {:.1?}",
+                t0.elapsed()
+            )
+        });
         if self.chrome.borrow().as_ref() == Some(&chrome) {
             return;
         }

@@ -44,13 +44,25 @@ pub const ZOOMS: (f64, f64) = (0.25, 4.0);
 /// How far a zoom command zooms.
 pub const ZOOM_STEP: f64 = 1.25;
 
-/// A page as set: a picture of it, its size in points, and its glyphs.
+/// A page as set: its size in points. What is drawn on it is its pieces'.
 #[derive(Clone, Debug)]
 pub struct Sheet {
-    /// A `data:` URL of the page's SVG.
-    pub url: Rc<str>,
     pub width: f64,
     pub height: f64,
+}
+
+/// A piece of a page, drawn by itself: a block of the document as set there
+/// (twig-export's tiles), at its place on its page, in points.
+#[derive(Clone, Debug)]
+pub struct Piece {
+    pub page: usize,
+    pub top: f64,
+    pub height: f64,
+    pub width: f64,
+    /// What it draws, as a hash: the same picture wherever it is.
+    pub key: u128,
+    /// A `data:` URL of its SVG.
+    pub url: Rc<str>,
 }
 
 /// The pages placed down a view `width` CSS pixels wide: the scale from
@@ -147,18 +159,32 @@ pub struct PageBox {
 /// One line of glyphs from the source: a page's glyphs on one baseline,
 /// left to right.
 #[derive(Clone, Debug)]
-struct Line {
+pub struct Line {
     page: usize,
     baseline: f64,
     ascent: f64,
     descent: f64,
-    glyphs: Vec<(f64, f64, Range<usize>)>,
+    /// Shared, so that a line moved down a page is a cheap copy.
+    glyphs: std::sync::Arc<[(f64, f64, Range<usize>)]>,
     /// How wide a space is on the line: one Typst set there, or a quarter
     /// of an em, the em guessed from the line's height.
     space: Option<f64>,
 }
 
 impl Line {
+    /// Its baseline, in points down its page.
+    pub fn baseline(&self) -> f64 {
+        self.baseline
+    }
+
+    /// This line `dy` points further down its page.
+    pub fn shifted(&self, dy: f64) -> Line {
+        Line {
+            baseline: self.baseline + dy,
+            ..self.clone()
+        }
+    }
+
     fn space(&self) -> f64 {
         self.space.unwrap_or(0.22 * (self.ascent + self.descent))
     }
@@ -177,7 +203,7 @@ impl Line {
     /// gutter) the press lands on the side it is nearer, not past the gap.
     fn offset_at(&self, x: f64) -> usize {
         let mut best = (f64::INFINITY, self.last());
-        for (gx, w, r) in &self.glyphs {
+        for (gx, w, r) in self.glyphs.iter() {
             for (edge, at) in [(*gx, r.start), (gx + w, r.end)] {
                 let d = (x - edge).abs();
                 if d < best.0 {
@@ -202,48 +228,66 @@ pub struct Geometry {
 impl Geometry {
     /// The lines of pages `heights` points tall, whose glyphs are `glyphs`.
     pub fn new(pages: &[(f64, Vec<Glyph>)]) -> Geometry {
-        let mut lines: Vec<Line> = Vec::new();
+        let mut lines = Vec::new();
         let mut tops = Vec::with_capacity(pages.len());
         let mut top = 0.0;
         for (page, (height, glyphs)) in pages.iter().enumerate() {
             tops.push(top);
             top += height;
-            let mut mine: Vec<Line> = Vec::new();
-            for g in glyphs {
-                let Some(source) = g.source.clone() else {
-                    continue;
-                };
-                let line = match mine
-                    .iter_mut()
-                    .find(|l| (l.baseline - g.baseline).abs() < 0.5)
-                {
-                    Some(l) => l,
-                    None => {
-                        mine.push(Line {
-                            page,
-                            baseline: g.baseline,
-                            ascent: 0.0,
-                            descent: 0.0,
-                            glyphs: Vec::new(),
-                            space: None,
-                        });
-                        mine.last_mut().expect("just pushed")
-                    }
-                };
-                if g.text == " " && line.space.is_none() {
-                    line.space = Some(g.width);
-                }
-                line.ascent = line.ascent.max(g.ascent);
-                line.descent = line.descent.max(g.descent);
-                line.glyphs.push((g.x, g.width, source));
-            }
-            for l in &mut mine {
-                l.glyphs.sort_by(|a, b| a.0.total_cmp(&b.0));
-            }
-            mine.sort_by(|a, b| a.baseline.total_cmp(&b.baseline));
-            lines.extend(mine);
+            lines.extend(Self::lines_of(page, glyphs, 0.0));
         }
         Geometry { lines, tops }
+    }
+
+    /// Pages whose lines are made already, `tops` down the pages laid end
+    /// to end: a host that lays a document out in parts makes each part's
+    /// lines once, and puts them together.
+    pub fn from_lines(lines: Vec<Line>, tops: Vec<f64>) -> Geometry {
+        Geometry { lines, tops }
+    }
+
+    /// The lines of `glyphs` on `page`, `dy` points further down it, in
+    /// order down the page: a line is the glyphs within half a point of its
+    /// first's baseline. Sorted, not searched for, so a tall reflowed page
+    /// of thousands of lines is no slower than a sheet.
+    pub fn lines_of(page: usize, glyphs: &[Glyph], dy: f64) -> Vec<Line> {
+        let mut down: Vec<&Glyph> = glyphs.iter().filter(|g| g.source.is_some()).collect();
+        down.sort_by(|a, b| a.baseline.total_cmp(&b.baseline));
+        // Each line, and the glyphs on it as they are found.
+        type Placed = (f64, f64, Range<usize>);
+        let mut mine: Vec<(Line, Vec<Placed>)> = Vec::new();
+        for g in down {
+            let source = g.source.clone().expect("only sourced glyphs");
+            let baseline = g.baseline + dy;
+            if mine
+                .last()
+                .is_none_or(|(l, _)| (baseline - l.baseline).abs() >= 0.5)
+            {
+                let line = Line {
+                    page,
+                    baseline,
+                    ascent: 0.0,
+                    descent: 0.0,
+                    glyphs: std::sync::Arc::new([]),
+                    space: None,
+                };
+                mine.push((line, Vec::new()));
+            }
+            let (line, on) = mine.last_mut().expect("a line");
+            if g.text == " " && line.space.is_none() {
+                line.space = Some(g.width);
+            }
+            line.ascent = line.ascent.max(g.ascent);
+            line.descent = line.descent.max(g.descent);
+            on.push((g.x, g.width, source));
+        }
+        mine.into_iter()
+            .map(|(mut l, mut on)| {
+                on.sort_by(|a, b| a.0.total_cmp(&b.0));
+                l.glyphs = on.into();
+                l
+            })
+            .collect()
     }
 
     /// The line a caret at byte `offset` is drawn on, and its x there: before
@@ -259,7 +303,7 @@ impl Geometry {
         let mut after = None;
         let mut nearest: Option<(usize, usize, f64, usize)> = None;
         for (i, line) in self.lines.iter().enumerate() {
-            for (x, w, r) in &line.glyphs {
+            for (x, w, r) in line.glyphs.iter() {
                 if r.start == offset {
                     return Some((i, *x, offset));
                 }
@@ -544,6 +588,8 @@ pub struct PagesView {
     /// the editor's own ground, with no desk round it.
     pub reflow: bool,
     pub sheets: Vec<Sheet>,
+    /// What is drawn on them: the view draws those near the screen.
+    pub pieces: Vec<Piece>,
     pub geometry: Rc<Geometry>,
     /// Why the document as it stands would not set, over the pages it last
     /// set as.
@@ -624,6 +670,7 @@ pub const CSS: &str = "
 .pages.reflow .sheet { background: transparent; box-shadow: none; }
 .pages .sheet { position: absolute; display: block; background: white;
                 box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3); }
+.pages .piece { position: absolute; display: block; }
 .pages .caret { position: absolute; width: 1.5px; background: #1d4ed8; }
 .pages .selected { position: absolute; background: rgba(37, 99, 235, 0.25); }
 .pages .note { position: absolute; left: 16px; right: 16px; top: 8px; z-index: 1;
@@ -662,6 +709,23 @@ pub fn Pages(props: PagesProps) -> Element {
     let selection: Vec<_> = v.selection.iter().map(at).collect();
     let (ox, oy) = (v.scroll.x, v.scroll.y);
     let (total_w, total_h) = (width * z, spread.height * z);
+    let screen = v.scroll.view.1.max(1.0);
+    let (from, to) = (oy - screen, oy + 2.0 * screen);
+    let mut seen: std::collections::HashMap<u128, usize> = Default::default();
+    let shown: Vec<(String, f64, f64, f64, f64, Rc<str>)> = v
+        .pieces
+        .iter()
+        .filter_map(|p| {
+            let (left, top) = (*spread.lefts.get(p.page)?, *spread.tops.get(p.page)?);
+            let (x, y) = (left * z, (top + p.top * s) * z);
+            let (w, h) = (p.width * s * z, p.height * s * z);
+            // The same picture twice (two rules) is two nodes.
+            let n = seen.entry(p.key).or_default();
+            *n += 1;
+            (y + h >= from && y <= to)
+                .then(|| (format!("{:x}-{n}", p.key), x, y, w, h, p.url.clone()))
+        })
+        .collect();
     // A press, or a drag, at a point in the window: the line and the byte it
     // lands on, as the editor's target.
     let land = move |x: f64, y: f64| -> Option<(Target, usize)> {
@@ -740,8 +804,15 @@ pub fn Pages(props: PagesProps) -> Element {
             }
             div { class: "spread", style: "left: {-ox}px; top: {-oy}px; width: {total_w}px; height: {total_h}px",
                 for (i, sheet) in v.sheets.iter().enumerate() {
-                    img { key: "{i}", class: "sheet", src: "{sheet.url}", alt: "Page {i + 1}",
+                    div { key: "p{i}", class: "sheet", role: "img", aria_label: "Page {i + 1}",
                         style: "left: {spread.lefts[i] * z}px; top: {spread.tops[i] * z}px; width: {sheet.width * s * z}px; height: {sheet.height * s * z}px",
+                    }
+                }
+                // Only the pieces within a screen of the view: a long
+                // document is a few screens' pictures, not all of them.
+                for (k, x, y, w, h, url) in shown {
+                    img { key: "{k}", class: "piece", src: "{url}", alt: "",
+                        style: "left: {x}px; top: {y}px; width: {w}px; height: {h}px",
                     }
                 }
                 for (i, (x, y, w, h)) in selection.into_iter().enumerate() {
@@ -798,12 +869,10 @@ mod tests {
     fn a_press_off_the_pages_lands_on_the_nearest() {
         let sheets = vec![
             Sheet {
-                url: Rc::from(""),
                 width: 100.0,
                 height: 100.0,
             },
             Sheet {
-                url: Rc::from(""),
                 width: 100.0,
                 height: 100.0,
             },
@@ -967,10 +1036,11 @@ mod tests {
                 height: 792.0,
                 margin: 72.0,
             }),
+            &Default::default(),
         )
         .expect("a layout");
         let pages: Vec<_> = layout
-            .pages()
+            .pages
             .into_iter()
             .map(|p| (p.height, p.glyphs))
             .collect();
@@ -1036,7 +1106,6 @@ mod tests {
     #[test]
     fn the_pages_zoom_and_keep_the_caret_in_view() {
         let sheet = Sheet {
-            url: "".into(),
             width: 600.0,
             height: 800.0,
         };
@@ -1074,7 +1143,6 @@ mod tests {
     fn a_point_is_found_on_its_page() {
         let sheets = vec![
             Sheet {
-                url: "".into(),
                 width: 100.0,
                 height: 100.0,
             };

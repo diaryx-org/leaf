@@ -697,6 +697,26 @@ impl Doc {
         wysiwyg::top_blocks(&mut self.editor)
     }
 
+    /// The document's top-level blocks in source order, each its span and
+    /// what it is: for a host that lays a document out a block at a time,
+    /// as Leaf's reflowed view does. Footnote and link definitions, which
+    /// twig keeps beside the document's tree, are among them. Asked of the
+    /// parse the document keeps up to date, not a new one.
+    pub fn top_level(&mut self) -> Vec<TopBlock> {
+        self.top_blocks()
+            .into_iter()
+            .map(|m| TopBlock {
+                kind: match m.kind {
+                    Kind::Metadata => TopKind::Frontmatter,
+                    Kind::Footnote => TopKind::Footnote,
+                    Kind::Reference => TopKind::Reference,
+                    _ => TopKind::Block,
+                },
+                span: m.span,
+            })
+            .collect()
+    }
+
     pub fn format_name(&self) -> &'static str {
         // The wildcard is `Asciidoc`, which twig parses but leaf never opens a
         // document in (see `Doc::open`) — and any language `Format` learns

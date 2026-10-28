@@ -210,6 +210,10 @@ pub struct State {
     /// The host's lines, while it draws the document laid out its own way:
     /// what ↑/↓, a screen's move and a line's edge go by instead of the rows.
     pub host_lines: RefCell<Option<Rc<dyn crate::host::Lines>>>,
+    /// Whether the editor draws the document: not while a host draws it its
+    /// own way over the editor (Leaf's pages), when a repaint keeps only what
+    /// the keys need, core's map of the text, and the status.
+    pub drawn: Cell<bool>,
     /// The column's measure in each view, for the type `fonts` sets.
     pub measures: Cell<Measures>,
     /// The words the host's spelling checker found misspelled, as source
@@ -445,6 +449,7 @@ impl Editor {
             last_press: Cell::new(None),
             goal: Cell::new(None),
             host_lines: RefCell::new(None),
+            drawn: Cell::new(true),
             measures: Cell::new(measures),
             misspelled: RefCell::default(),
             surface: Cell::new((size.width as f64 / scale, size.height as f64 / scale)),
@@ -475,6 +480,25 @@ impl Editor {
         let st = &*self.st;
         let t0 = Instant::now();
         let mut doc = st.doc.borrow_mut();
+        // Not drawn: core's map, which the keys move the caret by, and the
+        // status, which the host shows; not the rows.
+        if !st.drawn.get() {
+            // Core's map is built when a key or a press next moves by it
+            // (`ensure_map`): a run of letters typed builds none, and in a
+            // long document a build is most of what a letter costs.
+            set(self.sig.status, status::line(&doc));
+            st.host.repainted(&doc);
+            if self
+                .sig
+                .words
+                .peek()
+                .is_none_or(|(r, _)| r != doc.revision())
+            {
+                status::recount(self.st.clone(), doc.revision(), self.sig.words);
+            }
+            trace(|| format!("repaint, not drawn: {:.1?}", t0.elapsed()));
+            return None;
+        }
         // While composing, the caret is drawn at the input method's cursor
         // and the marked text underlined; see `ime.rs`.
         let composer = st.composer.borrow();
@@ -808,6 +832,30 @@ impl Editor {
     pub fn set_lines(&self, lines: Option<Rc<dyn crate::host::Lines>>) {
         *self.st.host_lines.borrow_mut() = lines;
         self.st.goal.set(None);
+    }
+
+    /// Bring core's map of the text up to date, if the editor is not drawn
+    /// and left it behind: before a key or a press that moves by it. Drawn,
+    /// every repaint keeps it, and this is nothing.
+    pub(crate) fn ensure_map(&self) {
+        if self.st.drawn.get() {
+            return;
+        }
+        let mut doc = self.st.doc.borrow_mut();
+        match doc.view {
+            View::Source => doc.build_source(),
+            View::Wysiwyg => doc.build_visual_unwrapped(),
+        }
+    }
+
+    /// Draw the document, or not: a host that draws it its own way over the
+    /// editor turns the editor's drawing off, and a keystroke no longer lays
+    /// out the editor's rows, which in a long document is most of what one
+    /// costs. Drawn again, the rows are brought up to date.
+    pub fn set_drawn(&self, drawn: bool) {
+        if self.st.drawn.replace(drawn) != drawn && drawn {
+            self.repaint();
+        }
     }
 
     /// Lay the editor out in `bounds` from now on — a host with a sidebar

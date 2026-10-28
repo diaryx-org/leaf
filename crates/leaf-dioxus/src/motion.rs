@@ -271,6 +271,7 @@ impl Editor {
     /// the other's; a tap also asks for the keyboard.
     pub fn pointer(&self, p: Pointer) {
         let st = &*self.st;
+        self.ensure_map();
         // A finger's tap, or a plain click on a document only to be read,
         // follows a link or footnote as ⌘-click does: a phone has no ⌘, and
         // a reader has no caret to place.

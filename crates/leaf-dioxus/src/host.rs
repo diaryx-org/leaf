@@ -131,6 +131,16 @@ pub trait Host {
         let _ = area;
     }
 
+    /// Where the caret is drawn in the window, as its left, top and height,
+    /// for a host that draws the document itself over the editor
+    /// ([`Editor::set_drawn`]): the editor's own rows are not kept then, and
+    /// the input method's candidate window goes beside the host's caret.
+    /// Called while nothing of the editor's is borrowed.
+    fn caret_area(&self, ed: &Editor) -> Option<(f64, f64, f64)> {
+        let _ = ed;
+        None
+    }
+
     /// ⌃⌘Space: open the system's emoji and symbols picker. Its choice comes
     /// back as an input method commit.
     fn character_palette(&self) {}

@@ -35,6 +35,8 @@
 
 mod access;
 mod app;
+#[cfg(test)]
+mod bench;
 mod commands;
 mod context;
 #[cfg(debug_assertions)]
@@ -52,6 +54,7 @@ mod pdf;
 mod platform;
 mod prefs;
 mod preview;
+mod reflow;
 mod renderer;
 mod settings;
 #[cfg(test)]

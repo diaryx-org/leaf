@@ -14,6 +14,7 @@
 //! The typesetter reads a request a line, as JSON, and answers each with a
 //! line: the pages and their glyphs, a PDF, or why not.
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -35,28 +36,45 @@ pub const TIME: Duration = Duration::from_secs(30);
 /// The most memory a typesetter may have, in bytes.
 pub const MEMORY: u64 = 2 << 30;
 
-/// A document laid out: by this process, or by a typesetter, which sends
-/// back the pages' pictures and glyphs.
-pub enum Laid {
-    Here(Layout),
-    There { svg: Vec<String>, pages: Vec<Page> },
+/// A document laid out, by this process or a typesetter: each page's size
+/// and glyphs, and its pieces, twig-export's tiles, each with its picture
+/// unless the window has that picture already.
+pub struct Laid {
+    pub pages: Vec<Page>,
+    pub tiles: Vec<Tiled>,
 }
 
-impl Laid {
-    /// Each page as an SVG document.
-    pub fn svg(&self) -> Vec<String> {
-        match self {
-            Laid::Here(l) => l.svg(),
-            Laid::There { svg, .. } => svg.clone(),
-        }
-    }
+/// A piece of a page as laid out: where it is on its page, in points, what
+/// it draws as a key, and its SVG if the window asking has none of that key.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tiled {
+    pub page: usize,
+    pub top: f64,
+    pub height: f64,
+    pub width: f64,
+    pub key: u128,
+    pub svg: Option<String>,
+}
 
-    /// Each page's size and glyphs.
-    pub fn pages(&self) -> Vec<Page> {
-        match self {
-            Laid::Here(l) => l.pages(),
-            Laid::There { pages, .. } => pages.clone(),
-        }
+/// `layout` as pages and pieces, a picture made for each piece whose key is
+/// not `known`, once.
+fn laid(layout: &Layout, known: &HashSet<u128>) -> Laid {
+    let mut made = HashSet::new();
+    let tiles = layout
+        .tiles()
+        .iter()
+        .map(|t| Tiled {
+            page: t.page,
+            top: t.top,
+            height: t.height,
+            width: t.width,
+            key: t.key,
+            svg: (!known.contains(&t.key) && made.insert(t.key)).then(|| layout.tile_svg(t)),
+        })
+        .collect();
+    Laid {
+        pages: layout.pages(),
+        tiles,
     }
 }
 
@@ -70,22 +88,14 @@ pub struct Job {
     pub sheet: Sheet,
 }
 
-/// `job` laid out.
-pub fn layout(job: &Job) -> Result<Laid, String> {
+/// `job` laid out, with a picture for each piece whose key is not `known`.
+pub fn layout(job: &Job, known: &HashSet<u128>) -> Result<Laid, String> {
     if is_ours(&job.ty.template) {
-        return here(job).map(Laid::Here);
+        return here(job).map(|l| laid(&l, known));
     }
-    let answer = ask(json!({ "kind": "layout", "job": job_json(job) }))?;
-    let pages = answer["pages"]
-        .as_array()
-        .ok_or("the typesetter sent no pages")?;
-    let mut svg = Vec::new();
-    let mut out = Vec::new();
-    for p in pages {
-        svg.push(p["svg"].as_str().unwrap_or_default().to_owned());
-        out.push(page_of(p));
-    }
-    Ok(Laid::There { svg, pages: out })
+    let known: Vec<String> = known.iter().map(|k| format!("{k:x}")).collect();
+    let answer = ask(json!({ "kind": "layout", "job": job_json(job), "known": known }))?;
+    laid_of(&answer)
 }
 
 /// `job` as a PDF.
@@ -125,8 +135,13 @@ fn here(job: &Job) -> Result<Layout, String> {
     let tree = leaf_core::parse_tree(&job.source, job.format).map_err(|e| e.to_string())?;
     let cfg = crate::pdf::config(&job.ty, job.sheet);
     let words = twig_export::render_words(tree, &job.source, &cfg).map_err(|e| format!("{e:#}"))?;
+    here_words(&words, root(job.path.as_deref()))
+}
+
+/// Words already rendered, laid out in this process.
+pub(crate) fn here_words(words: &twig_export::Words, root: &Path) -> Result<Layout, String> {
     typesetter()
-        .lay_out(&words, root(job.path.as_deref()))
+        .lay_out(words, root)
         .map_err(|e| format!("{e:#}"))
 }
 
@@ -298,13 +313,13 @@ fn answer(request: &Value) -> Result<Value, String> {
     match request["kind"].as_str() {
         Some("layout") => {
             let layout = here(&job_of(&request["job"])?)?;
-            let pages: Vec<Value> = layout
-                .svg()
+            let known: HashSet<u128> = request["known"]
+                .as_array()
                 .into_iter()
-                .zip(layout.pages())
-                .map(|(svg, page)| page_json(svg, &page))
+                .flatten()
+                .filter_map(|k| u128::from_str_radix(k.as_str()?, 16).ok())
                 .collect();
-            Ok(json!({ "pages": pages }))
+            Ok(laid_json(&laid(&layout, &known)))
         }
         Some("pdf") => {
             let pdf = here(&job_of(&request["job"])?)?
@@ -398,7 +413,49 @@ fn format_of(name: &str) -> Result<Format, String> {
         .ok_or_else(|| format!("no format named {name:?}"))
 }
 
-fn page_json(svg: String, page: &Page) -> Value {
+fn laid_json(l: &Laid) -> Value {
+    let pages: Vec<Value> = l.pages.iter().map(page_json).collect();
+    let tiles: Vec<Value> = l
+        .tiles
+        .iter()
+        .map(|t| {
+            json!({
+                "page": t.page, "top": t.top, "height": t.height, "width": t.width,
+                "key": format!("{:x}", t.key), "svg": t.svg,
+            })
+        })
+        .collect();
+    json!({ "pages": pages, "tiles": tiles })
+}
+
+fn laid_of(v: &Value) -> Result<Laid, String> {
+    let pages = v["pages"]
+        .as_array()
+        .ok_or("the typesetter sent no pages")?;
+    let tiles = v["tiles"]
+        .as_array()
+        .ok_or("the typesetter sent no pieces")?;
+    let n = |t: &Value, k: &str| t[k].as_f64().unwrap_or_default();
+    Ok(Laid {
+        pages: pages.iter().map(page_of).collect(),
+        tiles: tiles
+            .iter()
+            .map(|t| Tiled {
+                page: t["page"].as_u64().unwrap_or_default() as usize,
+                top: n(t, "top"),
+                height: n(t, "height"),
+                width: n(t, "width"),
+                key: t["key"]
+                    .as_str()
+                    .and_then(|k| u128::from_str_radix(k, 16).ok())
+                    .unwrap_or_default(),
+                svg: t["svg"].as_str().map(str::to_owned),
+            })
+            .collect(),
+    })
+}
+
+fn page_json(page: &Page) -> Value {
     let glyphs: Vec<Value> = page
         .glyphs
         .iter()
@@ -414,7 +471,7 @@ fn page_json(svg: String, page: &Page) -> Value {
             ])
         })
         .collect();
-    json!({ "svg": svg, "width": page.width, "height": page.height, "glyphs": glyphs })
+    json!({ "width": page.width, "height": page.height, "glyphs": glyphs })
 }
 
 fn page_of(v: &Value) -> Page {
@@ -481,6 +538,19 @@ mod tests {
                 source: Some(2..3),
             }],
         };
-        assert_eq!(page_of(&page_json(String::new(), &page)), page);
+        assert_eq!(page_of(&page_json(&page)), page);
+        let laid = Laid {
+            pages: vec![page],
+            tiles: vec![Tiled {
+                page: 0,
+                top: 10.0,
+                height: 20.0,
+                width: 612.0,
+                key: u128::MAX - 7,
+                svg: Some("<svg/>".into()),
+            }],
+        };
+        let back = laid_of(&laid_json(&laid)).unwrap();
+        assert_eq!((back.pages, back.tiles), (laid.pages, laid.tiles));
     }
 }
