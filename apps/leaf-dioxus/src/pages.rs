@@ -101,9 +101,16 @@ struct Line {
     ascent: f64,
     descent: f64,
     glyphs: Vec<(f64, f64, Range<usize>)>,
+    /// How wide a space is on the line: one Typst set there, or a quarter
+    /// of an em, the em guessed from the line's height.
+    space: Option<f64>,
 }
 
 impl Line {
+    fn space(&self) -> f64 {
+        self.space.unwrap_or(0.22 * (self.ascent + self.descent))
+    }
+
     fn first(&self) -> usize {
         self.glyphs.first().map_or(0, |g| g.2.start)
     }
@@ -158,10 +165,14 @@ impl Geometry {
                             ascent: 0.0,
                             descent: 0.0,
                             glyphs: Vec::new(),
+                            space: None,
                         });
                         mine.last_mut().expect("just pushed")
                     }
                 };
+                if g.text == " " && line.space.is_none() {
+                    line.space = Some(g.width);
+                }
                 line.ascent = line.ascent.max(g.ascent);
                 line.descent = line.descent.max(g.descent);
                 line.glyphs.push((g.x, g.width, source));
@@ -179,33 +190,49 @@ impl Geometry {
     /// the glyph set from that byte, else after the one set up to it, else
     /// beside the glyph nearest it in the source.
     fn caret(&self, offset: usize) -> Option<(usize, f64)> {
+        self.caret_at(offset).map(|(i, x, _)| (i, x))
+    }
+
+    /// [`Self::caret`], and the byte the x stands for: `offset` itself, or
+    /// the nearest glyph's edge.
+    fn caret_at(&self, offset: usize) -> Option<(usize, f64, usize)> {
         let mut after = None;
-        let mut nearest: Option<(usize, usize, f64)> = None;
+        let mut nearest: Option<(usize, usize, f64, usize)> = None;
         for (i, line) in self.lines.iter().enumerate() {
             for (x, w, r) in &line.glyphs {
                 if r.start == offset {
-                    return Some((i, *x));
+                    return Some((i, *x, offset));
                 }
                 if r.end == offset && after.is_none() {
-                    after = Some((i, x + w));
+                    after = Some((i, x + w, offset));
                 }
-                let (gap, at) = if offset < r.start {
-                    (r.start - offset, *x)
+                let (gap, at, from) = if offset < r.start {
+                    (r.start - offset, *x, r.start)
                 } else {
-                    (offset.saturating_sub(r.end), x + w)
+                    (offset.saturating_sub(r.end), x + w, r.end)
                 };
                 if nearest.is_none_or(|(g, ..)| gap < g) {
-                    nearest = Some((gap, i, at));
+                    nearest = Some((gap, i, at, from));
                 }
             }
         }
-        after.or(nearest.map(|(_, i, x)| (i, x)))
+        after.or(nearest.map(|(_, i, x, from)| (i, x, from)))
     }
 
-    /// Where a caret at `offset` is drawn.
-    pub fn caret_box(&self, offset: usize) -> Option<PageBox> {
-        let (i, x) = self.caret(offset)?;
+    /// Where a caret at `offset` in `source` is drawn. Spaces between the
+    /// last glyph and the caret move it on a space's width each: a space at
+    /// the end of a paragraph is no content to the parser, so Typst sets no
+    /// glyph for it, and the caret after it would otherwise stay after the
+    /// letter before.
+    pub fn caret_box(&self, offset: usize, source: &str) -> Option<PageBox> {
+        let (i, mut x, from) = self.caret_at(offset)?;
         let l = &self.lines[i];
+        if let Some(gap) = source.get(from..offset)
+            && !gap.is_empty()
+            && gap.bytes().all(|b| b == b' ')
+        {
+            x += gap.len() as f64 * l.space();
+        }
         Some(PageBox {
             page: l.page,
             x,
@@ -442,6 +469,7 @@ pub struct PagesProps {
 pub fn Pages(props: PagesProps) -> Element {
     let mut view = props.view;
     let id = dioxus_native::use_window().id();
+    let last = use_hook(|| Rc::new(Cell::new(None::<Press>)));
     let v = view.read();
     if v.width <= 0.0 {
         return rsx! {};
@@ -471,16 +499,7 @@ pub fn Pages(props: PagesProps) -> Element {
         let (page, px, py) = spread.on_page(&v.sheets, x - v.left, y - top + v.scroll)?;
         v.geometry.hit(page, px, py)
     };
-    let place = move |offset: usize, extend: bool| {
-        app::post(AppEvent::Run(Box::new(move || {
-            if let Some(page) = app::page(id) {
-                page.with_editor(|ed, _| {
-                    ed.doc().place_caret(offset, extend);
-                    ed.refresh();
-                });
-            }
-        })));
-    };
+    let drag_last = last.clone();
     rsx! {
         div { class: "pages", role: "region",
             aria_label: if v.editing { "Pages" } else { "PDF preview" },
@@ -489,15 +508,23 @@ pub fn Pages(props: PagesProps) -> Element {
             onmousedown: move |e: MouseEvent| {
                 e.prevent_default();
                 let p = e.client_coordinates();
-                if let Some(at) = land(p.x, p.y) {
-                    place(at, e.modifiers().shift());
-                }
+                let Some(at) = land(p.x, p.y) else { return };
+                let extend = e.modifiers().shift();
+                let count = Press::count(&last, p.x, p.y, extend);
+                edit(id, move |d| match count {
+                    2 => d.select_word_at(at),
+                    3 => d.select_block_at(at),
+                    _ => d.place_caret(at, extend),
+                });
             },
             onmousemove: move |e: MouseEvent| {
-                if e.held_buttons().contains(MouseButton::Primary) {
+                // After a double- or triple-click a drag leaves its word or
+                // block selected, as the editor's does.
+                let multi = drag_last.get().is_some_and(|p| p.count > 1);
+                if e.held_buttons().contains(MouseButton::Primary) && !multi {
                     let p = e.client_coordinates();
                     if let Some(at) = land(p.x, p.y) {
-                        place(at, true);
+                        edit(id, move |d| d.place_caret(at, true));
                     }
                 }
             },
@@ -511,7 +538,9 @@ pub fn Pages(props: PagesProps) -> Element {
                 let mut v = view.write();
                 let window = crate::app::page(id).map_or(800.0, |p| p.size().1);
                 let h = v.height(window);
-                v.scroll = v.clamped(v.scroll + dy, h);
+                // As the editor scrolls: a wheel turned down moves the page
+                // up, toward the end.
+                v.scroll = v.clamped(v.scroll - dy, h);
             },
             if let Some(n) = note {
                 div { class: "note", "{n}" }
@@ -532,6 +561,54 @@ pub fn Pages(props: PagesProps) -> Element {
             }
         }
     }
+}
+
+/// Presses closer together than this, and nearer than `NEAR` CSS pixels,
+/// count as one double- or triple-click, as the editor's do.
+const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(500);
+const NEAR: f64 = 4.0;
+
+/// The last press on the pages, for counting a double- and triple-click.
+#[derive(Clone, Copy, Debug)]
+struct Press {
+    at: std::time::Instant,
+    x: f64,
+    y: f64,
+    count: u8,
+}
+
+impl Press {
+    /// A press at (`x`, `y`), counted: 2 a double-click, 3 a triple-click,
+    /// and 1 again after that; `last` remembers it.
+    fn count(last: &Cell<Option<Press>>, x: f64, y: f64, extend: bool) -> u8 {
+        let at = std::time::Instant::now();
+        let count = match last.get() {
+            Some(p)
+                if !extend
+                    && at - p.at < MULTI_CLICK
+                    && (p.x - x).abs() < NEAR
+                    && (p.y - y).abs() < NEAR =>
+            {
+                p.count % 3 + 1
+            }
+            _ => 1,
+        };
+        last.set(Some(Press { at, x, y, count }));
+        count
+    }
+}
+
+/// Change the document of window `id`'s editor, on the handler's turn, and
+/// redraw it.
+fn edit(id: dioxus_native::winit::window::WindowId, f: impl FnOnce(&mut Doc) + 'static) {
+    app::post(AppEvent::Run(Box::new(move || {
+        if let Some(page) = app::page(id) {
+            page.with_editor(|ed, _| {
+                f(&mut ed.doc());
+                ed.refresh();
+            });
+        }
+    })));
 }
 
 #[cfg(test)]
@@ -568,11 +645,40 @@ mod tests {
     #[test]
     fn a_caret_is_drawn_before_its_byte_or_after_the_last() {
         let g = two_lines();
-        let b = g.caret_box(1).unwrap();
+        let src = "ab\ncd\n";
+        let b = g.caret_box(1, src).unwrap();
         assert_eq!((b.x, b.top, b.height), (15.0, 12.0, 10.0));
         // After the line's last glyph, on that line.
-        assert_eq!(g.caret_box(2).unwrap().x, 20.0);
-        assert_eq!(g.caret_box(3).unwrap().top, 32.0);
+        assert_eq!(g.caret_box(2, src).unwrap().x, 20.0);
+        assert_eq!(g.caret_box(3, src).unwrap().top, 32.0);
+    }
+
+    /// A space typed at a paragraph's end has no glyph; the caret after it
+    /// is still drawn a space on.
+    #[test]
+    fn a_caret_after_a_trailing_space_is_a_space_on() {
+        let g = Geometry::new(&[(
+            100.0,
+            vec![glyph(10.0, 20.0, Some(0..1)), glyph(15.0, 20.0, Some(1..2))],
+        )]);
+        let src = "ab  ";
+        let after_b = g.caret_box(2, src).unwrap().x;
+        let one = g.caret_box(3, src).unwrap().x;
+        let two = g.caret_box(4, src).unwrap().x;
+        assert!(one > after_b, "{after_b} {one}");
+        assert!((two - one - (one - after_b)).abs() < 1e-9, "{one} {two}");
+    }
+
+    #[test]
+    fn presses_close_together_count_up_to_three() {
+        let last = Cell::new(None);
+        assert_eq!(Press::count(&last, 10.0, 10.0, false), 1);
+        assert_eq!(Press::count(&last, 11.0, 10.0, false), 2);
+        assert_eq!(Press::count(&last, 11.0, 11.0, false), 3);
+        assert_eq!(Press::count(&last, 11.0, 11.0, false), 1);
+        // Away from the last, or extending: a press of its own.
+        assert_eq!(Press::count(&last, 40.0, 11.0, false), 1);
+        assert_eq!(Press::count(&last, 40.0, 11.0, true), 1);
     }
 
     #[test]

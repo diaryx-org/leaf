@@ -239,7 +239,8 @@ fn show(page: &Page, set: Result<Vec<Set>, String>) {
 /// the caret into view if it moved.
 fn caret(page: &Page) {
     let p = &page.preview;
-    let Some((caret, anchor)) = page.with_doc(|d| (d.caret, d.anchor)) else {
+    let Some((caret, anchor, source)) = page.with_doc(|d| (d.caret, d.anchor, d.source.clone()))
+    else {
         return;
     };
     let now = (caret, anchor, p.set.get());
@@ -252,7 +253,7 @@ fn caret(page: &Page) {
     page.with_view(|mut v| {
         let mut v = v.write();
         let g = v.geometry.clone();
-        v.caret = g.caret_box(caret);
+        v.caret = g.caret_box(caret, &source);
         v.selection = match anchor.filter(|&a| a != caret) {
             Some(a) => g.selection(a.min(caret), a.max(caret)),
             None => Vec::new(),
@@ -320,8 +321,8 @@ mod tests {
 
         let pages = layout.pages();
         let g = Geometry::new(&[(pages[0].height, pages[0].glyphs.clone())]);
-        let one = g.caret_box(5).expect("after the heading");
-        let a = g.caret_box(7).expect("before the paragraph");
+        let one = g.caret_box(5, source).expect("after the heading");
+        let a = g.caret_box(7, source).expect("before the paragraph");
         assert!(a.top > one.top, "{one:?} {a:?}");
         assert_eq!(g.line_edge(9, false), Some(7));
         assert_eq!(g.line_edge(9, true), Some(14));
