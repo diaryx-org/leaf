@@ -6,6 +6,8 @@
 //! binding in `input.rs` however it is chosen. This file routes each to the
 //! find bar, the composer, the document, or the host.
 
+use std::rc::Rc;
+
 use dioxus::html::{Code, Key, Modifiers};
 use dioxus::prelude::*;
 use dioxus_native::winit::dpi::{LogicalPosition, LogicalSize};
@@ -74,15 +76,31 @@ impl Editor {
                 return true;
             }
             Action::Vertical { down, extend } => {
-                self.vertical(down, extend);
+                match self.host_lines() {
+                    Some(lines) => {
+                        let mut d = st.doc.borrow_mut();
+                        // A table's cells are core's to move between, as
+                        // they are in the rows.
+                        if extend || !d.caret_in_table() || !d.cell_move_vertical(down) {
+                            lines.vertical(&mut d, down, extend, &st.goal);
+                        }
+                    }
+                    None => self.vertical(down, extend),
+                }
                 true
             }
             Action::Page { down, extend } => {
-                self.page(down, extend);
+                match self.host_lines() {
+                    Some(lines) => lines.page(&mut st.doc.borrow_mut(), down, extend, &st.goal),
+                    None => self.page(down, extend),
+                }
                 true
             }
             Action::LineEdge { end, extend } => {
-                self.line_edge(end, extend);
+                match self.host_lines() {
+                    Some(lines) => lines.line_edge(&mut st.doc.borrow_mut(), end, extend),
+                    None => self.line_edge(end, extend),
+                }
                 true
             }
             Action::Find(cmd) => {
@@ -94,6 +112,11 @@ impl Editor {
             self.refresh();
         }
         true
+    }
+
+    /// The host's lines, while it has given the editor some.
+    fn host_lines(&self) -> Option<Rc<dyn crate::host::Lines>> {
+        self.st.host_lines.borrow().clone()
     }
 
     /// ⌘F, ⌥⌘F, ⌘G, ⇧⌘G.

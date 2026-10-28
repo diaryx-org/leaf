@@ -202,6 +202,9 @@ pub struct State {
     /// The x a run of ↑/↓ aims for, kept across the lines it passes through
     /// so a short line does not pull the caret left for good.
     pub goal: Cell<Option<f32>>,
+    /// The host's lines, while it draws the document laid out its own way:
+    /// what ↑/↓, a screen's move and a line's edge go by instead of the rows.
+    pub host_lines: RefCell<Option<Rc<dyn crate::host::Lines>>>,
     /// The column's measure in each view, for the type `fonts` sets.
     pub measures: Cell<Measures>,
     /// The words the host's spelling checker found misspelled, as source
@@ -436,6 +439,7 @@ impl Editor {
             find: RefCell::default(),
             last_press: Cell::new(None),
             goal: Cell::new(None),
+            host_lines: RefCell::new(None),
             measures: Cell::new(measures),
             misspelled: RefCell::default(),
             surface: Cell::new((size.width as f64 / scale, size.height as f64 / scale)),
@@ -771,6 +775,13 @@ impl Editor {
                 height,
             }
         })
+    }
+
+    /// Move by the host's lines rather than the rows (see
+    /// [`crate::host::Lines`]), or, with `None`, by the rows again.
+    pub fn set_lines(&self, lines: Option<Rc<dyn crate::host::Lines>>) {
+        *self.st.host_lines.borrow_mut() = lines;
+        self.st.goal.set(None);
     }
 
     /// Lay the editor out in `bounds` from now on — a host with a sidebar

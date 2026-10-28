@@ -17,6 +17,7 @@
 //! is [`Doc::paste_html`]'s own contract. A webview would need the `paste`
 //! event's `DataTransfer` for these; native has no such restriction.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use leaf_core::Doc;
@@ -27,6 +28,22 @@ use crate::blocks::Directive;
 use crate::editor::Editor;
 use crate::input::{Gesture, ZoomCommand};
 use crate::link::Context;
+
+/// The lines of a document a host draws laid out its own way (Leaf's page
+/// view: the document as its PDF sets it), for the moves that go by line:
+/// up and down, by a screen, and to a line's edge. While a host gives the
+/// editor some ([`Editor::set_lines`]), those moves are theirs, not the
+/// rows'; every other key is still the editor's, on the same document.
+pub trait Lines {
+    /// The caret a line down or up, aiming for `goal`, the x a run of these
+    /// keeps (set it on the first, read it after); the selection extended
+    /// to it if `extend`.
+    fn vertical(&self, doc: &mut Doc, down: bool, extend: bool, goal: &Cell<Option<f32>>);
+    /// The caret a screen down or up, likewise.
+    fn page(&self, doc: &mut Doc, down: bool, extend: bool, goal: &Cell<Option<f32>>);
+    /// The caret to the start or the end of its line.
+    fn line_edge(&self, doc: &mut Doc, end: bool, extend: bool);
+}
 
 /// What the clipboard holds, in the two flavors the editor reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
