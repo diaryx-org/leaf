@@ -681,12 +681,72 @@ pub struct PagesProps {
     view: Signal<PagesView>,
 }
 
+/// Which node draws each piece on show. A piece's node is kept while its
+/// picture is; a picture set anew (a keystroke's, of the block it is in)
+/// takes the node of the one it replaces, where that one was. Blitz draws a
+/// node's old picture until its new `src` is loaded, where a new node would
+/// draw nothing until then: the line typed in would vanish at each
+/// keystroke, for as long as typing outran the pictures' loading.
+#[derive(Default)]
+struct Slots {
+    /// The pieces last on show: each one's node, and its top and bottom.
+    shown: std::collections::HashMap<String, (u64, f64, f64)>,
+    next: u64,
+}
+
+impl Slots {
+    /// The node for each piece of `shown` (its id, top and bottom), of the
+    /// pieces `all`: a piece no longer among them was replaced, and its
+    /// node is free for the new piece over most of its place.
+    fn assign(
+        &mut self,
+        shown: &[(String, f64, f64)],
+        all: &std::collections::HashSet<&str>,
+    ) -> Vec<u64> {
+        let mut free: Vec<(u64, f64, f64)> = self
+            .shown
+            .iter()
+            .filter(|(id, _)| !all.contains(id.as_str()))
+            .map(|(_, s)| *s)
+            .collect();
+        free.sort_by_key(|f| f.0);
+        let mut out = Vec::with_capacity(shown.len());
+        let mut now = std::collections::HashMap::with_capacity(shown.len());
+        for (id, top, bottom) in shown {
+            let slot = match self.shown.get(id) {
+                Some(&(slot, ..)) => slot,
+                None => {
+                    let overlap = |&(_, t, b): &(u64, f64, f64)| b.min(*bottom) - t.max(*top);
+                    let best = free
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, f)| overlap(f) > 0.0)
+                        .max_by(|(_, a), (_, b)| overlap(a).total_cmp(&overlap(b)))
+                        .map(|(i, _)| i);
+                    match best {
+                        Some(i) => free.remove(i).0,
+                        None => {
+                            self.next += 1;
+                            self.next
+                        }
+                    }
+                }
+            };
+            now.insert(id.clone(), (slot, *top, *bottom));
+            out.push(slot);
+        }
+        self.shown = now;
+        out
+    }
+}
+
 /// The pages, while they are shown, with the caret and the selection over
 /// them.
 #[allow(non_snake_case)]
 pub fn Pages(props: PagesProps) -> Element {
     let mut view = props.view;
     let id = dioxus_native::use_window().id();
+    let slots = use_hook(|| Rc::new(RefCell::new(Slots::default())));
     let v = view.read();
     if v.width <= 0.0 {
         return rsx! {};
@@ -712,19 +772,31 @@ pub fn Pages(props: PagesProps) -> Element {
     let screen = v.scroll.view.1.max(1.0);
     let (from, to) = (oy - screen, oy + 2.0 * screen);
     let mut seen: std::collections::HashMap<u128, usize> = Default::default();
-    let shown: Vec<(String, f64, f64, f64, f64, Rc<str>)> = v
+    let mut ids = Vec::with_capacity(v.pieces.len());
+    let shown: Vec<(usize, f64, f64, f64, f64, Rc<str>)> = v
         .pieces
         .iter()
         .filter_map(|p| {
-            let (left, top) = (*spread.lefts.get(p.page)?, *spread.tops.get(p.page)?);
-            let (x, y) = (left * z, (top + p.top * s) * z);
-            let (w, h) = (p.width * s * z, p.height * s * z);
             // The same picture twice (two rules) is two nodes.
             let n = seen.entry(p.key).or_default();
             *n += 1;
-            (y + h >= from && y <= to)
-                .then(|| (format!("{:x}-{n}", p.key), x, y, w, h, p.url.clone()))
+            ids.push(format!("{:x}-{n}", p.key));
+            let (left, top) = (*spread.lefts.get(p.page)?, *spread.tops.get(p.page)?);
+            let (x, y) = (left * z, (top + p.top * s) * z);
+            let (w, h) = (p.width * s * z, p.height * s * z);
+            (y + h >= from && y <= to).then(|| (ids.len() - 1, x, y, w, h, p.url.clone()))
         })
+        .collect();
+    let all: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let placed: Vec<(String, f64, f64)> = shown
+        .iter()
+        .map(|&(i, _, y, _, h, _)| (ids[i].clone(), y, y + h))
+        .collect();
+    let nodes = slots.borrow_mut().assign(&placed, &all);
+    let shown: Vec<(u64, f64, f64, f64, f64, Rc<str>)> = shown
+        .into_iter()
+        .zip(nodes)
+        .map(|((_, x, y, w, h, url), slot)| (slot, x, y, w, h, url))
         .collect();
     // A press, or a drag, at a point in the window: the line and the byte it
     // lands on, as the editor's target.
@@ -811,7 +883,7 @@ pub fn Pages(props: PagesProps) -> Element {
                 // Only the pieces within a screen of the view: a long
                 // document is a few screens' pictures, not all of them.
                 for (k, x, y, w, h, url) in shown {
-                    img { key: "{k}", class: "piece", src: "{url}", alt: "",
+                    img { key: "i{k}", class: "piece", src: "{url}", alt: "",
                         style: "left: {x}px; top: {y}px; width: {w}px; height: {h}px",
                     }
                 }
@@ -840,6 +912,36 @@ fn point(id: dioxus_native::winit::window::WindowId, p: Pointer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A piece drawn anew where one was replaced takes its node; a piece
+    /// kept keeps its own, and one scrolled out frees none.
+    #[test]
+    fn a_new_picture_takes_the_node_of_the_one_it_replaces() {
+        let mut slots = Slots::default();
+        let p = |id: &str, top: f64| (id.to_owned(), top, top + 10.0);
+        let all = |ids: &[&'static str]| ids.iter().copied().collect();
+        let first = slots.assign(
+            &[p("a", 0.0), p("b", 20.0), p("c", 40.0)],
+            &all(&["a", "b", "c"]),
+        );
+        // A keystroke in b, which wraps it a little lower.
+        let second = slots.assign(
+            &[p("a", 0.0), p("b2", 22.0), p("c", 40.0)],
+            &all(&["a", "b2", "c"]),
+        );
+        assert_eq!(second, first);
+        // c scrolled out of the view, still a piece: a new one under it is
+        // a node of its own.
+        let third = slots.assign(
+            &[p("a", 0.0), p("b2", 22.0), p("d", 40.0)],
+            &all(&["a", "b2", "c", "d"]),
+        );
+        assert_eq!(&third[..2], &first[..2]);
+        assert!(!first.contains(&third[2]));
+        // Nothing where a replaced piece was: a node of its own.
+        let fourth = slots.assign(&[p("a2", 100.0)], &all(&["a2"]));
+        assert!(!third.contains(&fourth[0]));
+    }
 
     /// A press past a table cell's text, nearer it than the next cell's,
     /// lands at its end, not in the next cell.

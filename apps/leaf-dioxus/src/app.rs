@@ -395,8 +395,8 @@ impl App {
         for c in contexts {
             vdom.insert_any_root_context(c);
         }
-        let net = Arc::new(blitz_net::Provider::new(Some(Arc::new(proxy.clone()) as _)));
-        vdom.provide_root_context(Arc::clone(&net));
+        let (net, fetches) = crate::net::Net::new(Arc::new(proxy.clone()));
+        vdom.provide_root_context(fetches);
         let document = DioxusDocument::new(
             vdom,
             DocumentConfig {

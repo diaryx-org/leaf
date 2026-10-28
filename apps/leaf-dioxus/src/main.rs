@@ -46,6 +46,7 @@ mod head;
 #[cfg(test)]
 mod headless;
 mod menus;
+mod net;
 #[cfg(test)]
 mod offscreen;
 mod page;

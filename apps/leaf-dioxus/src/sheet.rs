@@ -65,8 +65,8 @@ pub fn offscreen(
         look,
         print: screen.is_none(),
     }));
-    let net = Arc::new(blitz_net::Provider::new(Some(Arc::new(proxy.clone()) as _)));
-    vdom.provide_root_context(Arc::clone(&net));
+    let (net, fetches) = crate::net::Net::new(Arc::new(proxy.clone()));
+    vdom.provide_root_context(fetches);
     let mut document = DioxusDocument::new(
         vdom,
         DocumentConfig {
