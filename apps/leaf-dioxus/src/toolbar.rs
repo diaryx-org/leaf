@@ -45,7 +45,8 @@ pub const CSS: &str = "
 .toolbar .tools { position: absolute; left: 0; right: 0; bottom: 0; display: flex;
                   align-items: center; gap: 2px; padding: 0 10px; box-sizing: border-box; }
 .toolbar .tool { height: 26px; min-width: 28px; padding: 0 7px; gap: 0; border: none;
-                 border-radius: 6px; background: transparent; color: inherit; font: inherit; }
+                 border-radius: 6px; background: transparent; box-shadow: none;
+                 color: inherit; font: inherit; }
 .toolbar .tool:hover { background: var(--tool-hover-bg); }
 .toolbar .tool.on { background: var(--tool-on-bg); }
 .toolbar .tool[disabled] { opacity: 0.35; color: inherit; }

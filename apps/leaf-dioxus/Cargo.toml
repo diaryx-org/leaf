@@ -29,10 +29,9 @@ path = "src/main.rs"
 leaf-dioxus = { path = "../../crates/leaf-dioxus" }
 # diaryx-org's components for Dioxus, which work on Blitz and are read by
 # assistive tech: the toolbar's buttons and menus, the context menu, the
-# Link prompt, the Settings window. On its `claude/leaf-gaps` branch until
-# that merges (a toolbar's buttons leave the keys with the editor), then
-# `main`.
-unit = { git = "https://github.com/diaryx-org/unit", branch = "claude/leaf-gaps" }
+# Link prompt, the Settings window; and the pages' scrolling and zoom
+# (`unit::scroll`).
+unit = { git = "https://github.com/diaryx-org/unit", branch = "main" }
 dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
     "macro",
     "html",
