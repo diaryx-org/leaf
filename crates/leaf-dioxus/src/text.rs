@@ -30,7 +30,7 @@ pub use parley::Alignment;
 pub use parley::fontique::Blob;
 use parley::{
     Affinity, AlignmentOptions, Cursor, FontContext, FontFamily, FontStyle, FontWeight, InlineBox,
-    InlineBoxKind, Layout, LayoutContext, LineHeight, StyleProperty, VerticalAlign,
+    InlineBoxKind, Layout, LayoutContext, LineHeight, OverflowWrap, StyleProperty, VerticalAlign,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -341,6 +341,10 @@ impl Fonts {
         b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
             ty.leading,
         )));
+        // A word too long for a line of its own breaks where it must, as
+        // CSS's `overflow-wrap: anywhere`, rather than running out of the
+        // column.
+        b.push_default(StyleProperty::OverflowWrap(OverflowWrap::Anywhere));
         for (r, range) in runs.iter().zip(&ranges) {
             for property in style_of(&r.class, kind == Kind::Source || ty.grid.is_some(), ty) {
                 b.push(property, range.clone());
@@ -642,6 +646,21 @@ mod tests {
         assert!(l.lines.iter().all(|x| x.height >= Type::default().line()));
         assert_eq!(l.lines.first().unwrap().bytes.start, 0);
         assert_eq!(l.lines.last().unwrap().bytes.end, PROSE.len());
+    }
+
+    /// A word longer than the column breaks inside itself, and no part of
+    /// it runs past the column.
+    #[test]
+    fn a_word_too_long_for_a_line_breaks_inside_it() {
+        let mut f = Fonts::new(Type::default());
+        let word = format!("test{}", "!".repeat(300));
+        let text = format!("This is a {word} and more words.");
+        let l = f.layout(&row(vec![run(&text, "g")]), 300.0, Kind::Prose);
+        assert!(l.lines.len() >= 3, "{} lines", l.lines.len());
+        for col in 0..=text.len() {
+            let (_, x) = l.caret(col);
+            assert!(x <= 300.5, "col {col} drawn at {x}");
+        }
     }
 
     #[test]
