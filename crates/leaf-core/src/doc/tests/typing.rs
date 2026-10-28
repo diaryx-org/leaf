@@ -501,3 +501,38 @@ fn ending_a_composition_that_never_began_leaves_a_typing_run_alone() {
     d.undo();
     assert_eq!(d.source, "\n", "still one typed run");
 }
+
+/// A paragraph made a heading, or a heading a paragraph, keeps the caret on
+/// the letter it was before: the marker moves the text, not the caret off it.
+#[test]
+fn a_paragraph_restyled_keeps_the_caret_on_its_text() {
+    let mut d = wysiwyg_doc("restyle", "one\n\nsecond paragraph\n");
+    d.caret = 5 + "second pa".len();
+    d.toggle_heading(2);
+    assert_eq!(d.source, "one\n\n## second paragraph\n");
+    assert_eq!(&d.source[d.caret..], "ragraph\n");
+    d.toggle_heading(2);
+    assert_eq!(d.source, "one\n\nsecond paragraph\n");
+    assert_eq!(&d.source[d.caret..], "ragraph\n");
+    // A heading opened on a blank line puts the caret after its marker.
+    let mut d = doc_with("open", "one\n\n");
+    d.caret = 5;
+    d.toggle_heading(1);
+    assert!(
+        d.source[..d.caret].ends_with("# "),
+        "{:?} {}",
+        d.source,
+        d.caret
+    );
+}
+
+/// In the rich view the document's end is its last letter's: ⌘↓ or
+/// Ctrl+End then typing types onto the last paragraph, not after the
+/// file's trailing newline.
+#[test]
+fn the_rich_views_end_is_after_the_last_letter() {
+    let mut d = wysiwyg_doc("end", "one\n\ntwo\n");
+    d.move_doc_end(false);
+    d.insert("!");
+    assert_eq!(d.source, "one\n\ntwo!\n");
+}

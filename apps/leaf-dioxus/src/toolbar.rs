@@ -44,7 +44,7 @@ pub const CSS: &str = "
            font: 13px system-ui, -apple-system, sans-serif; white-space: nowrap; }
 .toolbar .tools { position: absolute; left: 0; right: 0; bottom: 0; display: flex;
                   align-items: center; gap: 2px; padding: 0 10px; box-sizing: border-box; }
-.toolbar .tool { height: 26px; min-width: 28px; padding: 0 7px; gap: 0; border: none;
+.toolbar .tool { flex-shrink: 0; height: 26px; min-width: 28px; padding: 0 7px; gap: 0; border: none;
                  border-radius: 6px; background: transparent; box-shadow: none;
                  color: inherit; font: inherit; }
 .toolbar .tool:hover { background: var(--tool-hover-bg); }
@@ -52,8 +52,12 @@ pub const CSS: &str = "
 .toolbar .tool[disabled] { opacity: 0.35; color: inherit; }
 .toolbar .tool[disabled]:hover { background: transparent; }
 .toolbar .icon { display: flex; align-items: center; justify-content: center; }
-.toolbar .gap { width: 10px; }
-.toolbar .grow { flex: 1; }
+.toolbar .gap { flex-shrink: 0; width: 10px; }
+.toolbar .grow { flex: 1; min-width: 10px; }
+/* A window too narrow for every tool clips the formatting tools, never the
+   document's File and Style or its views. */
+.toolbar .middle { display: flex; align-items: center; gap: 2px; min-width: 0;
+                   flex: 0 1 auto; overflow: hidden; }
 .toolbar .b { font-weight: 700; font-family: Georgia, serif; font-size: 15px; }
 .toolbar .i { font-style: italic; font-family: Georgia, serif; font-size: 15px; }
 .toolbar .u { text-decoration: underline; font-family: Georgia, serif; font-size: 15px; }
@@ -168,33 +172,31 @@ fn Toolbar(props: ToolbarProps) -> Element {
                 {file}
                 {popup(style, "Style", menus::style())}
                 span { class: "gap" }
-                {chord("B", "Bold", "b", m(InlineKind::Strong), rich, "b", Code::KeyB, CMD)}
-                {chord("I", "Italic", "i", m(InlineKind::Emph), rich, "i", Code::KeyI, CMD)}
-                {chord("U", "Underline", "u", m(InlineKind::Insert), rich, "u", Code::KeyU, CMD)}
-                {popup("Format".into(), "Format", menus::format())}
-                span { class: "gap" }
-                {popup("Lists".into(), "Lists", menus::lists_menu())}
-                {popup("Insert".into(), "Insert", menus::insert())}
-                span { class: "gap" }
-                {icon(UNDO, "Undo", c.can_undo, "z", Code::KeyZ, CMD)}
-                {icon(REDO, "Redo", c.can_redo, "z", Code::KeyZ, CMD | SHIFT)}
+                div { class: "middle",
+                    {chord("B", "Bold", "b", m(InlineKind::Strong), rich, "b", Code::KeyB, CMD)}
+                    {chord("I", "Italic", "i", m(InlineKind::Emph), rich, "i", Code::KeyI, CMD)}
+                    {chord("U", "Underline", "u", m(InlineKind::Insert), rich, "u", Code::KeyU, CMD)}
+                    {popup("Format".into(), "Format", menus::format())}
+                    span { class: "gap" }
+                    {popup("Lists".into(), "Lists", menus::lists_menu())}
+                    {popup("Insert".into(), "Insert", menus::insert())}
+                    span { class: "gap" }
+                    {icon(UNDO, "Undo", c.can_undo, "z", Code::KeyZ, CMD)}
+                    {icon(REDO, "Redo", c.can_redo, "z", Code::KeyZ, CMD | SHIFT)}
+                }
                 span { class: "grow" }
-                {chord("</>", "Source", "", c.source_view, true, "e", Code::KeyE, CMD)}
-                ToggleButton { class: "tool", label: "PDF Preview", pressed: c.preview,
+                // The views: one is always shown, as a segmented control's.
+                ToggleButton { class: "tool", label: "Reflow", pressed: c.reflow,
                     refuses_keys: true,
-                    onchange: move |_| app::post(AppEvent::Command(id, Command::PdfPreview)),
-                    "PDF"
+                    onchange: move |_| app::post(AppEvent::Command(id, Command::Reflow)),
+                    "Reflow"
                 }
                 ToggleButton { class: "tool", label: "Pages", pressed: c.pages,
                     refuses_keys: true,
                     onchange: move |_| app::post(AppEvent::Command(id, Command::PageView)),
                     "Pages"
                 }
-                ToggleButton { class: "tool", label: "Reflow", pressed: c.reflow,
-                    refuses_keys: true,
-                    onchange: move |_| app::post(AppEvent::Command(id, Command::Reflow)),
-                    "Reflow"
-                }
+                {chord("Source", "Source", "", c.source_view, true, "e", Code::KeyE, CMD)}
                 {popup("Aa".into(), "Display", menus::display())}
             }
         }

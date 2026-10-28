@@ -67,9 +67,8 @@ pub struct Chrome {
     pub link: bool,
     pub mark_color: Option<MarkColor>,
     pub preserve_breaks: bool,
-    /// The PDF preview is shown beside the editor, or the page view in its
-    /// place: the window's, not the document's.
-    pub preview: bool,
+    /// The page view or the reflowed view is shown: the window's, not the
+    /// document's. The source view, beside the pages, is `source_view`.
     pub pages: bool,
     pub reflow: bool,
     /// The app's menus as of this chrome (`menus::generation`): a toolbar
@@ -97,7 +96,6 @@ impl Chrome {
             link: d.link_destination_at_caret().is_some(),
             mark_color: d.mark_color_at_caret(),
             preserve_breaks: d.line_flow() == LineFlow::Preserve,
-            preview: false,
             pages: false,
             reflow: false,
             menus: crate::menus::generation(),
@@ -593,7 +591,9 @@ impl Page {
             init.shell.stale.set(true);
             return;
         };
-        chrome.preview = self.preview.mode() == Mode::Beside;
+        // ⌘E, or the editor's own command, turns the source view on or off:
+        // the window shows it beside the pages, or goes back.
+        preview::follow(self, chrome.source_view);
         chrome.pages = self.preview.mode() == Mode::Pages;
         chrome.reflow = self.preview.mode() == Mode::Reflow;
         preview::update(self);
@@ -703,9 +703,8 @@ impl Page {
             Command::Link => crate::context::prompt_link(self),
             Command::InstallTemplate => crate::templates::prompt_install(self),
             Command::ExportPdf => platform::print::export(self),
-            Command::PdfPreview => preview::toggle(self, Mode::Beside),
-            Command::PageView => preview::toggle(self, Mode::Pages),
-            Command::Reflow => preview::toggle(self, Mode::Reflow),
+            Command::PageView => preview::show(self, Mode::Pages),
+            Command::Reflow => preview::show(self, Mode::Reflow),
             Command::Save => {
                 if let Some(s) = self.shell() {
                     s.document.save();

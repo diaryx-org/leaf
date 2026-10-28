@@ -783,7 +783,13 @@ impl Doc {
     /// Ctrl+End on Windows/Linux).
     pub fn move_doc_end(&mut self, extend: bool) {
         self.goal_col = None;
-        let end = self.source.len();
+        // In the rich view the end is the last caret stop, after the last
+        // letter: past the file's trailing newline, typing would start a line
+        // the view does not draw.
+        let end = match self.view {
+            View::Wysiwyg => self.vmap.snap_to_stop(self.source.len()),
+            View::Source => self.source.len(),
+        };
         self.move_to(end, extend);
     }
 

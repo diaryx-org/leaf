@@ -257,6 +257,34 @@ pub fn apply_key(doc: &mut Doc, key: &Key, code: Code, mods: Modifiers) -> Actio
 )]
 fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Action {
     let done = |_: ()| Action::Handled;
+    // Off the Mac, Ctrl is the command key, so the paragraph's styles are
+    // Ctrl+Alt and a digit, as Google Docs has them: the Mac's ⌃1…⌃6 are
+    // ⌘ chords here, and Ctrl+0 is Actual Size.
+    if !mac_keys() && alt && !shift {
+        match code {
+            Code::Digit0 => return done(doc.set_block(BlockKind::Paragraph)),
+            Code::Digit1 => return done(doc.toggle_heading(1)),
+            Code::Digit2 => return done(doc.toggle_heading(2)),
+            Code::Digit3 => return done(doc.toggle_heading(3)),
+            Code::Digit4 => return done(doc.toggle_heading(4)),
+            Code::Digit5 => return done(doc.toggle_heading(5)),
+            Code::Digit6 => return done(doc.toggle_heading(6)),
+            _ => {}
+        }
+    }
+    // Off the Mac, Ctrl with a motion is the platform's own: the document's
+    // ends, and a word at a time, where the Mac's ⌘ goes to a line's ends.
+    if !mac_keys() && !alt {
+        match key {
+            Key::Named(NamedKey::Home) => return done(doc.move_doc_start(shift)),
+            Key::Named(NamedKey::End) => return done(doc.move_doc_end(shift)),
+            Key::Named(NamedKey::ArrowLeft) => return done(doc.move_word_left(shift)),
+            Key::Named(NamedKey::ArrowRight) => return done(doc.move_word_right(shift)),
+            Key::Named(NamedKey::Backspace) => return done(doc.delete_word_back()),
+            Key::Named(NamedKey::Delete) => return done(doc.delete_word_forward()),
+            _ => {}
+        }
+    }
     // The physical keys first, which ⇧ would otherwise rename.
     match code {
         Code::Digit8 if shift => return done(doc.toggle_list(false)),
@@ -456,6 +484,53 @@ mod tests {
         press(&mut d, ch("2"), Code::Digit2, Modifiers::CONTROL);
         assert!(d.source.starts_with("## title"), "{:?}", d.source);
         press(&mut d, ch("2"), Code::Digit2, Modifiers::CONTROL);
+        assert!(d.source.starts_with("title"), "{:?}", d.source);
+    }
+
+    /// Off the Mac, Ctrl+Home and Ctrl+End are the document's ends, and
+    /// Ctrl+← and Ctrl+Backspace go by words.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_motions_are_the_platforms_off_the_mac() {
+        let ctrl = Modifiers::CONTROL;
+        let mut d = doc("one two\n\nthree four\n");
+        d.place_caret(1, false);
+        press(&mut d, Key::Named(NamedKey::End), Code::End, ctrl);
+        assert_eq!(
+            &d.source[d.caret..],
+            "\n",
+            "the document's end, its last letter's"
+        );
+        press(
+            &mut d,
+            Key::Named(NamedKey::ArrowLeft),
+            Code::ArrowLeft,
+            ctrl,
+        );
+        assert_eq!(&d.source[d.caret..], "four\n", "a word back");
+        press(
+            &mut d,
+            Key::Named(NamedKey::Backspace),
+            Code::Backspace,
+            ctrl,
+        );
+        assert!(d.source.contains("four"), "{:?}", d.source);
+        assert!(!d.source.contains("three"), "{:?}", d.source);
+        press(&mut d, Key::Named(NamedKey::Home), Code::Home, ctrl);
+        assert_eq!(d.caret, 0, "the document's start");
+    }
+
+    /// Off the Mac, Ctrl is the command key: the styles are Ctrl+Alt and a
+    /// digit, and Ctrl+Alt+0 is the body again.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_alt_2_toggles_a_heading() {
+        let style = Modifiers::CONTROL | Modifiers::ALT;
+        let mut d = doc("title\n");
+        d.place_caret(1, false);
+        press(&mut d, ch("2"), Code::Digit2, style);
+        assert!(d.source.starts_with("## title"), "{:?}", d.source);
+        press(&mut d, ch("0"), Code::Digit0, style);
         assert!(d.source.starts_with("title"), "{:?}", d.source);
     }
 

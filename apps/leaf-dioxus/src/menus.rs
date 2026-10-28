@@ -9,7 +9,9 @@ use leaf_core::{Alignment, Format, MarkColor};
 use leaf_dioxus::{TableCommand, ZoomCommand};
 use unit::{Entry, Item};
 
-use crate::commands::{self, ALT, AppState, CMD, CTRL, Command, SHIFT, Switch, shortcut_label};
+use crate::commands::{
+    self, ALT, AppState, CMD, CTRL, Command, SHIFT, STYLE, Switch, shortcut_label,
+};
 use crate::page::Chrome;
 use crate::settings::{Choice, ColumnWidth, Template, TextSize};
 
@@ -57,7 +59,7 @@ fn headings() -> Vec<Node> {
     codes
         .into_iter()
         .enumerate()
-        .map(|(i, code)| I(LABELS[i], chord(&(i + 1).to_string(), code, CTRL)))
+        .map(|(i, code)| I(LABELS[i], chord(&(i + 1).to_string(), code, STYLE)))
         .collect()
 }
 
@@ -160,9 +162,9 @@ pub fn file() -> Vec<Node> {
         I("Save", Command::Save),
         I("Save As…", Command::SaveAs),
         I("Export as PDF…", Command::ExportPdf),
-        I("PDF Preview", Command::PdfPreview),
-        I("Pages", Command::PageView),
         I("Reflow", Command::Reflow),
+        I("Pages", Command::PageView),
+        I("Source", chord("e", Code::KeyE, CMD)),
         Sep,
         I("Open Sample Document", Command::OpenSample),
         I("Settings…", Command::Settings),
@@ -314,7 +316,7 @@ pub fn bar() -> Vec<(&'static str, Vec<Node>)> {
                     Sub("Highlight Colour", highlight()),
                     I("Link…", Command::Link),
                     Sep,
-                    I("Paragraph", chord("0", Code::Digit0, CTRL)),
+                    I("Paragraph", chord("0", Code::Digit0, STYLE)),
                     Sub("Heading", headings()),
                     Sep,
                     I("Block Quote", chord("(", Code::Digit9, CMD | SHIFT)),
@@ -330,11 +332,10 @@ pub fn bar() -> Vec<(&'static str, Vec<Node>)> {
         (
             "View",
             vec![
-                I("Source View", chord("e", Code::KeyE, CMD)),
-                I("Preserve Line Breaks", Command::PreserveBreaks),
-                I("PDF Preview", Command::PdfPreview),
-                I("Pages", Command::PageView),
                 I("Reflow", Command::Reflow),
+                I("Pages", Command::PageView),
+                I("Source", chord("e", Code::KeyE, CMD)),
+                I("Preserve Line Breaks", Command::PreserveBreaks),
                 Sub("Template", templates()),
                 Sep,
                 // Commands of their own, not chords: a Mac hands the menu a
@@ -368,7 +369,7 @@ pub fn bar() -> Vec<(&'static str, Vec<Node>)> {
 /// `LeafStyleMenu`.
 pub fn style() -> Vec<Node> {
     [
-        vec![I("Body", chord("0", Code::Digit0, CTRL))],
+        vec![I("Body", chord("0", Code::Digit0, STYLE))],
         headings(),
         vec![
             Sep,
@@ -541,7 +542,7 @@ mod tests {
                 .all(|w| !(w[0] == Entry::Separator && w[1] == Entry::Separator))
         );
         let (_, commands) = entries(&style(), Some(&Chrome::default()), &AppState::default());
-        assert_eq!(commands[0], chord("0", Code::Digit0, CTRL));
+        assert_eq!(commands[0], chord("0", Code::Digit0, STYLE));
     }
 
     #[test]

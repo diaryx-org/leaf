@@ -111,6 +111,29 @@ impl Spread {
     }
 }
 
+impl Spread {
+    /// The page nearest a point `y` down the view, and the point in its
+    /// points, held to the page: a press below the last page, above the
+    /// first or between two lands on the nearest, as a press past a line's
+    /// end lands at its end.
+    pub fn nearest(&self, sheets: &[Sheet], x: f64, y: f64) -> Option<(usize, f64, f64)> {
+        if sheets.is_empty() {
+            return None;
+        }
+        let mut page = self.tops.partition_point(|&t| t <= y).saturating_sub(1);
+        // Nearer the next page's top than this one's bottom.
+        if let Some(&next) = self.tops.get(page + 1) {
+            let bottom = self.tops[page] + sheets[page].height * self.scale;
+            if y - bottom > next - y {
+                page += 1;
+            }
+        }
+        let px = (x - self.lefts[page]) / self.scale;
+        let py = ((y - self.tops[page]) / self.scale).clamp(0.0, sheets[page].height);
+        Some((page, px, py))
+    }
+}
+
 /// A box on a page, in its points.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PageBox {
@@ -148,13 +171,21 @@ impl Line {
         self.glyphs.last().map_or(0, |g| g.2.end)
     }
 
-    /// The byte nearest a point `x` along the line: before the glyph whose
-    /// left half it is in, after the last if it is past them all.
+    /// The byte nearest a point `x` along the line: the nearest edge of a
+    /// glyph, before it or after it. In running text one glyph's right edge
+    /// is the next one's left; across a gap (a table's cells, a column's
+    /// gutter) the press lands on the side it is nearer, not past the gap.
     fn offset_at(&self, x: f64) -> usize {
-        self.glyphs
-            .iter()
-            .find(|(gx, w, _)| x < gx + w / 2.0)
-            .map_or(self.last(), |g| g.2.start)
+        let mut best = (f64::INFINITY, self.last());
+        for (gx, w, r) in &self.glyphs {
+            for (edge, at) in [(*gx, r.start), (gx + w, r.end)] {
+                let d = (x - edge).abs();
+                if d < best.0 {
+                    best = (d, at);
+                }
+            }
+        }
+        best.1
     }
 }
 
@@ -271,6 +302,40 @@ impl Geometry {
         })
     }
 
+    /// Where a caret at `offset` in `now` is drawn on pages set from
+    /// `laid`, an earlier source: through the edit between them, so that
+    /// the caret keeps up with typing until the pages of the edit are set.
+    /// A caret in what was typed is drawn after the text before it, moved
+    /// on by an estimate of the typed text's width.
+    pub fn caret_through(&self, offset: usize, now: &str, laid: &str) -> Option<PageBox> {
+        if now == laid || laid.is_empty() {
+            return self.caret_box(offset, now);
+        }
+        let (pre, suf) = edit_of(now, laid);
+        if offset <= pre {
+            return self.caret_box(offset, laid);
+        }
+        // Right after what was typed is still in it: the typed text has no
+        // glyphs yet.
+        if offset > now.len() - suf {
+            return self.caret_box(offset + laid.len() - now.len(), laid);
+        }
+        let mut b = self.caret_box(pre, laid)?;
+        let (i, ..) = self.caret_at(pre)?;
+        let l = &self.lines[i];
+        let n = l.glyphs.len().max(1) as f64;
+        let letter = l.glyphs.iter().map(|g| g.1).sum::<f64>() / n;
+        let letter = if letter > 0.0 {
+            letter
+        } else {
+            l.space() * 2.0
+        };
+        for c in now[pre..offset].chars() {
+            b.x += if c == ' ' { l.space() } else { letter };
+        }
+        Some(b)
+    }
+
     /// The boxes a selection of bytes `lo..hi` covers: one a line.
     pub fn selection(&self, lo: usize, hi: usize) -> Vec<PageBox> {
         let mut boxes = Vec::new();
@@ -296,7 +361,8 @@ impl Geometry {
 
     /// The line a press at (`x`, `y`) on `page`, in its points, lands on,
     /// and the byte: the line whose glyphs' height it is within, else the
-    /// nearest.
+    /// nearest. Below the document's last line is its end, and above its
+    /// first line its start, wherever across.
     pub fn hit(&self, page: usize, x: f64, y: f64) -> Option<(usize, usize)> {
         let (i, line) = self
             .lines
@@ -304,7 +370,14 @@ impl Geometry {
             .enumerate()
             .filter(|(_, l)| l.page == page)
             .min_by(|a, b| distance(a.1, y).total_cmp(&distance(b.1, y)))?;
-        Some((i, line.offset_at(x)))
+        let at = if i + 1 == self.lines.len() && y > line.baseline + line.descent {
+            line.last()
+        } else if i == 0 && y < line.baseline - line.ascent {
+            line.first()
+        } else {
+            line.offset_at(x)
+        };
+        Some((i, at))
     }
 
     /// The byte a line down or up from `offset`, aiming for `goal` (the x of
@@ -359,6 +432,47 @@ impl Geometry {
     fn y(&self, i: usize) -> f64 {
         let l = &self.lines[i];
         self.tops[l.page] + l.baseline
+    }
+}
+
+/// The edit between two sources: how many bytes they share at the start,
+/// and at the end, on character boundaries.
+fn edit_of(now: &str, laid: &str) -> (usize, usize) {
+    let pre = now
+        .char_indices()
+        .zip(laid.chars())
+        .find(|((_, a), b)| a != b)
+        .map_or(now.len().min(laid.len()), |((i, _), _)| i);
+    let most = now.len().min(laid.len()) - pre;
+    let suf = now[pre..]
+        .chars()
+        .rev()
+        .zip(laid[pre..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .scan(0, |n, l| {
+            *n += l;
+            Some(*n)
+        })
+        .take_while(|&n| n <= most)
+        .last()
+        .unwrap_or(0);
+    (pre, suf)
+}
+
+/// Byte `offset` of `now` in `laid`, an earlier source: the same before the
+/// edit between them, moved by it after, and the edit's start within it.
+pub fn through(offset: usize, now: &str, laid: &str) -> usize {
+    if now == laid || laid.is_empty() {
+        return offset;
+    }
+    let (pre, suf) = edit_of(now, laid);
+    if offset <= pre {
+        offset
+    } else if offset >= now.len() - suf {
+        offset + laid.len() - now.len()
+    } else {
+        pre
     }
 }
 
@@ -546,7 +660,7 @@ pub fn Pages(props: PagesProps) -> Element {
         let v = view.peek();
         let spread = v.spread();
         let (cx, cy) = v.scroll.to_content(x - v.left, y - top);
-        let (page, px, py) = spread.on_page(&v.sheets, cx, cy)?;
+        let (page, px, py) = spread.nearest(&v.sheets, cx, cy)?;
         let (line, at) = v.geometry.hit(page, px, py)?;
         Some((Target::Offset(at), line))
     };
@@ -648,6 +762,94 @@ fn point(id: dioxus_native::winit::window::WindowId, p: Pointer) {
 mod tests {
     use super::*;
 
+    /// A press past a table cell's text, nearer it than the next cell's,
+    /// lands at its end, not in the next cell.
+    #[test]
+    fn a_press_past_a_cells_text_stays_in_the_cell() {
+        let glyph = |x: f64, r: std::ops::Range<usize>| Glyph {
+            x,
+            baseline: 20.0,
+            width: 5.0,
+            ascent: 8.0,
+            descent: 2.0,
+            text: "a".into(),
+            source: Some(r),
+        };
+        // "ab" at 0..10, then a cell away, "c" at 60.
+        let g = Geometry::new(&[(
+            100.0,
+            vec![glyph(0.0, 2..3), glyph(5.0, 3..4), glyph(60.0, 9..10)],
+        )]);
+        assert_eq!(g.hit(0, 14.0, 18.0), Some((0, 4)), "after b");
+        assert_eq!(g.hit(0, 55.0, 18.0), Some((0, 9)), "before c");
+        assert_eq!(g.hit(0, 6.0, 18.0), Some((0, 3)), "between a and b");
+    }
+
+    /// A press below the last page, or between two, lands on the nearest.
+    #[test]
+    fn a_press_off_the_pages_lands_on_the_nearest() {
+        let sheets = vec![
+            Sheet {
+                url: Rc::from(""),
+                width: 100.0,
+                height: 100.0,
+            },
+            Sheet {
+                url: Rc::from(""),
+                width: 100.0,
+                height: 100.0,
+            },
+        ];
+        let spread = Spread::of(&sheets, 400.0, false);
+        let below = spread.height + 500.0;
+        let (page, _, py) = spread.nearest(&sheets, 50.0, below).unwrap();
+        assert_eq!((page, py), (1, 100.0));
+        let gap = spread.tops[1] - 1.0;
+        assert_eq!(spread.nearest(&sheets, 50.0, gap).unwrap().0, 1);
+        let reflowed = Spread::of(&sheets[..1], 400.0, true);
+        assert_eq!(
+            reflowed.nearest(&sheets[..1], 10.0, 9999.0).unwrap().2,
+            100.0
+        );
+    }
+
+    /// Through an edit, a byte before it is where it was, one after it is
+    /// moved by it, and one in what was typed is the edit's start.
+    #[test]
+    fn a_byte_is_found_through_an_edit() {
+        let (laid, now) = ("a b", "a bcd e");
+        assert_eq!(edit_of(now, laid), (3, 0));
+        assert_eq!(through(2, now, laid), 2);
+        assert_eq!(through(5, now, laid), 3);
+        let (laid, now) = ("one two", "one xx two");
+        assert_eq!(edit_of(now, laid), (4, 3));
+        assert_eq!(through(9, now, laid), 6);
+        assert_eq!(through(5, now, laid), 4);
+        // Repeated letters: the shared end is not counted twice.
+        assert_eq!(edit_of("aaa", "aa"), (2, 0));
+        assert_eq!(edit_of("é!", "é"), (2, 0));
+    }
+
+    /// Typing a space and a letter on stale pages moves the caret on, not
+    /// back to before the space.
+    #[test]
+    fn the_caret_keeps_up_with_typing_on_stale_pages() {
+        let glyph = |x: f64, r: std::ops::Range<usize>, text: &str| Glyph {
+            x,
+            baseline: 10.0,
+            width: 5.0,
+            ascent: 8.0,
+            descent: 2.0,
+            text: text.into(),
+            source: Some(r),
+        };
+        let g = Geometry::new(&[(100.0, vec![glyph(0.0, 0..1, "a")])]);
+        let space = g.caret_through(2, "a ", "a").unwrap().x;
+        let letter = g.caret_through(3, "a b", "a").unwrap().x;
+        assert!(space > 5.0, "{space}");
+        assert!(letter > space, "{letter} after {space}");
+    }
+
     fn glyph(x: f64, baseline: f64, source: Option<Range<usize>>) -> Glyph {
         Glyph {
             x,
@@ -708,8 +910,10 @@ mod tests {
         assert_eq!(g.hit(0, 11.0, 18.0), Some((0, 0)));
         assert_eq!(g.hit(0, 13.0, 18.0), Some((0, 1)));
         assert_eq!(g.hit(0, 90.0, 18.0), Some((0, 2)));
-        // Below every line: the last.
-        assert_eq!(g.hit(0, 0.0, 90.0), Some((1, 3)));
+        // Below every line: the last line's end, wherever across; above
+        // every line, the first's start.
+        assert_eq!(g.hit(0, 0.0, 90.0), Some((1, 5)));
+        assert_eq!(g.hit(0, 90.0, 1.0), Some((0, 0)));
     }
 
     #[test]

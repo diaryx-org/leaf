@@ -24,6 +24,13 @@ pub const SHIFT: Modifiers = Modifiers::SHIFT;
 pub const ALT: Modifiers = Modifiers::ALT;
 pub const CTRL: Modifiers = Modifiers::CONTROL;
 
+/// The paragraph's styles' chord with a digit: ⌃ on the Mac; off it, where
+/// Ctrl is the command key, Ctrl+Alt, as Google Docs has them.
+#[cfg(target_os = "macos")]
+pub const STYLE: Modifiers = Modifiers::CONTROL;
+#[cfg(not(target_os = "macos"))]
+pub const STYLE: Modifiers = Modifiers::CONTROL.union(Modifiers::ALT);
+
 /// The spelling switches, the system's where it has them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Switch {
@@ -53,13 +60,10 @@ pub enum Command {
     PreserveBreaks,
     Zoom(ZoomCommand),
     ExportPdf,
-    /// Show or hide the PDF preview beside the editor.
-    PdfPreview,
-    /// Show the page view, where the document is edited on its pages, in
-    /// the editor's place; or the editor again.
+    /// Show the page view, where the document is edited on its pages.
     PageView,
     /// Show the reflowed view, where the document is edited as one page as
-    /// wide as the window, in the editor's place; or the editor again.
+    /// wide as the window: the default.
     Reflow,
     /// Save, Save As and Close: on the Mac, the document system's own menu
     /// items; elsewhere, the app's.
@@ -125,7 +129,6 @@ impl Command {
             Command::Chord(_, code, mods) => Some((*code, *mods)),
             Command::Link => Some((Code::KeyK, CMD)),
             Command::ExportPdf => Some((Code::KeyE, CMD | SHIFT)),
-            Command::PdfPreview => Some((Code::KeyP, CMD | ALT)),
             Command::PageView => Some((Code::KeyL, CMD | ALT)),
             Command::Reflow => Some((Code::KeyR, CMD | ALT)),
             Command::CheckDocument => Some((Code::Semicolon, CMD)),
@@ -206,7 +209,7 @@ pub fn status(c: &Command, chrome: Option<&Chrome>, app: &AppState) -> Status {
                 ("u", m) if m == CMD | SHIFT => Status::tick(chrome.task == Some(true)),
                 ("(", _) => Status::tick(chrome.blockquote),
                 ("ç", _) => Status::tick(chrome.code_block),
-                (d, m) if m == CTRL && d.len() == 1 => {
+                (d, m) if m == STYLE && d.len() == 1 => {
                     Status::tick(d.parse::<u32>().ok() == Some(chrome.heading))
                 }
                 _ => Status::ON,
@@ -222,7 +225,6 @@ pub fn status(c: &Command, chrome: Option<&Chrome>, app: &AppState) -> Status {
         Command::PreserveBreaks => Status::tick(chrome.preserve_breaks),
         Command::OpenLink | Command::CopyLink => enabled(chrome.link),
         Command::CheckDocument => enabled(rich),
-        Command::PdfPreview => Status::tick(chrome.preview),
         Command::PageView => Status::tick(chrome.pages),
         Command::Reflow => Status::tick(chrome.reflow),
         _ => Status::ON,

@@ -18,13 +18,15 @@ impl Doc {
         // rather than declining — so the caret's own offset is the right thing
         // to hand it when `block_offset_for_caret` finds nothing.
         let offset = self.block_offset_for_caret().unwrap_or(self.caret);
+        let before = self.source.clone();
         match self.editor.set_block(offset, kind) {
             Ok(change) => {
                 self.last_edit_kind = None;
                 self.refresh();
                 // Opening a block on a blank line writes a marker the caret
-                // belongs *after*; converting an existing one moves nothing.
-                self.caret = self.caret.max(change.new.end);
+                // belongs *after*; converting an existing one rewrites the
+                // block, its text kept, and the caret stays on that text.
+                self.caret = caret_through(self.caret, &before, &self.source, &change);
                 self.clamp_caret();
                 self.anchor = None;
                 self.dirty = self.source != self.clean_source;
@@ -752,4 +754,38 @@ impl Doc {
             .map_or(region.len(), |i| start + i);
         new.start + end.saturating_sub(tail).max(start)
     }
+}
+
+/// Where a caret at `caret` in `before` is after `change` made `after`:
+/// before the change, where it was; after it, moved by it; in it, on the
+/// same text if the text after the caret is the rewritten block's own tail
+/// (a heading's marker added or taken off its paragraph), else after what
+/// was written (a marker opened on a blank line).
+fn caret_through(caret: usize, before: &str, after: &str, change: &twig::Change) -> usize {
+    let (old, new) = (&change.old, &change.new);
+    if caret < old.start {
+        return caret;
+    }
+    if caret > old.end {
+        return (caret as isize + change.delta()).max(0) as usize;
+    }
+    let (Some(was), Some(is)) = (before.get(old.clone()), after.get(new.clone())) else {
+        return caret.max(new.end);
+    };
+    let tail = was
+        .bytes()
+        .rev()
+        .zip(is.bytes().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(was.len())
+        .min(is.len());
+    let from_end = old.end - caret;
+    if !was.trim().is_empty() && from_end <= tail {
+        let at = new.end - from_end;
+        if after.is_char_boundary(at) {
+            return at;
+        }
+    }
+    caret.max(new.end)
 }
