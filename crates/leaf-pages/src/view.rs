@@ -224,7 +224,9 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
         return rsx! {};
     }
     let top = v.top();
-    let (left, width, bottom) = (v.left, v.width, v.bottom);
+    // Its height, not a distance from the window's bottom: a host's area
+    // may stop short of it (a footer, an on-screen keyboard).
+    let (left, width, height) = (v.left, v.width, v.height());
     let spread = v.spread();
     let s = spread.scale;
     let note = match (&v.error, v.sheets.is_empty()) {
@@ -284,7 +286,7 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
     rsx! {
         div { class: if v.reflow { "pages reflow" } else { "pages" }, role: "region",
             aria_label: if v.reflow { "Document" } else if v.editing { "Pages" } else { "PDF preview" },
-            style: "left: {left}px; top: {top}px; width: {width}px; bottom: {bottom}px",
+            style: "left: {left}px; top: {top}px; width: {width}px; height: {height}px",
             // The keys stay with the editor; a press puts its caret here.
             onmousedown: move |e: MouseEvent| {
                 e.prevent_default();
