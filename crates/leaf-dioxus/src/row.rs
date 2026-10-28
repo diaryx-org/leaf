@@ -23,12 +23,17 @@ use crate::text::{Kind, QUOTE_BAR, RowLayout, byte_of_col};
 pub const PAD: f64 = 16.0;
 
 /// What a line belongs to: a row, a cell of the table whose first row is
-/// `first`, or a block with nothing finer to hit (a picture).
+/// `first`, or a block with nothing finer to hit (a picture). Or, from a
+/// host that draws the document laid out its own way (Leaf's page view),
+/// the byte of the source a press landed on, which the host found itself:
+/// the [`Pointer`]'s `line` is then the host's line, which a second press
+/// must be on to count as a double-click, and its `x` is not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
     Row(usize),
     Cell { first: usize, r: usize, c: usize },
     Block { first: usize },
+    Offset(usize),
 }
 
 /// What the pointer did on a line: at visual line `line` of `at`, `x` CSS

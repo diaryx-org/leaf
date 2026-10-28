@@ -328,6 +328,8 @@ impl Editor {
                 };
                 (row, col, Spot::Pos(row, col))
             }
+            // The host found the byte; its line stands in for the row.
+            Target::Offset(off) => (line, off, Spot::Offset(off)),
             Target::Cell { first, .. } | Target::Block { first } => {
                 let blocks = self.sig.blocks.peek();
                 let Some(off) = blocks

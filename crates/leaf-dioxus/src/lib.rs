@@ -83,7 +83,7 @@ pub use input::{TableCommand, ZoomCommand};
 pub use keys::pressed;
 pub use link::{Context, Footnote};
 pub use media::picture_size;
-pub use row::{PAD, Pointer, PressMode, Target};
+pub use row::{PAD, Pointer, PressMode, Target, press_mode};
 pub use text::{Blob, Faces, Grid, Type};
 pub use trace::trace;
 pub use view::{Appearance, Palette, stylesheet, themed};

@@ -7,8 +7,11 @@
 //! reads the glyphs as lines: where a caret at a byte is drawn, which byte a
 //! point on a page lands on, the byte a line up or down, a line's edges, and
 //! the boxes a selection covers. The document is still the editor's: a
-//! press here places its caret, its keys still edit, and in the page view
-//! its moves by line go by these lines ([`PageLines`], the editor's
+//! press here is the editor's own pointer event, at the byte it landed on
+//! ([`leaf_dioxus::Target::Offset`]), so a double-click selects a word, a
+//! ⌘-click follows a link and a right-click opens the context menu as they
+//! do in the editor; its keys still edit; and in the page view its moves by
+//! line go by these lines ([`PageLines`], the editor's
 //! [`leaf_dioxus::Lines`]).
 //!
 //! A caret the editor places where no glyph is (an empty paragraph, a
@@ -23,6 +26,7 @@ use std::rc::Rc;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 use leaf_core::Doc;
+use leaf_dioxus::{Pointer, Target, press_mode};
 use twig_export::pdf::Glyph;
 
 use crate::app::{self, AppEvent};
@@ -265,15 +269,17 @@ impl Geometry {
         boxes
     }
 
-    /// The byte a press at (`x`, `y`) on `page`, in its points, lands on: on
-    /// the line whose glyphs' height it is within, else the nearest.
-    pub fn hit(&self, page: usize, x: f64, y: f64) -> Option<usize> {
-        let line = self
+    /// The line a press at (`x`, `y`) on `page`, in its points, lands on,
+    /// and the byte: the line whose glyphs' height it is within, else the
+    /// nearest.
+    pub fn hit(&self, page: usize, x: f64, y: f64) -> Option<(usize, usize)> {
+        let (i, line) = self
             .lines
             .iter()
-            .filter(|l| l.page == page)
-            .min_by(|a, b| distance(a, y).total_cmp(&distance(b, y)))?;
-        Some(line.offset_at(x))
+            .enumerate()
+            .filter(|(_, l)| l.page == page)
+            .min_by(|a, b| distance(a.1, y).total_cmp(&distance(b.1, y)))?;
+        Some((i, line.offset_at(x)))
     }
 
     /// The byte a line down or up from `offset`, aiming for `goal` (the x of
@@ -469,7 +475,6 @@ pub struct PagesProps {
 pub fn Pages(props: PagesProps) -> Element {
     let mut view = props.view;
     let id = dioxus_native::use_window().id();
-    let last = use_hook(|| Rc::new(Cell::new(None::<Press>)));
     let v = view.read();
     if v.width <= 0.0 {
         return rsx! {};
@@ -492,14 +497,15 @@ pub fn Pages(props: PagesProps) -> Element {
     let selection: Vec<_> = v.selection.iter().map(at).collect();
     let scroll = v.scroll;
     let total = spread.height;
-    // A press, or a drag, at a point in the window: the byte it lands on.
-    let land = move |x: f64, y: f64| -> Option<usize> {
+    // A press, or a drag, at a point in the window: the line and the byte it
+    // lands on, as the editor's target.
+    let land = move |x: f64, y: f64| -> Option<(Target, usize)> {
         let v = view.peek();
         let spread = Spread::of(&v.sheets, v.width);
         let (page, px, py) = spread.on_page(&v.sheets, x - v.left, y - top + v.scroll)?;
-        v.geometry.hit(page, px, py)
+        let (line, at) = v.geometry.hit(page, px, py)?;
+        Some((Target::Offset(at), line))
     };
-    let drag_last = last.clone();
     rsx! {
         div { class: "pages", role: "region",
             aria_label: if v.editing { "Pages" } else { "PDF preview" },
@@ -508,24 +514,24 @@ pub fn Pages(props: PagesProps) -> Element {
             onmousedown: move |e: MouseEvent| {
                 e.prevent_default();
                 let p = e.client_coordinates();
-                let Some(at) = land(p.x, p.y) else { return };
-                let extend = e.modifiers().shift();
-                let count = Press::count(&last, p.x, p.y, extend);
-                edit(id, move |d| match count {
-                    2 => d.select_word_at(at),
-                    3 => d.select_block_at(at),
-                    _ => d.place_caret(at, extend),
-                });
+                if let Some((at, line)) = land(p.x, p.y) {
+                    let (extend, mode) = press_mode(&e);
+                    point(id, Pointer::Press { at, line, x: 0.0, extend, mode });
+                }
             },
             onmousemove: move |e: MouseEvent| {
-                // After a double- or triple-click a drag leaves its word or
-                // block selected, as the editor's does.
-                let multi = drag_last.get().is_some_and(|p| p.count > 1);
-                if e.held_buttons().contains(MouseButton::Primary) && !multi {
+                if e.held_buttons().contains(MouseButton::Primary) {
                     let p = e.client_coordinates();
-                    if let Some(at) = land(p.x, p.y) {
-                        edit(id, move |d| d.place_caret(at, true));
+                    if let Some((at, line)) = land(p.x, p.y) {
+                        point(id, Pointer::Drag { at, line, x: 0.0 });
                     }
+                }
+            },
+            // A finger's tap, which sends no press (the editor's `touch.rs`).
+            onclick: move |e: MouseEvent| {
+                let p = e.client_coordinates();
+                if let Some((at, line)) = land(p.x, p.y) {
+                    point(id, Pointer::Tap { at, line, x: 0.0 });
                 }
             },
             onwheel: move |e: WheelEvent| {
@@ -563,50 +569,12 @@ pub fn Pages(props: PagesProps) -> Element {
     }
 }
 
-/// Presses closer together than this, and nearer than `NEAR` CSS pixels,
-/// count as one double- or triple-click, as the editor's do.
-const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(500);
-const NEAR: f64 = 4.0;
-
-/// The last press on the pages, for counting a double- and triple-click.
-#[derive(Clone, Copy, Debug)]
-struct Press {
-    at: std::time::Instant,
-    x: f64,
-    y: f64,
-    count: u8,
-}
-
-impl Press {
-    /// A press at (`x`, `y`), counted: 2 a double-click, 3 a triple-click,
-    /// and 1 again after that; `last` remembers it.
-    fn count(last: &Cell<Option<Press>>, x: f64, y: f64, extend: bool) -> u8 {
-        let at = std::time::Instant::now();
-        let count = match last.get() {
-            Some(p)
-                if !extend
-                    && at - p.at < MULTI_CLICK
-                    && (p.x - x).abs() < NEAR
-                    && (p.y - y).abs() < NEAR =>
-            {
-                p.count % 3 + 1
-            }
-            _ => 1,
-        };
-        last.set(Some(Press { at, x, y, count }));
-        count
-    }
-}
-
-/// Change the document of window `id`'s editor, on the handler's turn, and
-/// redraw it.
-fn edit(id: dioxus_native::winit::window::WindowId, f: impl FnOnce(&mut Doc) + 'static) {
+/// Hand window `id`'s editor a pointer event on the pages, on the handler's
+/// turn: everything after finding the byte is the editor's.
+fn point(id: dioxus_native::winit::window::WindowId, p: Pointer) {
     app::post(AppEvent::Run(Box::new(move || {
         if let Some(page) = app::page(id) {
-            page.with_editor(|ed, _| {
-                f(&mut ed.doc());
-                ed.refresh();
-            });
+            page.with_editor(|ed, _| ed.pointer(p));
         }
     })));
 }
@@ -670,25 +638,13 @@ mod tests {
     }
 
     #[test]
-    fn presses_close_together_count_up_to_three() {
-        let last = Cell::new(None);
-        assert_eq!(Press::count(&last, 10.0, 10.0, false), 1);
-        assert_eq!(Press::count(&last, 11.0, 10.0, false), 2);
-        assert_eq!(Press::count(&last, 11.0, 11.0, false), 3);
-        assert_eq!(Press::count(&last, 11.0, 11.0, false), 1);
-        // Away from the last, or extending: a press of its own.
-        assert_eq!(Press::count(&last, 40.0, 11.0, false), 1);
-        assert_eq!(Press::count(&last, 40.0, 11.0, true), 1);
-    }
-
-    #[test]
     fn a_press_lands_on_the_nearest_byte_of_its_line() {
         let g = two_lines();
-        assert_eq!(g.hit(0, 11.0, 18.0), Some(0));
-        assert_eq!(g.hit(0, 13.0, 18.0), Some(1));
-        assert_eq!(g.hit(0, 90.0, 18.0), Some(2));
+        assert_eq!(g.hit(0, 11.0, 18.0), Some((0, 0)));
+        assert_eq!(g.hit(0, 13.0, 18.0), Some((0, 1)));
+        assert_eq!(g.hit(0, 90.0, 18.0), Some((0, 2)));
         // Below every line: the last.
-        assert_eq!(g.hit(0, 0.0, 90.0), Some(3));
+        assert_eq!(g.hit(0, 0.0, 90.0), Some((1, 3)));
     }
 
     #[test]
@@ -761,6 +717,38 @@ mod tests {
             let end = second + "Second line, longer.".len();
             assert_eq!(press(NamedKey::End, Code::End), end);
             assert_eq!(press(NamedKey::ArrowUp, Code::ArrowUp), "First line.".len());
+        });
+    }
+
+    /// A press on the pages is the editor's own: placed at the byte the
+    /// page found, and a second on the same line selects the word, by the
+    /// editor's counting.
+    #[test]
+    fn a_press_on_the_pages_is_the_editors() {
+        use dioxus_core::ScopeId;
+        use leaf_dioxus::PressMode;
+
+        let src = "Some words here.\n";
+        let (document, ed, _) = crate::sheet::offscreen(
+            src,
+            leaf_core::Format::Markdown,
+            leaf_dioxus::Look::default(),
+            Some((800.0, 600.0)),
+        )
+        .expect("an editor");
+        let words = src.find("words").unwrap();
+        let press = Pointer::Press {
+            at: Target::Offset(words + 2),
+            line: 0,
+            x: 0.0,
+            extend: false,
+            mode: PressMode::Place,
+        };
+        document.vdom.runtime().in_scope(ScopeId::ROOT, || {
+            ed.pointer(press);
+            assert_eq!(ed.doc().caret, words + 2);
+            ed.pointer(press);
+            assert_eq!(ed.doc().selection(), Some((words, words + "words".len())));
         });
     }
 
