@@ -20,7 +20,8 @@
 //! - [`menus`]: every menu, as data; [`commands`]: what each item does, and
 //!   whether it can.
 //! - [`pdf`]: Export as PDF and Print, set by twig-export; [`preview`]: the
-//!   same pages beside the editor, as it is edited.
+//!   same pages beside the editor, as it is edited, or in its place, edited
+//!   on the page ([`pages`]).
 //!
 //! `LEAF_TRACE=1` logs keys, pointer events and repaint timings to stderr;
 //! `LEAF_OUTLINE=1` outlines every visual line and run.
@@ -45,6 +46,7 @@ mod menus;
 #[cfg(test)]
 mod offscreen;
 mod page;
+mod pages;
 mod pdf;
 mod platform;
 mod prefs;

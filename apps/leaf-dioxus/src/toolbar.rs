@@ -2,7 +2,7 @@
 //! app on an iPad and Diaryx show (LeafToolbar, in `packages/leaf-swift`),
 //! in its order, then the display controls.
 //!
-//! Style ▾ · **B** *I* U · Format ▾ · Lists ▾ · Insert ▾ · Undo Redo … Source · PDF · Aa ▾
+//! Style ▾ · **B** *I* U · Format ▾ · Lists ▾ · Insert ▾ · Undo Redo … Source · PDF · Pages · Aa ▾
 //!
 //! Each tool is a unit button, which assistive tech reads and presses, and
 //! which leaves the keys with the editor when pressed. A tool that is a key
@@ -183,6 +183,11 @@ fn Toolbar(props: ToolbarProps) -> Element {
                     refuses_keys: true,
                     onchange: move |_| app::post(AppEvent::Command(id, Command::PdfPreview)),
                     "PDF"
+                }
+                ToggleButton { class: "tool", label: "Pages", pressed: c.pages,
+                    refuses_keys: true,
+                    onchange: move |_| app::post(AppEvent::Command(id, Command::PageView)),
+                    "Pages"
                 }
                 {popup("Aa".into(), "Display", menus::display())}
             }

@@ -55,6 +55,9 @@ pub enum Command {
     ExportPdf,
     /// Show or hide the PDF preview beside the editor.
     PdfPreview,
+    /// Show the page view, where the document is edited on its pages, in
+    /// the editor's place; or the editor again.
+    PageView,
     /// Save, Save As and Close: on the Mac, the document system's own menu
     /// items; elsewhere, the app's.
     Save,
@@ -115,6 +118,7 @@ impl Command {
             Command::Link => Some((Code::KeyK, CMD)),
             Command::ExportPdf => Some((Code::KeyE, CMD | SHIFT)),
             Command::PdfPreview => Some((Code::KeyP, CMD | ALT)),
+            Command::PageView => Some((Code::KeyL, CMD | ALT)),
             Command::CheckDocument => Some((Code::Semicolon, CMD)),
             Command::Zoom(ZoomCommand::In) => Some((Code::Equal, CMD)),
             Command::Zoom(ZoomCommand::Out) => Some((Code::Minus, CMD)),
@@ -209,6 +213,7 @@ pub fn status(c: &Command, chrome: Option<&Chrome>, app: &AppState) -> Status {
         Command::OpenLink | Command::CopyLink => enabled(chrome.link),
         Command::CheckDocument => enabled(rich),
         Command::PdfPreview => Status::tick(chrome.preview),
+        Command::PageView => Status::tick(chrome.pages),
         _ => Status::ON,
     }
 }

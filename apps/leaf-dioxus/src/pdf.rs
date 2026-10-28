@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 
 use leaf_core::Format;
 use twig_export::config::Config;
-use twig_export::pdf::Typesetter;
+use twig_export::pdf::{Layout, Typesetter};
 
 /// A sheet and its margin, in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,24 +70,26 @@ pub fn render(
     ty: &Type,
     paper: Paper,
 ) -> Result<Vec<u8>, String> {
-    let typst = typst(source, format, ty, paper)?;
-    typesetter()
-        .pdf(&typst, root(path))
+    layout(source, format, path, ty, paper)?
+        .pdf()
         .map_err(|e| format!("{e:#}"))
 }
 
-/// The same document as [`render`] sets, each page an SVG the size of the
-/// PDF's page, in points: what the preview draws.
-pub fn pages(
+/// The same document laid out once: as the PDF [`render`] writes, as SVG
+/// pages, and as each page's glyphs with the bytes of the source each was
+/// set from — what the page view draws, and draws the caret on.
+pub fn layout(
     source: &str,
     format: Format,
     path: Option<&Path>,
     ty: &Type,
     paper: Paper,
-) -> Result<Vec<String>, String> {
-    let typst = typst(source, format, ty, paper)?;
+) -> Result<Layout, String> {
+    let tree = leaf_core::parse_tree(source, format).map_err(|e| e.to_string())?;
+    let words = twig_export::render_words(tree, source, &config(ty, paper))
+        .map_err(|e| format!("{e:#}"))?;
     typesetter()
-        .svg(&typst, root(path))
+        .lay_out(&words, root(path))
         .map_err(|e| format!("{e:#}"))
 }
 
@@ -95,14 +97,6 @@ pub fn pages(
 fn typesetter() -> &'static Typesetter {
     static TYPESETTER: OnceLock<Typesetter> = OnceLock::new();
     TYPESETTER.get_or_init(Typesetter::new)
-}
-
-/// The document as twig-export writes it in Typst.
-fn typst(source: &str, format: Format, ty: &Type, paper: Paper) -> Result<String, String> {
-    let tree = leaf_core::parse_tree(source, format).map_err(|e| e.to_string())?;
-    Ok(twig_export::render_parsed(tree, source, &config(ty, paper))
-        .map_err(|e| format!("{e:#}"))?
-        .typst)
 }
 
 /// The folder a document at `path` finds its pictures in.

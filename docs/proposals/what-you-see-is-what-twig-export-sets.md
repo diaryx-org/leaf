@@ -3,13 +3,42 @@ title: What you see is what twig-export sets
 description: An exact match between leaf's page and twig-export's PDF needs one layout engine, so leaf's page view is drawn from Typst's layout rather than made to imitate it — a preview first, a caret over it second — with the words handed to Typst as content built from the twig tree, so Typst's language is left only the procedural part of a page, and the flowing editor stays leaf's own and promises the words, not the page
 status: draft
 created: 2026-10-26
-updated: 2026-10-26
+updated: 2026-10-27
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 
 # What you see is what twig-export sets
 
 ## Status
+
+**Since (2026-10-27): C1 and a first C2 are built.** Adam chose the content
+route and a page view that is a mode of its own. What landed:
+
+- **C1**: File ▸ PDF Preview (⌥⌘P) draws twig-export's pages beside the
+  editor (`apps/leaf-dioxus/src/preview.rs`), set again on a worker after
+  each edit through a `Typesetter` that reads the fonts once. A click on a
+  page puts the editor's caret on the word clicked.
+- **C2**: File ▸ Pages (⌥⌘L) draws the pages in the editor's place, with
+  the caret and the selection on Typst's glyphs (`pages.rs`). Every edit
+  still goes through the editor and leaf-core's `Doc`; ↑/↓, a screen's move
+  and a line's edge go by the pages' lines, through the widget's new
+  `Lines`, which a host gives the editor.
+- **The words as content, by a shorter road than the spike's.** twig-export
+  does not build the body in Rust. `render_words` emits the same Typst as
+  `render`, but with a hole (`#_twig.at(3);`) wherever the author's text
+  would go, and the whole document as one template function of the words;
+  `Typesetter::lay_out` fills the holes with content spanned to the source,
+  block by block, through the fork's `compile_with`. Styles, wrappers and
+  the raw-Typst escape hatch come out as they always did, so the pages are
+  `render`'s byte for byte (twig-export's `tests/words.rs`), and every glyph
+  of the author's text, code included, names its own bytes. A keystroke in
+  a 30-page document sets in about 18 ms.
+
+Not done yet, from **What is harder than C1**: an empty paragraph has no
+glyph, so its caret is drawn beside the nearest; the input method's
+candidate window is placed by the editor's hidden rows; what twig-export
+does not draw (math, highlights) cannot be edited on the page; a drag does
+not scroll the view; and the rest of this proposal's list still stands.
 
 `draft`, argued 2026-10-26 from leaf `main` at `d11f511a` (after every
 frontend but Dioxus moved to `archive/`) and twig-export

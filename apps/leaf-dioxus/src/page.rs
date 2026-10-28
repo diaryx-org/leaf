@@ -10,7 +10,8 @@
 //! band runs up behind it (`platform::TITLE_BAR`).
 //!
 //! With the PDF preview shown, the editor has the window's left half and
-//! the pages its right (`preview.rs`).
+//! the pages its right; in the page view the pages are over the editor,
+//! which still has the keys and the document (`preview.rs`, `pages.rs`).
 //!
 //! What the menus and the toolbar show — the marks in force, the heading,
 //! whether there is anything to undo — is the [`Chrome`], read off the
@@ -31,8 +32,9 @@ use unit::{Keys, Theme, Unit, UnitRoot, use_unit};
 
 use crate::app::{self, AppEvent};
 use crate::commands::Command;
+use crate::pages::PagesView;
 use crate::platform;
-use crate::preview::{self, Preview, Sheets};
+use crate::preview::{self, Mode, Preview};
 use crate::shell::Shell;
 
 /// The toolbar's row, under the title bar's band.
@@ -65,8 +67,10 @@ pub struct Chrome {
     pub link: bool,
     pub mark_color: Option<MarkColor>,
     pub preserve_breaks: bool,
-    /// The PDF preview is shown: the page's, not the document's.
+    /// The PDF preview is shown beside the editor, or the page view in its
+    /// place: the window's, not the document's.
     pub preview: bool,
+    pub pages: bool,
 }
 
 impl Chrome {
@@ -89,6 +93,7 @@ impl Chrome {
             mark_color: d.mark_color_at_caret(),
             preserve_breaks: d.line_flow() == LineFlow::Preserve,
             preview: false,
+            pages: false,
         }
     }
 }
@@ -100,7 +105,7 @@ pub struct Made {
     pub unit: Rc<Cell<Option<Unit>>>,
     pub editor: Rc<RefCell<Option<Editor>>>,
     pub chrome: Rc<Cell<Option<Signal<Chrome>>>>,
-    pub sheets: Rc<Cell<Option<Signal<Sheets>>>>,
+    pub view: Rc<Cell<Option<Signal<PagesView>>>>,
 }
 
 /// What a document's page is made with.
@@ -127,7 +132,7 @@ impl DocInit {
 pub fn DocumentPage() -> Element {
     let init = use_context::<DocInit>();
     let chrome = use_signal(Chrome::default);
-    let sheets = use_signal(Sheets::default);
+    let view = use_signal(PagesView::default);
     let ed = use_shared_editor(
         || init.doc.clone(),
         || init.shell.look(),
@@ -136,7 +141,7 @@ pub fn DocumentPage() -> Element {
     use_hook(|| {
         *init.made.editor.borrow_mut() = Some(ed.clone());
         init.made.chrome.set(Some(chrome));
-        init.made.sheets.set(Some(sheets));
+        init.made.view.set(Some(view));
     });
     let appearance = app::settings().appearance;
     rsx! {
@@ -145,8 +150,8 @@ pub fn DocumentPage() -> Element {
             {ed.render()}
             style { {themed(crate::toolbar::CSS, appearance)} }
             {crate::toolbar::render(&ed, &chrome.read())}
-            style { {themed(preview::CSS, appearance)} }
-            preview::Pane { sheets }
+            style { {themed(crate::pages::CSS, appearance)} }
+            crate::pages::Pages { view }
         }
     }
 }
@@ -214,7 +219,7 @@ pub struct Page {
     composing: Cell<bool>,
     /// Where the pointer last was, in the page's CSS pixels.
     pointer: Cell<Option<(f64, f64)>>,
-    /// The PDF preview beside a document's editor.
+    /// The pages beside a document's editor, or in its place.
     pub preview: Preview,
 }
 
@@ -284,11 +289,20 @@ impl Page {
         Some(self.in_scope(|| f(&ed, &shell)))
     }
 
-    /// Change what the PDF preview draws, inside the page's runtime; not
+    /// Change what the pages' view draws, inside the page's runtime; not
     /// without a document's page.
-    pub fn with_sheets(&self, f: impl FnOnce(Signal<Sheets>)) {
-        if let Some(sheets) = self.init().and_then(|i| i.made.sheets.get()) {
-            self.in_scope(|| f(sheets));
+    pub fn with_view(&self, f: impl FnOnce(Signal<PagesView>)) {
+        if let Some(view) = self.init().and_then(|i| i.made.view.get()) {
+            self.in_scope(|| f(view));
+        }
+    }
+
+    /// Read what the pages' view draws; the default without a document's
+    /// page.
+    pub fn with_view_peek<R: Default>(&self, f: impl FnOnce(&PagesView) -> R) -> R {
+        match self.init().and_then(|i| i.made.view.get()) {
+            Some(view) => f(&view.peek()),
+            None => R::default(),
         }
     }
 
@@ -445,7 +459,8 @@ impl Page {
             init.shell.stale.set(true);
             return;
         };
-        chrome.preview = self.preview.shown();
+        chrome.preview = self.preview.mode() == Mode::Beside;
+        chrome.pages = self.preview.mode() == Mode::Pages;
         preview::update(self);
         if chrome.dirty && chrome.revision != self.reported.get() {
             self.reported.set(chrome.revision);
@@ -548,7 +563,8 @@ impl Page {
         match c {
             Command::Link => crate::context::prompt_link(self),
             Command::ExportPdf => platform::print::export(self),
-            Command::PdfPreview => preview::toggle(self),
+            Command::PdfPreview => preview::toggle(self, Mode::Beside),
+            Command::PageView => preview::toggle(self, Mode::Pages),
             Command::Save => {
                 if let Some(s) = self.shell() {
                     s.document.save();

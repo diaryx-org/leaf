@@ -161,6 +161,7 @@ pub fn file() -> Vec<Node> {
         I("Save As…", Command::SaveAs),
         I("Export as PDF…", Command::ExportPdf),
         I("PDF Preview", Command::PdfPreview),
+        I("Pages", Command::PageView),
         Sep,
         I("Open Sample Document", Command::OpenSample),
         I("Settings…", Command::Settings),
@@ -331,6 +332,7 @@ pub fn bar() -> Vec<(&'static str, Vec<Node>)> {
                 I("Source View", chord("e", Code::KeyE, CMD)),
                 I("Preserve Line Breaks", Command::PreserveBreaks),
                 I("PDF Preview", Command::PdfPreview),
+                I("Pages", Command::PageView),
                 Sep,
                 // Commands of their own, not chords: a Mac hands the menu a
                 // chord it names before the window sees it, which keeps

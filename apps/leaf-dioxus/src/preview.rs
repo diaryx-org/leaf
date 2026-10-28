@@ -1,14 +1,15 @@
-//! The PDF preview: beside the editor, the pages Export as PDF writes, set
-//! again as the document changes.
+//! The pages Export as PDF writes, set again as the document changes:
+//! beside the editor (the preview), or in its place, where they are edited
+//! (the page view, `pages.rs`).
 //!
 //! The pages are the PDF's (`pdf.rs`): twig-export sets the document with
-//! Typst on a worker thread, each page comes back as an SVG, and the pane
-//! draws them top to bottom as pictures, on the paper's white whatever the
-//! appearance. One setting is under way at a time, and what is typed while
-//! it is set is set together after it, so the pane keeps up with typing as
-//! closely as Typst does and never falls behind. A page whose picture is the
-//! one on show already is left as it is: an edit draws again only the pages
-//! it moved.
+//! Typst on a worker thread, and each page comes back as an SVG, drawn as a
+//! picture on the paper's white whatever the appearance, and as its glyphs,
+//! each with the bytes of the source it was set from. One setting is under
+//! way at a time, and what is typed while it is set is set together after
+//! it, so the pages keep up with typing as closely as Typst does and never
+//! fall behind. A page whose picture is the one on show already is left as
+//! it is: an edit draws again only the pages it moved.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -17,60 +18,47 @@ use std::rc::Rc;
 use base64::Engine;
 use dioxus::prelude::*;
 use leaf_core::Format;
+use twig_export::pdf::Glyph;
 
 use crate::app;
-use crate::page::{Page, chrome_height};
+use crate::page::Page;
+use crate::pages::{Geometry, PageLines, Sheet, Spread};
 use crate::pdf::{Paper, Type};
 
-/// The share of the window's width the pane takes.
+/// The share of the window's width the preview takes.
 const SHARE: f64 = 0.5;
 
-/// The pane's look: a desk the pages lie on, in both appearances, under
-/// the toolbar and over whatever of the editor reaches past its box.
-pub const CSS: &str = "
-:root {
-  --desk-bg: #e4e4e7;
-  --desk-text: #3f3f46;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --desk-bg: #232326;
-    --desk-text: #d4d4d8;
-  }
-}
-.preview { position: fixed; right: 0; bottom: 0; z-index: 2; box-sizing: border-box;
-           overflow-y: auto; padding: 16px 16px 0; background: var(--desk-bg);
-           color: var(--desk-text); border-left: 1px solid var(--field-border); }
-.preview .sheet { display: block; width: 100%; height: auto; margin-bottom: 16px;
-                  background: white; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3); }
-.preview .note { font: 12px system-ui, -apple-system, sans-serif; white-space: pre-wrap;
-                 margin-bottom: 12px; }";
-
-/// What the pane draws.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Sheets {
-    /// The pane's width in CSS pixels; none while it is hidden.
-    pub width: f64,
-    /// Each page, as a `data:` URL of its SVG.
-    pub pages: Vec<Rc<str>>,
-    /// Why the document as it stands would not set, over the pages it last
-    /// set as.
-    pub error: Option<String>,
+/// Where the pages are, if anywhere.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Off,
+    /// The preview: beside the editor, its right half.
+    Beside,
+    /// The page view: in the editor's place, edited there.
+    Pages,
 }
 
-/// A document window's preview, kept by its [`Page`].
+/// A document window's pages, kept by its [`Page`].
 #[derive(Default)]
 pub struct Preview {
-    shown: Cell<bool>,
+    mode: Cell<Mode>,
     /// A setting is under way on the worker.
     busy: Cell<bool>,
     /// What the pages were last set from, or are being set from.
     from: RefCell<Option<Setting>>,
+    /// The page view's lines, which the editor moves by while it is shown.
+    lines: Rc<PageLines>,
+    /// The caret and the selection the view last drew, and the revision of
+    /// the pages it drew them on.
+    drawn: Cell<Option<(usize, Option<usize>, u64)>>,
+    /// Which setting of the pages is on show, counting up.
+    set: Cell<u64>,
 }
 
 impl Preview {
-    pub fn shown(&self) -> bool {
-        self.shown.get()
+    pub fn mode(&self) -> Mode {
+        self.mode.get()
     }
 }
 
@@ -85,39 +73,83 @@ struct Setting {
     paper: Paper,
 }
 
-/// The preview's own part of the window's width, its signal told: the
-/// editor has the rest.
-pub fn place(page: &Page, width: f64) -> f64 {
-    let pane = if page.preview.shown() {
-        (width * SHARE).round()
-    } else {
-        0.0
-    };
-    page.with_sheets(|mut s| {
-        if s.peek().width != pane {
-            s.write().width = pane;
-        }
-    });
-    pane
+/// One page as the worker sets it, for the view to take on its turn.
+struct Set {
+    url: String,
+    width: f64,
+    height: f64,
+    glyphs: Vec<Glyph>,
 }
 
-/// Show the pane, or hide it.
-pub fn toggle(page: &Page) {
-    page.preview.shown.set(!page.preview.shown());
+/// The pages' own part of the window's width, their view told where it is:
+/// the editor has the rest. In the page view the editor keeps the window,
+/// under the pages, so that its status line shows below them.
+pub fn place(page: &Page, width: f64) -> f64 {
+    let mode = page.preview.mode();
+    let (left, pane, bottom) = match mode {
+        Mode::Off => (0.0, 0.0, 0.0),
+        Mode::Beside => {
+            let pane = (width * SHARE).round();
+            (width - pane, pane, 0.0)
+        }
+        Mode::Pages => (0.0, width, leaf_dioxus::STATUS),
+    };
+    let screen = page.size().1;
+    page.with_view(|mut v| {
+        let now = v.peek().clone();
+        if (now.left, now.width, now.bottom, now.editing)
+            != (left, pane, bottom, mode == Mode::Pages)
+        {
+            let mut v = v.write();
+            v.left = left;
+            v.width = pane;
+            v.bottom = bottom;
+            v.editing = mode == Mode::Pages;
+            v.scroll = v.clamped(v.scroll, v.height(screen));
+        }
+    });
+    measure(page);
+    if mode == Mode::Beside { pane } else { 0.0 }
+}
+
+/// Tell the page view's lines how many points of the pages a screen shows,
+/// for a move by a screen: at the scale the pages are drawn at now.
+fn measure(page: &Page) {
+    let screen = page.size().1;
+    let points = page.with_view_peek(|v| {
+        let scale = Spread::of(&v.sheets, v.width).scale;
+        v.height(screen) / scale
+    });
+    page.preview.lines.screen.set(points);
+}
+
+/// Show the pages in `mode`, or, if they are shown so already, hide them.
+pub fn toggle(page: &Page, mode: Mode) {
+    let now = page.preview.mode();
+    let next = if now == mode { Mode::Off } else { mode };
+    page.preview.mode.set(next);
+    let lines =
+        (next == Mode::Pages).then(|| page.preview.lines.clone() as Rc<dyn leaf_dioxus::Lines>);
+    page.with_editor(|ed, _| ed.set_lines(lines));
+    page.preview.drawn.set(None);
     page.place();
-    // The toolbar's tool and the menu's tick follow; so do the pages.
+    // The toolbar's tools and the menus' ticks follow; so do the pages.
     if let Some(s) = page.shell() {
         s.stale.set(true);
     }
     page.sync();
 }
 
-/// Set the pages again, if the pane is shown and the document or the
-/// display choices have changed since they were last set; after the
-/// setting under way, if there is one.
+/// Set the pages again, if they are shown and the document or the display
+/// choices have changed since they were last set; after the setting under
+/// way, if there is one. And draw the caret on them where it is now.
 pub fn update(page: &Page) {
     let p = &page.preview;
-    if !p.shown() || p.busy.get() {
+    if p.mode() == Mode::Off {
+        return;
+    }
+    caret(page);
+    if p.busy.get() {
         return;
     }
     let settings = app::settings();
@@ -139,7 +171,7 @@ pub fn update(page: &Page) {
     *p.from.borrow_mut() = Some(setting.clone());
     p.busy.set(true);
     let id = page.window.id();
-    let token = app::park(move |set: Result<Vec<String>, String>| {
+    let token = app::park(move |set: Result<Vec<Set>, String>| {
         let Some(page) = app::page(id) else { return };
         page.preview.busy.set(false);
         show(&page, set);
@@ -147,32 +179,87 @@ pub fn update(page: &Page) {
     });
     tokio::task::spawn_blocking(move || {
         let s = setting;
-        let set: Result<Vec<String>, String> =
-            crate::pdf::pages(&source, s.format, Some(&s.path), &s.ty, s.paper)
-                .map(|pages| pages.iter().map(|svg| data_url(svg)).collect());
+        let layout = crate::pdf::layout(&source, s.format, Some(&s.path), &s.ty, s.paper);
+        let set: Result<Vec<Set>, String> = layout.map(|l| {
+            l.svg()
+                .iter()
+                .zip(l.pages())
+                .map(|(svg, page)| Set {
+                    url: data_url(svg),
+                    width: page.width,
+                    height: page.height,
+                    glyphs: page.glyphs,
+                })
+                .collect()
+        });
         app::unpark(token, set);
     });
 }
 
 /// The pages as set, or why they could not be: a page that has not changed
 /// keeps the picture on show.
-fn show(page: &Page, set: Result<Vec<String>, String>) {
-    page.with_sheets(|mut s| {
-        let mut s = s.write();
-        match set {
-            Ok(urls) => {
-                let pages = urls
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, url)| match s.pages.get(i) {
-                        Some(old) if **old == *url => old.clone(),
-                        _ => Rc::from(url),
-                    })
-                    .collect();
-                s.pages = pages;
-                s.error = None;
-            }
-            Err(e) => s.error = Some(e),
+fn show(page: &Page, set: Result<Vec<Set>, String>) {
+    let p = &page.preview;
+    let Ok(set) = set else {
+        let e = set.err();
+        page.with_view(|mut v| v.write().error = e);
+        return;
+    };
+    let geometry = Rc::new(Geometry::new(
+        &set.iter()
+            .map(|s| (s.height, s.glyphs.clone()))
+            .collect::<Vec<_>>(),
+    ));
+    *p.lines.geometry.borrow_mut() = geometry.clone();
+    p.set.set(p.set.get() + 1);
+    page.with_view(|mut v| {
+        let mut v = v.write();
+        let sheets = set
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| Sheet {
+                url: match v.sheets.get(i) {
+                    Some(old) if *old.url == *s.url => old.url.clone(),
+                    _ => Rc::from(s.url),
+                },
+                width: s.width,
+                height: s.height,
+            })
+            .collect();
+        v.sheets = sheets;
+        v.geometry = geometry;
+        v.error = None;
+    });
+    measure(page);
+    caret(page);
+}
+
+/// Draw the editor's caret and selection on the pages, if either, or the
+/// pages under them, has changed since they were last drawn; and scroll
+/// the caret into view if it moved.
+fn caret(page: &Page) {
+    let p = &page.preview;
+    let Some((caret, anchor)) = page.with_doc(|d| (d.caret, d.anchor)) else {
+        return;
+    };
+    let now = (caret, anchor, p.set.get());
+    let before = p.drawn.replace(Some(now));
+    if before == Some(now) {
+        return;
+    }
+    let moved = before.is_none_or(|(c, ..)| c != caret);
+    let screen = page.size().1;
+    page.with_view(|mut v| {
+        let mut v = v.write();
+        let g = v.geometry.clone();
+        v.caret = g.caret_box(caret);
+        v.selection = match anchor.filter(|&a| a != caret) {
+            Some(a) => g.selection(a.min(caret), a.max(caret)),
+            None => Vec::new(),
+        };
+        if moved && let Some(b) = v.caret {
+            let height = v.height(screen);
+            v.scroll = v.clamped(v.reveal(b, height), height);
         }
     });
 }
@@ -183,60 +270,31 @@ fn data_url(svg: &str) -> String {
     format!("data:image/svg+xml;base64,{b64}")
 }
 
-#[derive(Props, Clone, PartialEq)]
-pub struct PaneProps {
-    sheets: Signal<Sheets>,
-}
-
-/// The pane, while it is shown: the pages, top to bottom, at its width.
-#[allow(non_snake_case)]
-pub fn Pane(props: PaneProps) -> Element {
-    let s = props.sheets.read();
-    if s.width <= 0.0 {
-        return rsx! {};
-    }
-    let top = chrome_height();
-    let width = s.width;
-    let note = match (&s.error, s.pages.is_empty()) {
-        (Some(e), _) => Some(format!("This version will not set as a PDF:\n{e}")),
-        (None, true) => Some("Setting the pages…".to_string()),
-        (None, false) => None,
-    };
-    rsx! {
-        div { class: "preview", role: "region", aria_label: "PDF preview",
-            style: "top: {top}px; width: {width}px",
-            // The keys stay with the editor.
-            onmousedown: move |e: MouseEvent| e.prevent_default(),
-            if let Some(n) = note {
-                div { class: "note", "{n}" }
-            }
-            for (i, url) in s.pages.iter().enumerate() {
-                img { key: "{i}", class: "sheet", src: "{url}", alt: "Page {i + 1}" }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn the_pane_is_drawn_in_colours_set_for_both_appearances() {
+    fn the_pages_are_drawn_in_colours_set_for_both_appearances() {
         let all = format!(
-            "{}{}{CSS}",
+            "{}{}{}",
             leaf_dioxus::stylesheet(&leaf_dioxus::Type::default()),
-            crate::toolbar::CSS
+            crate::toolbar::CSS,
+            crate::pages::CSS
         );
         leaf_dioxus::Palette::of(&all)
             .check()
             .expect("a whole palette");
     }
 
+    /// A page is a picture of its SVG, and its glyphs lead back to the
+    /// source: a caret after "One" is drawn after the heading's last glyph,
+    /// before the paragraph's first.
     #[test]
-    fn a_page_is_a_picture_of_its_svg() {
-        let pages = crate::pdf::pages(
-            "# One\n\nA page.\n",
+    fn a_page_is_a_picture_and_its_glyphs() {
+        let source = "# One\n\nA page.\n";
+        let layout = crate::pdf::layout(
+            source,
             Format::Markdown,
             None,
             &Type {
@@ -249,14 +307,23 @@ mod tests {
                 margin: 72.0,
             },
         )
-        .expect("pages");
-        assert_eq!(pages.len(), 1);
-        let url = data_url(&pages[0]);
+        .expect("a layout");
+        let svg = layout.svg();
+        assert_eq!(svg.len(), 1);
+        let url = data_url(&svg[0]);
         let b64 = url.strip_prefix("data:image/svg+xml;base64,").unwrap();
-        let svg = base64::engine::general_purpose::STANDARD
+        let bytes = base64::engine::general_purpose::STANDARD
             .decode(b64)
             .unwrap();
-        assert!(svg.starts_with(b"<svg"));
-        assert!(pages[0].contains(r#"viewBox="0 0 612 792""#));
+        assert!(bytes.starts_with(b"<svg"));
+        assert!(svg[0].contains(r#"viewBox="0 0 612 792""#));
+
+        let pages = layout.pages();
+        let g = Geometry::new(&[(pages[0].height, pages[0].glyphs.clone())]);
+        let one = g.caret_box(5).expect("after the heading");
+        let a = g.caret_box(7).expect("before the paragraph");
+        assert!(a.top > one.top, "{one:?} {a:?}");
+        assert_eq!(g.line_edge(9, false), Some(7));
+        assert_eq!(g.line_edge(9, true), Some(14));
     }
 }
