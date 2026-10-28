@@ -10,16 +10,16 @@
 //! twig-export does not draw yet (math, highlights, the presentation CSS in
 //! `style`) is not on it. See docs/proposals/what-you-see-is-what-twig-export-sets.md.
 //!
-//! One [`Typesetter`] sets every document, for the life of the app: it reads
-//! the system's fonts when it is first asked, which is most of the time a
-//! short document takes, and not again.
+//! Where it is set is `typeset.rs`'s: in the app's process, which reads the
+//! system's fonts when it is first asked, and not again; or, in a template
+//! not twig-export's own, in a typesetter of its own.
 
 use std::path::Path;
-use std::sync::OnceLock;
 
 use leaf_core::Format;
 use twig_export::config::Config;
-use twig_export::pdf::{Layout, Typesetter};
+
+use crate::typeset::{Job, Laid};
 
 /// A sheet and its margin, in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,21 +42,33 @@ impl Paper {
     }
 }
 
-/// The display choices a PDF follows: the body face, by its family name,
-/// and the body size, in points.
+/// What a document is set on: a sheet of paper, or one page `width` points
+/// wide and as tall as its text, for a view that reflows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sheet {
+    Paper(Paper),
+    Reflow { width: f32 },
+}
+
+/// How a document is set: the template, which decides how every element
+/// looks; the body size, in points, which every style is relative to; and
+/// whether the ink is light, for a dark ground.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Type {
-    pub face: String,
+    pub template: crate::settings::Template,
     pub size: f32,
+    pub dark: bool,
 }
 
 impl Type {
-    /// The display choices' face and size, a CSS pixel printed at three
-    /// quarters of a point, as a browser prints: 16px text is 12pt.
+    /// The display choices' template and size, a CSS pixel printed at three
+    /// quarters of a point, as a browser prints: 16px text is 12pt. Dark
+    /// ink never: a sheet is paper.
     pub fn of(settings: &crate::settings::Settings) -> Type {
         Type {
-            face: settings.body.clone(),
+            template: settings.template.clone(),
             size: settings.size.px() * 0.75,
+            dark: false,
         }
     }
 }
@@ -70,9 +82,7 @@ pub fn render(
     ty: &Type,
     paper: Paper,
 ) -> Result<Vec<u8>, String> {
-    layout(source, format, path, ty, paper)?
-        .pdf()
-        .map_err(|e| format!("{e:#}"))
+    crate::typeset::pdf(&job(source, format, path, ty, Sheet::Paper(paper)))
 }
 
 /// The same document laid out once: as the PDF [`render`] writes, as SVG
@@ -83,27 +93,19 @@ pub fn layout(
     format: Format,
     path: Option<&Path>,
     ty: &Type,
-    paper: Paper,
-) -> Result<Layout, String> {
-    let tree = leaf_core::parse_tree(source, format).map_err(|e| e.to_string())?;
-    let words = twig_export::render_words(tree, source, &config(ty, paper))
-        .map_err(|e| format!("{e:#}"))?;
-    typesetter()
-        .lay_out(&words, root(path))
-        .map_err(|e| format!("{e:#}"))
+    sheet: Sheet,
+) -> Result<Laid, String> {
+    crate::typeset::layout(&job(source, format, path, ty, sheet))
 }
 
-/// The app's typesetter, made by the first document set.
-fn typesetter() -> &'static Typesetter {
-    static TYPESETTER: OnceLock<Typesetter> = OnceLock::new();
-    TYPESETTER.get_or_init(Typesetter::new)
-}
-
-/// The folder a document at `path` finds its pictures in.
-fn root(path: Option<&Path>) -> &Path {
-    path.and_then(Path::parent)
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
+fn job(source: &str, format: Format, path: Option<&Path>, ty: &Type, sheet: Sheet) -> Job {
+    Job {
+        source: source.to_owned(),
+        format,
+        path: path.map(Path::to_path_buf),
+        ty: ty.clone(),
+        sheet,
+    }
 }
 
 /// The document in `page`, in the display choices, on `paper`, as a PDF;
@@ -116,27 +118,43 @@ pub fn of_page(page: &crate::page::Page, paper: Paper) -> Result<Vec<u8>, String
     render(&source, format, Some(&path), &ty, paper)
 }
 
-/// twig-export's defaults, on `paper` and in `ty`. The sheet is set by its
-/// size, not a name, since Print's comes from the print panel.
-fn config(ty: &Type, paper: Paper) -> Config {
+/// twig-export's defaults, in `ty`'s template, laid out on `sheet`. A sheet
+/// of paper is given by its size, not a name, since Print's comes from the
+/// print panel; its margins are the template's. Reflowed, a template that
+/// sets only paper is Classic. The template is given the whole of the
+/// document's frontmatter, as data: its title, its authors.
+pub(crate) fn config(ty: &Type, sheet: Sheet) -> Config {
     let mut cfg = Config::default();
     let d = &mut cfg.document;
-    d.paper = None;
-    d.margin = Some(format!("{}pt", paper.margin));
-    d.font = Some(ty.face.clone());
+    let reflow = matches!(sheet, Sheet::Reflow { .. });
+    let template = match crate::templates::entry(ty.template.key()) {
+        Some(e) if reflow && !e.reflows => crate::templates::FALLBACK.to_owned(),
+        _ => ty.template.key().to_owned(),
+    };
+    d.template = Some(template);
+    d.template_meta = Some(vec!["*".into()]);
+    // A template sets its own title from the frontmatter, or none.
+    d.title_page = Some(String::new());
     d.size = Some(format!("{}pt", ty.size));
+    d.dark = Some(ty.dark);
+    d.paper = None;
+    d.margin = None;
+    d.font = None;
+    match sheet {
+        Sheet::Paper(paper) => {
+            d.layout = Some("paged".into());
+            d.page_width = Some(format!("{}pt", paper.width));
+            d.page_height = Some(format!("{}pt", paper.height));
+        }
+        Sheet::Reflow { width } => {
+            d.layout = Some("reflow".into());
+            d.page_width = Some(format!("{width}pt"));
+        }
+    }
     // A run with nowhere to break that is wider than a line (a URL, a string
     // of punctuation) breaks where it must, rather than run off the page:
     // the text is whatever the writer typed, at whatever width.
     d.overflow_wrap = Some("break-word".into());
-    let page = format!(
-        "#set page(width: {}pt, height: {}pt)",
-        paper.width, paper.height
-    );
-    d.raw_preamble = Some(match d.raw_preamble.take() {
-        Some(p) => format!("{page}\n{p}"),
-        None => page,
-    });
     cfg
 }
 
@@ -152,8 +170,9 @@ mod tests {
 
     fn ty() -> Type {
         Type {
-            face: "Iowan Old Style".into(),
+            template: crate::settings::Template::default(),
             size: 12.0,
+            dark: false,
         }
     }
 
@@ -190,7 +209,8 @@ mod tests {
     #[test]
     fn a_run_too_long_for_a_line_stays_on_the_page() {
         let src = format!("This is a test{} and more words.\n", "!".repeat(300));
-        let layout = layout(&src, Format::Markdown, None, &ty(), US_LETTER).expect("a layout");
+        let layout =
+            layout(&src, Format::Markdown, None, &ty(), Sheet::Paper(US_LETTER)).expect("a layout");
         let pages = layout.pages();
         let right = pages[0]
             .glyphs
@@ -201,13 +221,45 @@ mod tests {
     }
 
     #[test]
-    fn the_sheet_is_the_paper_given() {
-        let cfg = config(&ty(), US_LETTER);
-        let pre = cfg.document.raw_preamble.unwrap();
-        assert!(pre.contains("width: 612pt, height: 792pt"), "{pre}");
-        assert_eq!(cfg.document.margin.as_deref(), Some("72pt"));
-        assert_eq!(cfg.document.size.as_deref(), Some("12pt"));
-        assert_eq!(cfg.document.paper, None);
+    fn the_sheet_is_the_paper_given_to_the_template() {
+        let d = config(&ty(), Sheet::Paper(US_LETTER)).document;
+        assert_eq!(d.template.as_deref(), Some("classic"));
+        assert_eq!(d.layout.as_deref(), Some("paged"));
+        assert_eq!(
+            (d.page_width.as_deref(), d.page_height.as_deref()),
+            (Some("612pt"), Some("792pt"))
+        );
+        assert_eq!(d.size.as_deref(), Some("12pt"));
+        assert_eq!((d.paper, d.margin, d.font), (None, None, None));
+    }
+
+    /// Reflowed, in every template, a document is one page as wide as the
+    /// view asks, light ink or dark.
+    #[test]
+    fn a_reflowed_document_is_one_page_in_every_template() {
+        use crate::settings::Template;
+        let src = "# A title\n\nA paragraph, long enough to wrap, about nothing much at all.\n";
+        for name in twig_export::templates::NAMES {
+            let template = Template::parse(name).unwrap();
+            for dark in [false, true] {
+                let ty = Type {
+                    template: template.clone(),
+                    size: 12.0,
+                    dark,
+                };
+                let set = layout(
+                    src,
+                    Format::Markdown,
+                    None,
+                    &ty,
+                    Sheet::Reflow { width: 400.0 },
+                )
+                .expect("a layout");
+                let pages = set.pages();
+                assert_eq!(pages.len(), 1, "{template:?}");
+                assert_eq!(pages[0].width, 400.0, "{template:?}");
+            }
+        }
     }
 
     #[test]

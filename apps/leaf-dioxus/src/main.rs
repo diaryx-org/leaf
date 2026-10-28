@@ -21,7 +21,8 @@
 //!   whether it can.
 //! - [`pdf`]: Export as PDF and Print, set by twig-export; [`preview`]: the
 //!   same pages beside the editor, as it is edited, or in its place, edited
-//!   on the page ([`pages`]).
+//!   on the page ([`pages`]). [`templates`]: what they are set in, and
+//!   installing more; [`typeset`]: where, in this process or another.
 //!
 //! `LEAF_TRACE=1` logs keys, pointer events and repaint timings to stderr;
 //! `LEAF_OUTLINE=1` outlines every visual line and run.
@@ -56,9 +57,17 @@ mod settings;
 #[cfg(test)]
 mod sheet;
 mod shell;
+mod templates;
 mod text;
 mod toolbar;
+mod typeset;
 
 fn main() {
+    // Run again as a typesetter, for a template not twig-export's own
+    // (`typeset.rs`): no window, a request a line on stdin.
+    if std::env::args().nth(1).as_deref() == Some("--typeset") {
+        typeset::serve();
+        return;
+    }
     app::run();
 }

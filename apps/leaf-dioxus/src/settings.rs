@@ -98,6 +98,24 @@ choice!(
     /// The sheet a PDF is laid on — Swift's `Paper`.
     Paper { UsLetter = "usLetter", "US Letter"; A4 = "a4", "A4"; }
 );
+/// The template the pages, the reflowed view and a PDF are set in, by what
+/// names it: one of twig-export's, by its name (`classic`), or one
+/// installed, by its package's spec (`@adapted/charged-ieee:0.1.4`). See
+/// `templates.rs`.
+#[derive(Clone, PartialEq, Eq, Debug, Hash)]
+pub struct Template(String);
+
+impl Template {
+    /// The template `key` names, if it can name one.
+    pub fn parse(key: &str) -> Option<Template> {
+        crate::templates::valid(key).then(|| Template(key.to_owned()))
+    }
+
+    /// What names it, as stored.
+    pub fn key(&self) -> &str {
+        &self.0
+    }
+}
 // Light or dark: the system's, or one of them for this app. The Swift app
 // followed the system; this is how to see one appearance without changing
 // the whole Mac's.
@@ -108,6 +126,12 @@ choice!(impl Appearance { System = "system", "System"; Light = "light", "Light";
 impl Default for TextSize {
     fn default() -> Self {
         TextSize::Medium
+    }
+}
+
+impl Default for Template {
+    fn default() -> Self {
+        Template(crate::templates::FALLBACK.to_owned())
     }
 }
 
@@ -173,6 +197,8 @@ pub struct Settings {
     pub appearance: Appearance,
     /// The sheet Export as PDF lays the document on.
     pub paper: Paper,
+    /// The template the document is set in, paged or reflowed.
+    pub template: Template,
     /// Whether a new window draws soft line breaks where they were written.
     pub preserve: bool,
 }
@@ -188,6 +214,7 @@ impl Default for Settings {
             column: ColumnWidth::Medium,
             appearance: Appearance::System,
             paper: Paper::UsLetter,
+            template: Template::default(),
             preserve: false,
         }
     }
@@ -232,6 +259,7 @@ impl Settings {
             (keys::COLUMN, self.column.key().into()),
             (keys::APPEARANCE, self.appearance.key().into()),
             (keys::PAPER, self.paper.key().into()),
+            (keys::TEMPLATE, self.template.key().into()),
             (keys::FLOW, if self.preserve { "1" } else { "0" }.into()),
         ]
     }
@@ -252,6 +280,7 @@ impl Settings {
         s.column = ColumnWidth::parse(&pick(keys::COLUMN)).unwrap_or(s.column);
         s.appearance = Appearance::parse(&pick(keys::APPEARANCE)).unwrap_or(s.appearance);
         s.paper = Paper::parse(&pick(keys::PAPER)).unwrap_or(s.paper);
+        s.template = Template::parse(&pick(keys::TEMPLATE)).unwrap_or(s.template.clone());
         // `@AppStorage` keeps a Bool as a number.
         s.preserve = matches!(pick(keys::FLOW).as_str(), "1" | "true" | "YES");
         s
@@ -269,8 +298,12 @@ pub mod keys {
     pub const PAPER: &str = "display.paper";
     /// This app's alone: the Swift app followed the system.
     pub const APPEARANCE: &str = "display.appearance";
+    /// This app's alone: the Swift app set no template.
+    pub const TEMPLATE: &str = "display.template";
 
-    pub const ALL: [&str; 8] = [COLUMN, SIZE, FLOW, BODY, MONO, SPACING, PAPER, APPEARANCE];
+    pub const ALL: [&str; 9] = [
+        COLUMN, SIZE, FLOW, BODY, MONO, SPACING, PAPER, APPEARANCE, TEMPLATE,
+    ];
 }
 
 /// The body faces the Swift app stored by a font's name rather than its
@@ -374,6 +407,7 @@ mod tests {
             column: ColumnWidth::Full,
             appearance: Appearance::Dark,
             paper: Paper::A4,
+            template: Template::parse("editorial").unwrap(),
             preserve: true,
         };
         let stored: HashMap<_, _> = s.to_stored().into_iter().collect();

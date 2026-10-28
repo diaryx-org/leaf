@@ -364,6 +364,12 @@ pub fn open_url(what: &str) {
 
 /// The emoji and symbols picker. Its choice arrives as an `Ime::Commit`
 /// (see the Blitz fork's `patches/winit-appkit/PATCH.md`).
+/// The menus have new items (an installed template): build the menu bar
+/// again.
+pub fn menus_changed() {
+    menubar::install(mtm());
+}
+
 pub fn character_palette() {
     NSApplication::sharedApplication(mtm()).orderFrontCharacterPalette(None);
 }

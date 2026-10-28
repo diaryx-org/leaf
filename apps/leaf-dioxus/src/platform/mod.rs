@@ -15,7 +15,8 @@
 //!   is dressed, and how far its page runs up behind the system's title.
 //! - `new_document`, `open_sample`, `sample`, `resources`.
 //! - `open_url`, `character_palette`, `font_families`, `later`,
-//!   `main_page`, and `defaults::{string, set, set_bool, remove}`.
+//!   `main_page`, `menus_changed`, and `defaults::{string, set, set_bool,
+//!   remove}`.
 //! - `spelling`: the system's checker and substitutions, or none.
 //! - `lookup::{show, force_click, word_at, AVAILABLE}`: the system's
 //!   dictionary, or none.

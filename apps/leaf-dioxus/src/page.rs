@@ -71,6 +71,11 @@ pub struct Chrome {
     /// place: the window's, not the document's.
     pub preview: bool,
     pub pages: bool,
+    pub reflow: bool,
+    /// The app's menus as of this chrome (`menus::generation`): a toolbar
+    /// menu is built again when a choice it ticks, or an item it lists,
+    /// changes.
+    pub menus: u64,
 }
 
 impl Chrome {
@@ -94,6 +99,8 @@ impl Chrome {
             preserve_breaks: d.line_flow() == LineFlow::Preserve,
             preview: false,
             pages: false,
+            reflow: false,
+            menus: crate::menus::generation(),
         }
     }
 }
@@ -588,6 +595,7 @@ impl Page {
         };
         chrome.preview = self.preview.mode() == Mode::Beside;
         chrome.pages = self.preview.mode() == Mode::Pages;
+        chrome.reflow = self.preview.mode() == Mode::Reflow;
         preview::update(self);
         if chrome.dirty && chrome.revision != self.reported.get() {
             self.reported.set(chrome.revision);
@@ -661,6 +669,10 @@ impl Page {
         };
         self.window.set_theme(theme);
         self.with_editor(|ed, shell| ed.set_look(shell.look()));
+        // The toolbar's menus tick the choices.
+        if let Some(init) = self.init() {
+            init.shell.stale.set(true);
+        }
         preview::update(self);
         app::poll(self.window.id());
     }
@@ -689,9 +701,11 @@ impl Page {
     pub fn command(&self, c: Command) {
         match c {
             Command::Link => crate::context::prompt_link(self),
+            Command::InstallTemplate => crate::templates::prompt_install(self),
             Command::ExportPdf => platform::print::export(self),
             Command::PdfPreview => preview::toggle(self, Mode::Beside),
             Command::PageView => preview::toggle(self, Mode::Pages),
+            Command::Reflow => preview::toggle(self, Mode::Reflow),
             Command::Save => {
                 if let Some(s) = self.shell() {
                     s.document.save();

@@ -22,7 +22,7 @@ use twig_export::pdf::Glyph;
 
 use crate::app;
 use crate::page::Page;
-use crate::pages::{Geometry, PageLines, Sheet, Spread};
+use crate::pages::{Geometry, PageLines, Sheet};
 use crate::pdf::{Paper, Type};
 
 /// The share of the window's width the preview takes.
@@ -37,6 +37,16 @@ pub enum Mode {
     Beside,
     /// The page view: in the editor's place, edited there.
     Pages,
+    /// The reflowed view: in the editor's place, edited there, as one page
+    /// as wide as the window and as tall as the text.
+    Reflow,
+}
+
+impl Mode {
+    /// Whether it is in the editor's place, and edited there.
+    pub fn edits(self) -> bool {
+        matches!(self, Mode::Pages | Mode::Reflow)
+    }
 }
 
 /// A document window's pages, kept by its [`Page`].
@@ -73,7 +83,7 @@ struct Setting {
     format: Format,
     path: PathBuf,
     ty: Type,
-    paper: Paper,
+    sheet: crate::pdf::Sheet,
 }
 
 /// One page as the worker sets it, for the view to take on its turn.
@@ -95,25 +105,34 @@ pub fn place(page: &Page, width: f64) -> f64 {
             let pane = (width * SHARE).round();
             (width - pane, pane, 0.0)
         }
-        Mode::Pages => (0.0, width, leaf_dioxus::STATUS),
+        Mode::Pages | Mode::Reflow => (0.0, width, leaf_dioxus::STATUS),
     };
     let screen = page.size().1;
+    let reflow = mode == Mode::Reflow;
     page.with_view(|mut v| {
         let now = v.peek().clone();
-        if (now.left, now.width, now.bottom, now.editing)
-            != (left, pane, bottom, mode == Mode::Pages)
+        if (now.left, now.width, now.bottom, now.editing, now.reflow)
+            != (left, pane, bottom, mode.edits(), reflow)
         {
             let mut v = v.write();
             v.left = left;
             v.width = pane;
             v.bottom = bottom;
-            v.editing = mode == Mode::Pages;
+            v.editing = mode.edits();
+            v.reflow = reflow;
+            if reflow {
+                v.scroll.zoom = 1.0;
+            }
         }
         if v.peek().scroll.view != (pane, v.peek().height(screen)) {
             v.write().fit(screen);
         }
     });
     measure(page);
+    // Reflowed, a new width is a new page: set it again.
+    if reflow {
+        update(page);
+    }
     if mode == Mode::Beside { pane } else { 0.0 }
 }
 
@@ -122,7 +141,7 @@ pub fn place(page: &Page, width: f64) -> f64 {
 fn measure(page: &Page) {
     let screen = page.size().1;
     let points = page.with_view_peek(|v| {
-        let scale = Spread::of(&v.sheets, v.width).scale * v.scroll.zoom;
+        let scale = v.spread().scale * v.scroll.zoom;
         v.height(screen) / scale
     });
     page.preview.lines.screen.set(points);
@@ -133,8 +152,9 @@ pub fn toggle(page: &Page, mode: Mode) {
     let now = page.preview.mode();
     let next = if now == mode { Mode::Off } else { mode };
     page.preview.mode.set(next);
-    let lines =
-        (next == Mode::Pages).then(|| page.preview.lines.clone() as Rc<dyn leaf_dioxus::Lines>);
+    let lines = next
+        .edits()
+        .then(|| page.preview.lines.clone() as Rc<dyn leaf_dioxus::Lines>);
     page.with_editor(|ed, _| ed.set_lines(lines));
     page.preview.drawn.set(None);
     page.place();
@@ -158,14 +178,39 @@ pub fn update(page: &Page) {
         return;
     }
     let settings = app::settings();
+    let (ty, sheet) = if p.mode() == Mode::Reflow {
+        // The view's width, in points; the reader's size at the window's
+        // zoom, as the editor's; light ink in a dark window.
+        let width = page.with_view_peek(|v| v.width);
+        if width <= 0.0 {
+            return;
+        }
+        let zoom = page.shell().map_or(1.0, |s| s.zoom.get());
+        let ty = Type {
+            size: settings.size.px() * 0.75 * zoom,
+            dark: dark(page),
+            ..Type::of(&settings)
+        };
+        (
+            ty,
+            crate::pdf::Sheet::Reflow {
+                width: (width * 0.75) as f32,
+            },
+        )
+    } else {
+        (
+            Type::of(&settings),
+            crate::pdf::Sheet::Paper(Paper::of(&settings)),
+        )
+    };
     let Some((source, setting)) = page
         .with_doc(|d| {
             let setting = Setting {
                 revision: d.revision(),
                 format: d.format,
                 path: d.path.clone(),
-                ty: Type::of(&settings),
-                paper: Paper::of(&settings),
+                ty,
+                sheet,
             };
             (p.from.borrow().as_ref() != Some(&setting)).then(|| (d.source.clone(), setting))
         })
@@ -184,7 +229,7 @@ pub fn update(page: &Page) {
     });
     tokio::task::spawn_blocking(move || {
         let s = setting;
-        let layout = crate::pdf::layout(&source, s.format, Some(&s.path), &s.ty, s.paper);
+        let layout = crate::pdf::layout(&source, s.format, Some(&s.path), &s.ty, s.sheet);
         let set: Result<Vec<Set>, String> = layout.map(|l| {
             l.svg()
                 .iter()
@@ -299,7 +344,9 @@ pub fn zoom(page: &Page, z: leaf_dioxus::ZoomCommand) -> bool {
 /// pointer `at` in the window: the pages zoom about it, if they are shown
 /// and it is over them. Whether they took it.
 pub fn pinch(page: &Page, delta: f64, at: Option<(f64, f64)>) -> bool {
-    if page.preview.mode() == Mode::Off || !delta.is_finite() {
+    // Reflowed, the text grows by its size, not by a zoom of the page.
+    let mode = page.preview.mode();
+    if matches!(mode, Mode::Off | Mode::Reflow) || !delta.is_finite() {
         return false;
     }
     let screen = page.size().1;
@@ -383,6 +430,16 @@ pub fn under(page: &Page, (x, y): (f64, f64)) -> bool {
         && page.with_view_peek(|v| v.width > 0.0 && x >= v.left && x <= v.left + v.width)
 }
 
+/// Whether the window draws dark: the display choices', or the system's.
+fn dark(page: &Page) -> bool {
+    use dioxus_native::winit::window::Theme;
+    match app::settings().appearance {
+        leaf_dioxus::Appearance::Dark => true,
+        leaf_dioxus::Appearance::Light => false,
+        leaf_dioxus::Appearance::System => page.window.theme() == Some(Theme::Dark),
+    }
+}
+
 /// An SVG as a URL Blitz draws a picture from.
 fn data_url(svg: &str) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(svg);
@@ -417,14 +474,15 @@ mod tests {
             Format::Markdown,
             None,
             &Type {
-                face: "Libertinus Serif".into(),
+                template: crate::settings::Template::default(),
                 size: 12.0,
+                dark: false,
             },
-            Paper {
+            crate::pdf::Sheet::Paper(crate::pdf::Paper {
                 width: 612.0,
                 height: 792.0,
                 margin: 72.0,
-            },
+            }),
         )
         .expect("a layout");
         let svg = layout.svg();

@@ -82,12 +82,23 @@ parley = "=0.12.0"
 # document's Typst never reaches Typst Universe from the app. `svg`: the
 # preview's pages. It brings diaryx-org's Typst fork; a Typst crate named
 # here must name the same source.
-twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "main", default-features = false, features = ["pdf", "svg"] }
+# `install`: a template from Typst Universe, fetched when the reader asks
+# for it, through the app's own HTTP client (`templates.rs`).
+twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "main", default-features = false, features = ["pdf", "svg", "install"] }
+# Fetching a template: the client and TLS blitz-net already brings, blocking,
+# off the UI's thread.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "blocking"] }
+# What a typesetter is asked, and answers, a line each (`typeset.rs`).
+serde_json = "1"
 # The preview's pages, as `data:` URLs for Blitz to draw (`preview.rs`).
 base64 = "0.22"
 # Blitz's network provider and the editor's timers run on tokio.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
 raw-window-handle = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+# A typesetter's memory limit (`typeset.rs`).
+libc = "0.2"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 # Linux's and Windows' Open and Save dialogs (`platform/desktop`): the XDG

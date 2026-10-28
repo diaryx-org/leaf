@@ -217,6 +217,7 @@ pub fn set_settings(s: Settings) {
     }
     s.store();
     SETTINGS.with_borrow_mut(|now| *now = s);
+    crate::menus::changed();
     post(AppEvent::SettingsChanged);
 }
 
@@ -227,6 +228,7 @@ pub fn app_state() -> AppState {
         switches: platform::spelling::switches(),
         column: s.column,
         size: s.size,
+        template: s.template,
     }
 }
 
@@ -243,6 +245,10 @@ pub fn run_app(c: Command) {
             ..settings()
         }),
         Command::Size(size) => set_settings(Settings { size, ..settings() }),
+        Command::Template(template) => set_settings(Settings {
+            template,
+            ..settings()
+        }),
         Command::Switch(s) => platform::spelling::toggle(s),
         Command::ShowSubstitutions => platform::spelling::show_substitutions(),
         _ => {}

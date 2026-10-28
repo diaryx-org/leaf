@@ -65,7 +65,24 @@ pub struct Spread {
 }
 
 impl Spread {
-    pub fn of(sheets: &[Sheet], width: f64) -> Spread {
+    /// Reflowed, the one page is the view's own width, drawn at its true
+    /// size (a point is 4/3 of a CSS pixel) from the view's top left.
+    pub fn of(sheets: &[Sheet], width: f64, reflow: bool) -> Spread {
+        if reflow {
+            let scale = 4.0 / 3.0;
+            let mut tops = Vec::with_capacity(sheets.len());
+            let mut y = 0.0;
+            for s in sheets {
+                tops.push(y);
+                y += s.height * scale;
+            }
+            return Spread {
+                scale,
+                lefts: vec![0.0; sheets.len()],
+                tops,
+                height: y,
+            };
+        }
         let widest = sheets.iter().map(|s| s.width).fold(1.0, f64::max);
         let scale = ((width - 2.0 * PAD).min(WIDEST) / widest).max(0.05);
         let mut tops = Vec::with_capacity(sheets.len());
@@ -406,6 +423,9 @@ pub struct PagesView {
     /// Whether it is the page view, which is the editor's place, rather than
     /// the preview beside it.
     pub editing: bool,
+    /// Whether the page is reflowed to the view: drawn at its true size, on
+    /// the editor's own ground, with no desk round it.
+    pub reflow: bool,
     pub sheets: Vec<Sheet>,
     pub geometry: Rc<Geometry>,
     /// Why the document as it stands would not set, over the pages it last
@@ -425,10 +445,15 @@ impl PagesView {
         (window - crate::page::chrome_height() - self.bottom).max(0.0)
     }
 
+    /// The pages placed down the view.
+    pub fn spread(&self) -> Spread {
+        Spread::of(&self.sheets, self.width, self.reflow)
+    }
+
     /// Bring the scroll up to date with the view's size and the pages', in
     /// a window `window` CSS pixels tall, and keep it within them.
     pub fn fit(&mut self, window: f64) {
-        let spread = Spread::of(&self.sheets, self.width);
+        let spread = self.spread();
         let height = self.height(window);
         let s = &mut self.scroll;
         s.view = (self.width, height);
@@ -441,7 +466,7 @@ impl PagesView {
     /// A box on a page as the content's, at zoom 1: left, top, width,
     /// height.
     pub fn content_box(&self, b: &PageBox) -> (f64, f64, f64, f64) {
-        let spread = Spread::of(&self.sheets, self.width);
+        let spread = self.spread();
         let s = spread.scale;
         let x = spread.lefts.get(b.page).copied().unwrap_or(PAD) + b.x * s;
         let y = spread.tops.get(b.page).copied().unwrap_or(PAD) + b.top * s;
@@ -473,6 +498,8 @@ pub const CSS: &str = "
          background: var(--desk-bg); color: var(--desk-text);
          border-left: 1px solid var(--field-border); }
 .pages .spread { position: absolute; }
+.pages.reflow { background: var(--leaf-bg); border-left: none; }
+.pages.reflow .sheet { background: transparent; box-shadow: none; }
 .pages .sheet { position: absolute; display: block; background: white;
                 box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3); }
 .pages .caret { position: absolute; width: 1.5px; background: #1d4ed8; }
@@ -497,7 +524,7 @@ pub fn Pages(props: PagesProps) -> Element {
     }
     let top = crate::page::chrome_height();
     let (left, width, bottom) = (v.left, v.width, v.bottom);
-    let spread = Spread::of(&v.sheets, width);
+    let spread = v.spread();
     let s = spread.scale;
     let note = match (&v.error, v.sheets.is_empty()) {
         (Some(e), _) => Some(format!("This version will not set as a PDF:\n{e}")),
@@ -517,15 +544,15 @@ pub fn Pages(props: PagesProps) -> Element {
     // lands on, as the editor's target.
     let land = move |x: f64, y: f64| -> Option<(Target, usize)> {
         let v = view.peek();
-        let spread = Spread::of(&v.sheets, v.width);
+        let spread = v.spread();
         let (cx, cy) = v.scroll.to_content(x - v.left, y - top);
         let (page, px, py) = spread.on_page(&v.sheets, cx, cy)?;
         let (line, at) = v.geometry.hit(page, px, py)?;
         Some((Target::Offset(at), line))
     };
     rsx! {
-        div { class: "pages", role: "region",
-            aria_label: if v.editing { "Pages" } else { "PDF preview" },
+        div { class: if v.reflow { "pages reflow" } else { "pages" }, role: "region",
+            aria_label: if v.reflow { "Document" } else if v.editing { "Pages" } else { "PDF preview" },
             style: "left: {left}px; top: {top}px; width: {width}px; bottom: {bottom}px",
             // The keys stay with the editor; a press puts its caret here.
             onmousedown: move |e: MouseEvent| {
@@ -719,14 +746,15 @@ mod tests {
             leaf_core::Format::Markdown,
             None,
             &crate::pdf::Type {
-                face: "Libertinus Serif".into(),
+                template: crate::settings::Template::default(),
                 size: 12.0,
+                dark: false,
             },
-            crate::pdf::Paper {
+            crate::pdf::Sheet::Paper(crate::pdf::Paper {
                 width: 612.0,
                 height: 792.0,
                 margin: 72.0,
-            },
+            }),
         )
         .expect("a layout");
         let pages: Vec<_> = layout
@@ -840,7 +868,7 @@ mod tests {
             };
             2
         ];
-        let spread = Spread::of(&sheets, 2.0 * PAD + 200.0);
+        let spread = Spread::of(&sheets, 2.0 * PAD + 200.0, false);
         assert_eq!(spread.scale, 2.0);
         assert_eq!(
             spread.on_page(&sheets, PAD + 20.0, PAD + 10.0),

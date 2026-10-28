@@ -2379,6 +2379,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2535,6 +2545,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -2585,6 +2596,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-sink"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d"
+
+[[package]]
 name = "futures-task"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2597,8 +2614,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
  "futures-core",
+ "futures-io",
  "futures-macro",
+ "futures-sink",
  "futures-task",
+ "memchr",
  "pin-project-lite",
  "slab",
 ]
@@ -3835,6 +3855,7 @@ dependencies = [
  "dispatch2",
  "leaf-core",
  "leaf-dioxus",
+ "libc",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -3842,7 +3863,9 @@ dependencies = [
  "objc2-pdf-kit",
  "parley",
  "raw-window-handle",
+ "reqwest",
  "rfd",
+ "serde_json",
  "skrifa 0.44.0",
  "tempfile",
  "tokio",
@@ -5860,7 +5883,9 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -7035,6 +7060,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+ "xattr",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7546,7 +7582,7 @@ dependencies = [
 [[package]]
 name = "twig-export"
 version = "0.1.0"
-source = "git+https://github.com/diaryx-org/twig-export?branch=main#ce8f475d22a815f336435eada54f5b468b9564be"
+source = "git+https://github.com/diaryx-org/twig-export?branch=main#4da64c4794cfe4fc500c505a001aa78717e6c4f9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7720,12 +7756,15 @@ source = "git+https://github.com/diaryx-org/typst?branch=twig#862510dec6e7732e01
 dependencies = [
  "dirs",
  "ecow",
+ "fastrand",
+ "flate2",
  "fontdb 0.23.0",
  "once_cell",
  "parking_lot",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
+ "tar",
  "typst-assets",
  "typst-library",
  "typst-syntax",
@@ -9930,6 +9969,16 @@ name = "x11rb-protocol"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
+
+[[package]]
+name = "xattr"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "963d6fab92d5504b971dc8bd90ca743c2575e590bc8071ea5bc571598667ae08"
+dependencies = [
+ "libc",
+ "rustix 1.1.6",
+]
 
 [[package]]
 name = "xcursor"

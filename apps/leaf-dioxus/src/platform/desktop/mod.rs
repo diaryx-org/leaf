@@ -266,6 +266,10 @@ pub fn open_url(what: &str) {
 /// there is one.
 pub fn character_palette() {}
 
+/// The menus have new items: none to rebuild, since the app's menus are
+/// drawn from `menus.rs` each time one opens.
+pub fn menus_changed() {}
+
 /// Every font family installed.
 pub fn font_families() -> Vec<String> {
     let mut collection = parley::fontique::Collection::new(parley::fontique::CollectionOptions {

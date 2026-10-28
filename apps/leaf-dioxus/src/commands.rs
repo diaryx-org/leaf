@@ -12,7 +12,7 @@ use leaf_core::{Format, InlineKind, MarkColor};
 use leaf_dioxus::{TableCommand, ZoomCommand};
 
 use crate::page::Chrome;
-use crate::settings::{ColumnWidth, TextSize};
+use crate::settings::{ColumnWidth, Template, TextSize};
 
 /// ⌘ in Dioxus's terms (`META`, as Blitz reports it); off the Mac, Ctrl,
 /// as the editor reads it (leaf-dioxus's `input.rs`).
@@ -58,6 +58,9 @@ pub enum Command {
     /// Show the page view, where the document is edited on its pages, in
     /// the editor's place; or the editor again.
     PageView,
+    /// Show the reflowed view, where the document is edited as one page as
+    /// wide as the window, in the editor's place; or the editor again.
+    Reflow,
     /// Save, Save As and Close: on the Mac, the document system's own menu
     /// items; elsewhere, the app's.
     Save,
@@ -73,6 +76,10 @@ pub enum Command {
     LookUp(usize, usize),
     // The app's, whichever window is in front.
     Column(ColumnWidth),
+    /// Set the pages, the reflowed view and a PDF in a template.
+    Template(Template),
+    /// Ask for a template's spec, and install it (`templates.rs`).
+    InstallTemplate,
     Size(TextSize),
     New(Format),
     /// Open and Quit: the Mac's are the system's, as Save is.
@@ -103,6 +110,7 @@ impl Command {
                 | Command::Open
                 | Command::Quit
                 | Command::Column(_)
+                | Command::Template(_)
                 | Command::Size(_)
                 | Command::OpenSample
                 | Command::Settings
@@ -119,6 +127,7 @@ impl Command {
             Command::ExportPdf => Some((Code::KeyE, CMD | SHIFT)),
             Command::PdfPreview => Some((Code::KeyP, CMD | ALT)),
             Command::PageView => Some((Code::KeyL, CMD | ALT)),
+            Command::Reflow => Some((Code::KeyR, CMD | ALT)),
             Command::CheckDocument => Some((Code::Semicolon, CMD)),
             Command::Zoom(ZoomCommand::In) => Some((Code::Equal, CMD)),
             Command::Zoom(ZoomCommand::Out) => Some((Code::Minus, CMD)),
@@ -166,6 +175,7 @@ pub fn status(c: &Command, chrome: Option<&Chrome>, app: &AppState) -> Status {
     match c {
         Command::Switch(s) => return Status::tick(app.switches.contains(s)),
         Command::Column(w) => return Status::tick(app.column == *w),
+        Command::Template(t) => return Status::tick(app.template == *t),
         Command::Size(z) => return Status::tick(app.size == *z),
         c if c.is_app() => return Status::ON,
         _ => {}
@@ -214,6 +224,7 @@ pub fn status(c: &Command, chrome: Option<&Chrome>, app: &AppState) -> Status {
         Command::CheckDocument => enabled(rich),
         Command::PdfPreview => Status::tick(chrome.preview),
         Command::PageView => Status::tick(chrome.pages),
+        Command::Reflow => Status::tick(chrome.reflow),
         _ => Status::ON,
     }
 }
@@ -224,6 +235,7 @@ pub struct AppState {
     pub switches: Vec<Switch>,
     pub column: ColumnWidth,
     pub size: TextSize,
+    pub template: Template,
 }
 
 /// A shortcut as a Mac menu shows it: ⌃⌥⇧⌘ then the key.

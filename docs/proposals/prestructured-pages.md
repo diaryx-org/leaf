@@ -18,6 +18,19 @@ on Typst's glyphs) are built, and takes the step that proposal left open:
 whether the flowing editor stays leaf's own. Adam has decided three things
 (**Decisions**); the rest is argued here and listed under **To settle**.
 
+Built since: step 1 and most of step 3 of **Order of work**. twig-export ships
+three templates, Classic, Modern and Editorial, each a Typst package with a
+paged and a reflowed layout; leaf has a Reflow view and a Template menu. A
+template is loaded as a package, so it reads only its own files, never the
+document's folder. Beyond the proposal, templates can be added at runtime
+(**To settle**, 5): View ▸ Template ▸ Install Template… fetches a Typst
+Universe template and what it imports, once; twig-export writes an adapter
+from its starter that gives its arguments the document's frontmatter; and
+the template is checked by setting a sample before it is listed. Such a
+template sets paper only, and is reflowed in Classic, and it is set in a
+typesetter process of its own, limited to 2 GiB and 30 seconds a setting,
+so a template that loops or eats memory stops without the app.
+
 ## The ask
 
 Adam, 2026-10-27: can Typst set a reflowable view as well as pages, and if it
@@ -254,7 +267,10 @@ last is done.
 4. **Columns.** Diaryx's `columns: 2` means something in a paged layout and
    little in a reflowed one on a narrow screen; the template may set two
    columns only where the width allows.
-5. **The kinds and their names**, and whether a person can add a template of
-   their own (Diaryx's library, a Typst file beside the document).
+5. **The kinds and their names**. A person can now install a Typst Universe
+   template; whether a Typst file beside the document, or in Diaryx's
+   library, is one too is open. So is a template the check refuses because
+   the sample lacks frontmatter it needs (a letter's sender): today it is
+   not listed.
 6. **On the web**, Typst in wasm is large: whether the web demo keeps the
    rows, as the terminal does, or sets pages in the browser too.

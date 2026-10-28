@@ -11,7 +11,7 @@ use unit::{Entry, Item};
 
 use crate::commands::{self, ALT, AppState, CMD, CTRL, Command, SHIFT, Switch, shortcut_label};
 use crate::page::Chrome;
-use crate::settings::{Choice, ColumnWidth, TextSize};
+use crate::settings::{Choice, ColumnWidth, Template, TextSize};
 
 /// One thing in a menu.
 #[derive(Clone, Debug, PartialEq)]
@@ -162,6 +162,7 @@ pub fn file() -> Vec<Node> {
         I("Export as PDF…", Command::ExportPdf),
         I("PDF Preview", Command::PdfPreview),
         I("Pages", Command::PageView),
+        I("Reflow", Command::Reflow),
         Sep,
         I("Open Sample Document", Command::OpenSample),
         I("Settings…", Command::Settings),
@@ -333,6 +334,8 @@ pub fn bar() -> Vec<(&'static str, Vec<Node>)> {
                 I("Preserve Line Breaks", Command::PreserveBreaks),
                 I("PDF Preview", Command::PdfPreview),
                 I("Pages", Command::PageView),
+                I("Reflow", Command::Reflow),
+                Sub("Template", templates()),
                 Sep,
                 // Commands of their own, not chords: a Mac hands the menu a
                 // chord it names before the window sees it, which keeps
@@ -405,7 +408,51 @@ pub fn insert() -> Vec<Node> {
     ]
 }
 
-/// The toolbar's Aa ▾: line breaks, the column and the size.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times the menus have changed: a choice they tick, or an item
+/// they list.
+pub fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The menus have changed.
+pub fn changed() {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The templates a document can be set in, paged or reflowed: twig-export's,
+/// then those installed, then Install Template….
+pub fn templates() -> Vec<Node> {
+    let all = crate::templates::all();
+    let mut v = Vec::new();
+    for (i, e) in all.iter().enumerate() {
+        if i > 0 && !e.builtin && all[i - 1].builtin {
+            v.push(Sep);
+        }
+        if let Some(t) = Template::parse(&e.key) {
+            v.push(I(intern(&e.label), Command::Template(t)));
+        }
+    }
+    v.push(Sep);
+    v.push(I("Install Template…", Command::InstallTemplate));
+    v
+}
+
+/// `label`, kept for the life of the app: an installed template's, which a
+/// menu item names as it names its own.
+fn intern(label: &str) -> &'static str {
+    static LABELS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut labels = LABELS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(l) = labels.iter().find(|l| **l == label) {
+        return l;
+    }
+    let l: &'static str = Box::leak(label.to_owned().into_boxed_str());
+    labels.push(l);
+    l
+}
+
+/// The toolbar's Aa ▾: line breaks, the column, the size and the template.
 pub fn display() -> Vec<Node> {
     let mut v = vec![I("Preserve Line Breaks", Command::PreserveBreaks), Sep];
     v.extend(
@@ -419,6 +466,8 @@ pub fn display() -> Vec<Node> {
             .iter()
             .map(|s| I(s.label(), Command::Size(*s))),
     );
+    v.push(Sep);
+    v.extend(templates());
     v
 }
 
