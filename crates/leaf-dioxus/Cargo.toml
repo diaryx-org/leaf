@@ -3,17 +3,14 @@
 # no webview. `apps/leaf-dioxus` is one host for it, as `apps/leaf` is for
 # `leaf-gpui`; Diaryx's Dioxus port is to be another.
 #
-# A workspace of its own, `exclude`d from leaf's root one: `dioxus-native` is
-# published only as 0.8.0-alpha.3, which pins a winit beta and a large wgpu tree
-# that nothing in leaf's root workspace should resolve. Unlike the app's, this
-# workspace has no [patch]: a [patch] applies only at the root of the
-# workspace that has it, so it would do nothing for a consumer anyway. A host
-# that wants the macOS text input fixes patches winit-appkit itself, from
-# the Blitz fork's `patches/winit-appkit` (its `PATCH.md` says what and why).
+# Tested here against the Blitz fork leaf's root workspace patches in, the
+# Blitz its apps ship with. A [patch] applies only at the root of the
+# workspace that has it, so a host elsewhere patches its own: the Blitz fork
+# for the fixes FORK.md there lists, and winit-appkit for the macOS text
+# input ones, from the fork's `patches/winit-appkit` (its `PATCH.md` says
+# what and why).
 #
-#     cargo test --manifest-path crates/leaf-dioxus/Cargo.toml
-[workspace]
-
+#     cargo test -p leaf-dioxus
 [package]
 name = "leaf-dioxus"
 version = "0.0.0"

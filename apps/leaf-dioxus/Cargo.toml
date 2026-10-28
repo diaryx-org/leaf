@@ -6,21 +6,17 @@
 # Versions, Rename, Move To, Revert, recents, Finder's Open With), the menu
 # bar, the context menu, the spelling checker, Look Up, and the print panel.
 #
-# A workspace of its own: `dioxus-native` is published only as 0.8.0-alpha.3,
-# which pins a winit beta and a large wgpu tree that nothing in leaf's root
-# workspace should resolve, and its winit backend is patched below — a
-# [patch] applies only at the root of the workspace that has it. Build it by
-# manifest, or as a bundle through the xtask:
+# Its winit backend, wgpu's hardware layer and Blitz are patched in leaf's
+# root Cargo.toml, where a [patch] has to be. Run it, or build the Mac's as
+# a bundle through the xtask:
 #
+#     cargo run -p leaf-dioxus-app -- document.md
 #     cargo xtask mac                                    # Leaf.app, launched on the sample
-#     cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- document.md
-[workspace]
-
 [package]
 # Not `leaf-dioxus`, which is the widget's name: one graph cannot hold two
 # packages by one name. The binary is the app's name.
 name = "leaf-dioxus-app"
-version = "0.5.1"
+version.workspace = true
 edition = "2024"
 publish = false
 
@@ -131,48 +127,3 @@ objc2-pdf-kit = { version = "0.3.2", default-features = false, features = [
 [dev-dependencies]
 # A folder of their own for the tests that write files, removed after.
 tempfile = "3"
-
-# A debug build with full debug info is several hundred megabytes; line
-# tables are enough for a panic's file and line.
-[profile.dev]
-debug = "line-tables-only"
-
-# Everything but this crate optimised, even in a debug build: unoptimised,
-# Stylo, parley and Vello take 11 ms to draw a frame the release build draws
-# in 1.4, and a scroll keeps the main thread too busy to reach 60 fps.
-[profile.dev.package."*"]
-opt-level = 3
-
-[patch.crates-io]
-# winit's macOS backend, at the version dioxus-native pins, patched (its
-# PATCH.md, in the Blitz fork's patches/): its text input client answered no
-# questions about the text around the caret, so macOS's press-and-hold
-# accent menu never opened, and it dropped any insertText that did not end a
-# composition, which is how the emoji picker inserts. From the Blitz fork,
-# with the rest of the Blitz stack. winit-appkit reaches the app only
-# transitively (blitz-shell → winit), which nothing but [patch] can override.
-# It goes when the change lands upstream (PATCH.md, "Upstream") and Blitz
-# takes that winit.
-winit-appkit = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-# wgpu's hardware layer, vendored at the version anyrender_vello's wgpu takes
-# and patched (see /patches/wgpu-hal/PATCH.md): on macOS it refused every
-# frame for a window not marked visible, so a window opened, restored or
-# changed while covered, minimized or on another Space drew nothing and
-# showed blank until it was uncovered. The same exception, granted by Adam on
-# 2026-10-19 for this patch; it goes when wgpu stops refusing those frames.
-wgpu-hal = { path = "../../patches/wgpu-hal" }
-# Blitz's accessibility tree, made readable and pressable (bounds, the
-# page's text, ARIA's states, the click action carried out): diaryx-org's
-# fork of Blitz, its `leaf` branch at the version dioxus-native pins
-# (FORK.md there).
-# Every Blitz crate in the graph comes from the fork: the fork's crates
-# depend on each other by path, so one from crates.io beside them would be
-# a second copy.
-blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-accesskit_xplat = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }

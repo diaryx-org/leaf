@@ -12,8 +12,8 @@ next. It edits the same documents as every other frontend, through
 cargo xtask mac                       # Leaf.app, built and launched on a copy of the sample
 cargo xtask mac notes.md              # on a document of your own
 cargo xtask package                   # signed, notarised Leaf.app and .dmg in target/package/
-cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- corpus/document.md
-cargo test --manifest-path apps/leaf-dioxus/Cargo.toml
+cargo run -p leaf-dioxus-app -- corpus/document.md
+cargo test -p leaf-dioxus-app
 ```
 
 `cargo xtask swift` still builds and launches the Mac app, for the hands

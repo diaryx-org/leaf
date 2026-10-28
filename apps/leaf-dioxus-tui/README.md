@@ -9,10 +9,10 @@ character cells where blitz-paint would draw pixels. This app is what leaf
 adds to it.
 
 ```sh
-cargo run --manifest-path apps/leaf-dioxus-tui/Cargo.toml -- document.md
-cargo run --manifest-path apps/leaf-dioxus-tui/Cargo.toml -- -r -w 60 document.md     # read-only, a 60-character column
-cargo run --manifest-path apps/leaf-dioxus-tui/Cargo.toml -- --dump document.md       # one 80×24 frame as text
-cargo run --manifest-path apps/leaf-dioxus-tui/Cargo.toml -- --dump-html document.md  # the same, in its colours
+cargo run -p leaf-dioxus-tui -- document.md
+cargo run -p leaf-dioxus-tui -- -r -w 60 document.md     # read-only, a 60-character column
+cargo run -p leaf-dioxus-tui -- --dump document.md       # one 80×24 frame as text
+cargo run -p leaf-dioxus-tui -- --dump-html document.md  # the same, in its colours
 ```
 
 - ⌃P or F10 opens the command menu, which lists every command with its keys.

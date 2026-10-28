@@ -3,19 +3,15 @@
 # The same editor as the Mac app's, measured and drawn by one engine; the
 # page around it is `index.html`. README.md says what works and what does not.
 #
-# A workspace of its own, for the reason the Mac app is one: dioxus-native's
-# alpha pins a winit beta and a wgpu tree that leaf's root workspace should
-# not resolve. Built for the browser into `pkg/`, split, and served from this
-# directory by any static server:
+# Built for the browser into `pkg/`, with the root workspace's `web`
+# profile, and served from this directory by any static server:
 #
 #     cargo xtask web --serve 8000
 #
 # There is nothing to build off the web: `main.rs` is empty there.
-[workspace]
-
 [package]
 name = "leaf-dioxus-web"
-version = "0.5.1"
+version.workspace = true
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
@@ -71,39 +67,3 @@ image = { version = "0.25", default-features = false }
 base64 = "0.22"
 # A panic, in the browser's console rather than as `unreachable`.
 console_error_panic_hook = "0.1"
-
-# Stylo, parley and Vello want every optimisation they can get; the size is
-# brotli's to cut when the bundle is served (README.md).
-# What the splitter needs (`cargo xtask web`): fat LTO, so the call graph is
-# one module's, and debug info, so its functions have names. The xtask strips
-# both from what it writes into `pkg/`, so neither reaches the page.
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-debug = true
-
-# `cargo xtask web --quick`: optimised, but without the fat LTO, so a change
-# rebuilds in a fraction of the time.
-[profile.quick]
-inherits = "release"
-lto = false
-codegen-units = 16
-debug = false
-incremental = true
-
-[patch.crates-io]
-# Blitz from diaryx-org's fork, its `leaf` branch, as the Mac app takes it
-# (FORK.md there): the same engine on both, and the fork's fixes with it —
-# among them the hit test's skipping a node removed since the last layout,
-# which a browser reaches often. Its frames wait for `requestAnimationFrame`,
-# so a click can land between a change to the page and the layout that
-# follows it, and crates.io's Blitz then panics on the removed node. Every
-# Blitz crate in the graph, so none comes from crates.io beside them.
-blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }

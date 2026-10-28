@@ -79,14 +79,12 @@ jobs:
     # land on the resolved toolchain rather than on `stable`.
     - name: Add wasm32 to the pinned toolchain
       run: rustup target add wasm32-unknown-unknown
-    # The app is a workspace of its own, with its own target/, where the
-    # xtask also installs wasm-bindgen (target/tools).
+    # The workspace's target/, where the xtask also installs wasm-bindgen
+    # (target/tools).
     - uses: Swatinem/rust-cache@v2
       with:
         key: wasm32-unknown-unknown
-        workspaces: |
-          . -> target
-          apps/leaf-dioxus-web -> target
+        workspaces: ". -> target"
 
     # Fat LTO, wasm-bindgen, the custom sections stripped, in one module:
     # the split (`--split`) is not sound yet (xtask/src/web.rs).

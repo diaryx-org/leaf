@@ -23,10 +23,10 @@ use anyhow::bail;
 /// `leaf-core` without `fs` is what a host with no files to read links, and
 /// what the Dioxus widget takes, turning on only the features it uses.
 ///
-/// The Dioxus widget, `crates/leaf-dioxus`, and its menus and dialogs,
-/// `crates/leaf-dioxus-ui`, are `exclude`d from this workspace, each with its
-/// own lockfile, and their apps were never under a members glob; CI checks
-/// those in `.config/ship.figl`'s `dioxus` job.
+/// The Dioxus widget's second shape is a host's that brings its own
+/// clipboard: without `system-clipboard`, its renderer, `vello`, turned back
+/// on, since dioxus-native needs one. Its shape in a browser, and the web
+/// app's, are for `wasm32-unknown-unknown`: `.config/ship.figl`'s `web` job.
 ///
 /// A new workspace member belongs in this list; the test below is what says so.
 const ISOLATED: &[&[&str]] = &[
@@ -38,6 +38,17 @@ const ISOLATED: &[&[&str]] = &[
     &["-p", "leaf-math-edit", "--features", "wasm"],
     &["-p", "leaf-session"],
     &["-p", "leaf-mermaid"],
+    &["-p", "leaf-dioxus"],
+    &[
+        "-p",
+        "leaf-dioxus",
+        "--no-default-features",
+        "--features",
+        "vello",
+    ],
+    &["-p", "leaf-dioxus-app"],
+    &["-p", "leaf-dioxus-tui"],
+    &["-p", "leaf-dioxus-web"],
     &["-p", "xtask"],
 ];
 
@@ -62,14 +73,10 @@ pub fn run_task() -> Result<()> {
 // It asks for names rather than directories, because a crate's name is what
 // `-p` takes.
 
-/// Every workspace member's package name, with `crates/*` expanded.
-///
-/// `exclude`d members are deliberately not here, and are subtracted explicitly
-/// rather than left to the glob: `crates/*` is a directory listing, so
-/// `crates/leaf-dioxus` is on disk and would otherwise be demanded of
-/// `ISOLATED`, for a crate `cargo check -p` in this workspace cannot reach.
-/// The excluded are the Dioxus widget and its menus, each a standalone
-/// workspace with its own lockfile.
+/// Every workspace member's package name, with `crates/*` and `apps/*`
+/// expanded, less any `exclude`d: a glob is a directory listing, so an
+/// excluded crate is on disk and would otherwise be demanded of `ISOLATED`,
+/// for a crate `cargo check -p` in this workspace cannot reach.
 #[cfg(test)]
 fn member_names() -> Result<Vec<String>> {
     let manifest = read("Cargo.toml")?;

@@ -7,18 +7,6 @@ release_branch = main
 
 # No `verify`: before cutting, a release runs the jobs below.
 
-# The Dioxus apps' manifests (each a workspace of its own) follow the
-# workspace version, and ship's bump of the root workspace does not reach them
-# — so the bump runs the task that writes them, and the files are staged with
-# the release commit. The `versions` job checks they agree.
-post_bump = cargo xtask sync-versions
-
-extra_version_files = [
-  apps/leaf-dioxus/Cargo.toml,
-  apps/leaf-dioxus-tui/Cargo.toml,
-  apps/leaf-dioxus-web/Cargo.toml,
-]
-
 # Not on crates.io: leaf is consumed from git, by commit, so a tag is a name
 # for a commit and the start of whatever else is listed below.
 publishes = false
@@ -43,20 +31,18 @@ tag_starts
 # fails in seconds rather than after everything compiles.
 job
 > *
-> > # The Dioxus apps state the workspace version.
-> > id = versions
-> > name = Versions
-> > run = cargo xtask sync-versions --check
-> *
 > > id = fmt
 > > name = Format
 > > run = cargo fmt --all --check
 > *
 > > # Warnings are errors here because they are errors in review — a lint that
-> > # only fires on someone else's machine is a lint found too late.
+> > # only fires on someone else's machine is a lint found too late. The Dioxus
+> > # widget is linted without `system-clipboard` too (its renderer, `vello`,
+> > # turned back on: dioxus-native needs one), the shape a host with its own
+> > # clipboard builds.
 > > id = clippy
 > > name = Clippy
-> > run = cargo clippy --workspace --all-targets -- -D warnings
+> > run = cargo clippy --workspace --all-targets -- -D warnings && cargo clippy -p leaf-dioxus --all-targets --no-default-features --features vello -- -D warnings
 > *
 > > # Includes the xtask's own tests: that the two frontend bindings export the
 > > # same methods, and that every workspace member is checked alone below.
@@ -71,24 +57,14 @@ job
 > > name = Package isolation
 > > run = cargo xtask package-isolation
 > *
-> > # The Dioxus widget and the app over it (apps/leaf-dioxus, Leaf for the
-> > # Mac, its menus and dialogs from diaryx-org/unit), each a workspace of its
-> > # own (an alpha Dioxus; the app's winit is patched, the others' are not),
-> > # so nothing above reaches them. The widget is linted without
-> > # `system-clipboard` too (its renderer, `vello`, turned back on:
-> > # dioxus-native needs one), the shape a host with its own clipboard builds.
-> > # Last because it compiles Blitz and wgpu: the slowest job, and the least
-> > # likely to be the one that fails.
-> > id = dioxus
-> > name = Dioxus widget and app
-> > run = cargo fmt --manifest-path crates/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --all-targets --no-default-features --features vello -- -D warnings && cargo test --manifest-path crates/leaf-dioxus/Cargo.toml && cargo fmt --manifest-path apps/leaf-dioxus/Cargo.toml --check && cargo clippy --manifest-path apps/leaf-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/leaf-dioxus/Cargo.toml
-> *
-> > # The web host (apps/leaf-dioxus-web, the editor in a browser tab), a
-> > # workspace of its own, and the widget as it builds there: for
-> > # `wasm32-unknown-unknown`, without the system clipboard, on Blitz's
-> > # hybrid renderer, with its Mermaid split point. Linted only: it runs in a
-> > # browser, which `cargo test` has none of, and its split build (`cargo
-> > # xtask web`) is slow; its README says how to try it.
+> > # The web host (apps/leaf-dioxus-web, the editor in a browser tab) and
+> > # the widget as it builds there: for `wasm32-unknown-unknown`, without the
+> > # system clipboard, on Blitz's hybrid renderer, with its Mermaid split
+> > # point. Off the web the host is empty, so the jobs above see none of it.
+> > # Linted only: it runs in a browser, which `cargo test` has none of, and
+> > # its split build (`cargo xtask web`) is slow; its README says how to try
+> > # it. Last because it compiles Blitz and wgpu for another target: the
+> > # slowest job, and the least likely to be the one that fails.
 > > id = web
 > > name = Dioxus web host
-> > run = cargo fmt --manifest-path apps/leaf-dioxus-web/Cargo.toml --check && cargo clippy --manifest-path apps/leaf-dioxus-web/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings && cargo clippy --manifest-path crates/leaf-dioxus/Cargo.toml --target wasm32-unknown-unknown --no-default-features --features dioxus-native/vello-hybrid,wasm-split -- -D warnings
+> > run = cargo clippy -p leaf-dioxus-web --target wasm32-unknown-unknown --all-targets -- -D warnings && cargo clippy -p leaf-dioxus --target wasm32-unknown-unknown --no-default-features --features dioxus-native/vello-hybrid,wasm-split -- -D warnings

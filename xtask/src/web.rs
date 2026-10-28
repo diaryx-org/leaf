@@ -1,6 +1,6 @@
 //! `cargo xtask web` — build Leaf for the browser (`apps/leaf-dioxus-web`)
-//! into its `pkg/`: the release build, fat LTO, through `wasm-bindgen`, its
-//! custom sections stripped.
+//! into its `pkg/`: the workspace's `web` profile, fat LTO, through
+//! `wasm-bindgen`, its custom sections stripped.
 //!
 //! `--split` puts the Mermaid renderer in a wasm module of its own, fetched
 //! the first time a diagram is drawn. It is not the default because it is
@@ -13,7 +13,7 @@
 //! build is made for dioxus-web rather than for Blitz in a canvas:
 //!
 //! 1. Cargo, for `wasm32-unknown-unknown`, with fat LTO, debug info and
-//!    `--emit-relocs` (the manifest's release profile and the flag below):
+//!    `--emit-relocs` (the workspace's `web` profile and the flag below):
 //!    the splitter finds the call graph in the relocations and the names.
 //! 2. `wasm-bindgen`, keeping those (`--keep-debug --keep-lld-exports`, and
 //!    `--no-demangle`, or its names no longer match the symbols').
@@ -24,8 +24,8 @@
 //!    module, and the splitter's loader glue (`__wasm_split.js`) pointed at
 //!    the modules beside it.
 //!
-//! The two tools are installed into the app's `target/tools` at the versions
-//! the app's lockfile names, the first time; nothing is put on `PATH`.
+//! The two tools are installed into `target/tools` at the versions the
+//! workspace's lockfile names, the first time; nothing is put on `PATH`.
 
 use std::path::{Path, PathBuf};
 
@@ -34,6 +34,10 @@ use anyhow::{Context, Result, bail};
 use crate::util::{cargo, cmd, root, run};
 
 const APP: &str = "apps/leaf-dioxus-web";
+/// The app's package, as `-p` names it.
+const PACKAGE: &str = "leaf-dioxus-web";
+/// The profile a page is served from: the workspace's `web`.
+const PROFILE: &str = "web";
 /// The binary's name, which names the wasm and wasm-bindgen's output.
 const BIN: &str = "leaf_dioxus_web";
 
@@ -44,7 +48,7 @@ pub struct Args {
     #[arg(long, value_name = "PORT")]
     pub serve: Option<u16>,
     /// One module, without fat LTO: for trying a change, not for serving.
-    /// Built with the app's `quick` profile.
+    /// Built with the workspace's `quick` profile.
     #[arg(long, conflicts_with = "split")]
     pub quick: bool,
     /// The Mermaid renderer in a module of its own — unsound for now; see
@@ -55,8 +59,9 @@ pub struct Args {
 
 pub fn run_task(args: Args) -> Result<()> {
     let app = root().join(APP);
-    let tools = app.join("target/tools");
-    let lock = crate::util::read(format!("{APP}/Cargo.lock"))?;
+    let target = root().join("target");
+    let tools = target.join("tools");
+    let lock = crate::util::read("Cargo.lock")?;
     let bindgen = tool(
         &tools,
         "wasm-bindgen-cli",
@@ -65,14 +70,14 @@ pub fn run_task(args: Args) -> Result<()> {
     )?;
 
     let pkg = app.join("pkg");
-    let split = app.join("target/split");
+    let split = target.join("split");
     for dir in [&pkg, &split] {
         if dir.exists() {
             std::fs::remove_dir_all(dir).with_context(|| format!("clearing {}", dir.display()))?;
         }
     }
     if args.quick {
-        one_module(&app, &bindgen, &pkg, "quick")?;
+        one_module(&target, &bindgen, &pkg, "quick")?;
     } else if args.split {
         let splitter = tool(
             &tools,
@@ -80,9 +85,9 @@ pub fn run_task(args: Args) -> Result<()> {
             "wasm-split-cli",
             &locked(&lock, "wasm-splitter")?,
         )?;
-        split_build(&app, &bindgen, &splitter, &pkg, &split)?;
+        split_build(&target, &bindgen, &splitter, &pkg, &split)?;
     } else {
-        one_module(&app, &bindgen, &pkg, "release")?;
+        one_module(&target, &bindgen, &pkg, PROFILE)?;
     }
 
     println!("✓ Built {}", pkg.display());
@@ -105,9 +110,9 @@ pub fn run_task(args: Args) -> Result<()> {
     }
 }
 
-/// The steps the module's doc lists: the release build, split.
+/// The steps the module's doc lists: the `web` build, split.
 fn split_build(
-    app: &Path,
+    target: &Path,
     bindgen: &Path,
     splitter: &Path,
     pkg: &Path,
@@ -116,19 +121,20 @@ fn split_build(
     run(cargo()
         .args([
             "build",
-            "--release",
+            "-p",
+            PACKAGE,
+            "--profile",
+            PROFILE,
             "--features",
             "split",
             "--target",
             "wasm32-unknown-unknown",
-            "--manifest-path",
         ])
-        .arg(app.join("Cargo.toml"))
         .args([
             "--config",
             r#"target.wasm32-unknown-unknown.rustflags=["-Clink-args=--emit-relocs"]"#,
         ]))?;
-    let raw = app.join(format!("target/wasm32-unknown-unknown/release/{BIN}.wasm"));
+    let raw = target.join(format!("wasm32-unknown-unknown/{PROFILE}/{BIN}.wasm"));
 
     run(cmd(bindgen)
         .arg(&raw)
@@ -174,28 +180,25 @@ fn split_build(
     Ok(())
 }
 
-/// One module, unsplit, from `profile`: `release` for serving, its custom
+/// One module, unsplit, from `profile`: `web` for serving, its custom
 /// sections stripped, or `quick` for trying a change.
-fn one_module(app: &Path, bindgen: &Path, pkg: &Path, profile: &str) -> Result<()> {
-    run(cargo()
-        .args([
-            "build",
-            "--profile",
-            profile,
-            "--target",
-            "wasm32-unknown-unknown",
-            "--manifest-path",
-        ])
-        .arg(app.join("Cargo.toml")))?;
-    let raw = app.join(format!(
-        "target/wasm32-unknown-unknown/{profile}/{BIN}.wasm"
-    ));
+fn one_module(target: &Path, bindgen: &Path, pkg: &Path, profile: &str) -> Result<()> {
+    run(cargo().args([
+        "build",
+        "-p",
+        PACKAGE,
+        "--profile",
+        profile,
+        "--target",
+        "wasm32-unknown-unknown",
+    ]))?;
+    let raw = target.join(format!("wasm32-unknown-unknown/{profile}/{BIN}.wasm"));
     run(cmd(bindgen)
         .arg(&raw)
         .args(["--target", "web", "--no-typescript", "--out-dir"])
         .arg(pkg))?;
     let wasm = pkg.join(format!("{BIN}_bg.wasm"));
-    if profile == "release" {
+    if profile == PROFILE {
         let bytes = std::fs::read(&wasm)?;
         std::fs::write(&wasm, strip_custom_sections(&bytes)?)?;
     }
@@ -212,10 +215,10 @@ fn locked(lock: &str, package: &str) -> Result<String> {
         .filter_map(|p| p.lines().find_map(|l| l.strip_prefix(r#"version = ""#)))
         .map(|v| v.trim_end_matches('"').to_string());
     let Some(version) = versions.next() else {
-        bail!("{APP}/Cargo.lock has no {package}");
+        bail!("Cargo.lock has no {package}");
     };
     if versions.next().is_some() {
-        bail!("{APP}/Cargo.lock has more than one {package}");
+        bail!("Cargo.lock has more than one {package}");
     }
     Ok(version)
 }

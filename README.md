@@ -48,13 +48,17 @@ those behaviours the Dioxus path does not have yet.
 
 | app | what it is |
 |-----|------------|
-| [`leaf-dioxus`](apps/leaf-dioxus) | **Leaf**, in Rust from `main` up, for every platform Dioxus's native renderer reaches — the Mac's is `Leaf.app` (`org.diaryx.leaf`). A window per document, each a Dioxus page: the toolbar, `crates/leaf-dioxus`'s editor, the context menu and Settings, their buttons, menus and dialogs [unit](https://github.com/diaryx-org/unit)'s. What a platform does its own way is `platform/`: on the Mac an `NSDocument` per window (Open, autosave, Versions, Rename, recents, Finder's Open With), the menu bar, the spelling checker, Look Up and the print panel, through objc2. Export as PDF and Print from the editor's own layout. What it does not do yet is the task "What the Mac app does not do yet". A standalone workspace, since `dioxus-native` is an alpha and its macOS winit backend is vendored and patched. |
-| [`leaf-dioxus-tui`](apps/leaf-dioxus-tui) | the terminal editor: the same `leaf-dioxus` editor, laid out by Blitz and painted into character cells by `blitz-tui`, with unit's menus and dialogs in their cell density. It replaces the archived `leaf-tui`; what it does not do yet is in [its proposal](docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md) and the task "The terminal editor after leaf-tui". A standalone workspace, like the app's. |
+| [`leaf-dioxus`](apps/leaf-dioxus) | **Leaf**, in Rust from `main` up, for every platform Dioxus's native renderer reaches — the Mac's is `Leaf.app` (`org.diaryx.leaf`). A window per document, each a Dioxus page: the toolbar, `crates/leaf-dioxus`'s editor, the context menu and Settings, their buttons, menus and dialogs [unit](https://github.com/diaryx-org/unit)'s. What a platform does its own way is `platform/`: on the Mac an `NSDocument` per window (Open, autosave, Versions, Rename, recents, Finder's Open With), the menu bar, the spelling checker, Look Up and the print panel, through objc2. Export as PDF and Print from the editor's own layout. What it does not do yet is the task "What the Mac app does not do yet". |
+| [`leaf-dioxus-tui`](apps/leaf-dioxus-tui) | the terminal editor: the same `leaf-dioxus` editor, laid out by Blitz and painted into character cells by `blitz-tui`, with unit's menus and dialogs in their cell density. It replaces the archived `leaf-tui`; what it does not do yet is in [its proposal](docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md) and the task "The terminal editor after leaf-tui". |
 
 ```sh
-cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- path/to/document.md
-cargo run --manifest-path apps/leaf-dioxus-tui/Cargo.toml -- path/to/document.md
+cargo run -p leaf-dioxus-app -- path/to/document.md
+cargo run -p leaf-dioxus-tui -- path/to/document.md
 ```
+
+Every crate and app is a member of one workspace, on Dioxus 0.8's alpha;
+the root `Cargo.toml` patches in the Blitz fork, the Mac's winit backend
+and wgpu's hardware layer for all of them.
 
 The Mac app is a bundle put together around its binary, so it has a task in
 the runner in [`xtask/`](xtask):
@@ -72,10 +76,9 @@ them, and `--no-notarize` does without the second.
 
 The runner holds the tasks that leave Rust; the checks and releasing are
 [`ship`](https://github.com/diaryx-org/ship). `ship ci` runs everything a
-release has to pass — the follower versions, rustfmt, clippy with warnings
-denied, the workspace tests, a `cargo check` of each crate alone in each
-feature shape a host actually builds, and the Dioxus widget and app, each a
-workspace of its own. `ship <patch|minor|major|X.Y.Z>` runs those checks,
+release has to pass — rustfmt, clippy with warnings denied, the workspace
+tests, a `cargo check` of each crate alone in each feature shape a host
+actually builds, and the web host and the widget linted for the browser. `ship <patch|minor|major|X.Y.Z>` runs those checks,
 moves the version through every manifest and the lockfile, cuts the generated
 region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released section,
 and commits and tags — locally. Pushing takes `--push`, and a pushed tag is a

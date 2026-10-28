@@ -1,22 +1,15 @@
 [workspace]
 resolver = "3"
-# The Rust libraries under the Dioxus frontend: the core, and what it draws
-# formulas, diagrams and pictures with. xtask is a member so `cargo xtask`
-# shares this lockfile.
-members = ["crates/*", "xtask"]
-# crates/leaf-dioxus, the Dioxus widget, and crates/leaf-dioxus-ui, its menus
-# and dialogs, are each a workspace of their own: they are on Dioxus 0.8's
-# alpha, whose winit beta and wgpu tree nothing here should resolve. Their
-# apps, apps/leaf-dioxus and apps/leaf-dioxus-tui, are outside `members`
-# already. Build each from its own manifest:
-#
-#     cargo build --manifest-path apps/leaf-dioxus/Cargo.toml
-#
-# The other frontends (Swift, web, gpui, Android and the ratatui TUI) are
-# archived under archive/; see archive/README.md. Nothing here builds them.
-exclude = ["crates/leaf-dioxus", "crates/leaf-dioxus-ui"]
-# A bare `cargo build` builds the libraries, not the task runner.
-default-members = ["crates/*"]
+# leaf's libraries (`crates/`: the core, what it draws formulas, diagrams and
+# pictures with, and the Dioxus editor widget) and its apps (`apps/`: Leaf
+# for the desktop, the terminal and the browser), all on Dioxus's native
+# renderer. Dioxus is what leaf is built on, alpha though it is: the other
+# frontends (Swift, web, gpui, Android and the ratatui TUI) are archived
+# under archive/ (archive/README.md), and nothing here builds them. xtask is
+# a member so `cargo xtask` shares this lockfile.
+members = ["crates/*", "apps/*", "xtask"]
+# A bare `cargo build` builds the libraries and the apps, not the task runner.
+default-members = ["crates/*", "apps/*"]
 
 [workspace.package]
 version = "0.5.1"
@@ -61,9 +54,73 @@ leaf-session = { path = "crates/leaf-session", version = "0.5.1" }
 # The Dioxus editor draws a fence through it.
 leaf-mermaid = { path = "crates/leaf-mermaid", version = "0.5.1" }
 
-# mmdr optimised even in a debug build: unoptimised, its flowchart layout is
-# some six times slower (a 20-node chart 244 ms against 40 ms), which makes
-# a debug build a poor guide to what Diaryx ships.
-# A profile here governs only builds of this workspace.
-[profile.dev.package.mermaid-rs-renderer]
+# A debug build with full debug info is several hundred megabytes; line
+# tables are enough for a panic's file and line.
+[profile.dev]
+debug = "line-tables-only"
+
+# Every dependency optimised, even in a debug build: unoptimised, Stylo,
+# parley and Vello take 11 ms to draw a frame the release build draws in
+# 1.4, and a scroll keeps the main thread too busy to reach 60 fps; and
+# mmdr's flowchart layout is some six times slower (a 20-node chart 244 ms
+# against 40 ms), which makes a debug build a poor guide to what Diaryx
+# ships. A profile here governs only builds of this workspace.
+[profile.dev.package."*"]
 opt-level = 3
+
+# Leaf in a browser (`cargo xtask web`, apps/leaf-dioxus-web). Stylo, parley
+# and Vello want every optimisation they can get, and the size is brotli's to
+# cut when the bundle is served (its README.md). What the splitter needs — fat LTO, so the call graph is one module's, and debug
+# info, so its functions have names. The xtask strips both from what it
+# writes into the page's `pkg/`, so neither reaches the page. A profile of
+# its own, so that a native release build is not linked whole.
+[profile.web]
+inherits = "release"
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = true
+
+# `cargo xtask web --quick`: optimised, but without the fat LTO, so a change
+# rebuilds in a fraction of the time.
+[profile.quick]
+inherits = "web"
+lto = false
+codegen-units = 16
+debug = false
+incremental = true
+
+[patch.crates-io]
+# Blitz from diaryx-org's fork, its `leaf` branch at the version
+# dioxus-native pins (FORK.md there): its accessibility tree made readable
+# and pressable (bounds, the page's text, ARIA's states, the click action
+# carried out), blitz-tui, and its fixes — among them the hit test's
+# skipping a node removed since the last layout, which a browser reaches
+# often. Every Blitz crate in the graph comes from the fork: the fork's
+# crates depend on each other by path, so one from crates.io beside them
+# would be a second copy.
+blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+accesskit_xplat = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+# winit's macOS backend, at the version dioxus-native pins, patched (its
+# PATCH.md, in the Blitz fork's patches/): its text input client answered no
+# questions about the text around the caret, so macOS's press-and-hold
+# accent menu never opened, and it dropped any insertText that did not end a
+# composition, which is how the emoji picker inserts. From the Blitz fork,
+# with the rest of the Blitz stack. winit-appkit reaches the app only
+# transitively (blitz-shell → winit), which nothing but [patch] can override.
+# It goes when the change lands upstream (PATCH.md, "Upstream") and Blitz
+# takes that winit.
+winit-appkit = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+# wgpu's hardware layer, vendored at the version anyrender_vello's wgpu takes
+# and patched (see /patches/wgpu-hal/PATCH.md): on macOS it refused every
+# frame for a window not marked visible, so a window opened, restored or
+# changed while covered, minimized or on another Space drew nothing and
+# showed blank until it was uncovered. The same exception, granted by Adam on
+# 2026-10-19 for this patch; it goes when wgpu stops refusing those frames.
+wgpu-hal = { path = "patches/wgpu-hal" }

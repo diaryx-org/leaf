@@ -61,7 +61,7 @@ jobs:
       run: rustup toolchain install
 
     - uses: Swatinem/rust-cache@v2
-      with: { workspaces: "apps/leaf-dioxus -> target" }
+      with: { workspaces: ". -> target" }
 
     - name: Write the App Store Connect API key
       env:
@@ -107,8 +107,7 @@ jobs:
       run: cargo xtask package
 
     # The image is named from the bundle's own version, which `cargo xtask
-    # mac` stamps from apps/leaf-dioxus/Cargo.toml, where `cargo xtask
-    # sync-versions` writes it at the bump. A tag whose image
+    # mac` stamps from the workspace's, the version `ship` bumps. A tag whose image
     # names another version would be the cask downloading the wrong app.
     - name: Check the image is the tag's version
       if: github.ref_type == 'tag'

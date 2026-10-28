@@ -2,16 +2,13 @@
 # component the Mac app draws with Blitz on wgpu, drawn in a terminal instead.
 # Blitz still builds the DOM, resolves the styles and lays the page out;
 # blitz-tui, in the Blitz fork, walks the laid-out tree and writes character
-# cells where blitz-paint would draw pixels. Its own workspace for
-# apps/leaf-dioxus's reason: dioxus-native is an alpha, and the Blitz fork is
-# reached by [patch].
+# cells where blitz-paint would draw pixels. The Blitz fork is reached by
+# the [patch] in leaf's root Cargo.toml.
 #
-#     cargo run --manifest-path apps/leaf-dioxus-tui/Cargo.toml -- document.md
-[workspace]
-
+#     cargo run -p leaf-dioxus-tui -- document.md
 [package]
 name = "leaf-dioxus-tui"
-version = "0.5.1"
+version.workspace = true
 edition = "2024"
 publish = false
 
@@ -50,21 +47,3 @@ anyhow = "1"
 libc = "0.2"
 # The editor's timers.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
-
-[profile.dev]
-debug = "line-tables-only"
-
-# Stylo and parley are slow unoptimised; see apps/leaf-dioxus.
-[profile.dev.package."*"]
-opt-level = 3
-
-# The Blitz fork, every Blitz crate from one source, or the graph holds two
-# copies: the `leaf` branch, as apps/leaf-dioxus takes it.
-[patch.crates-io]
-blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
-debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }

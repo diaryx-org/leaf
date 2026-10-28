@@ -4,7 +4,7 @@
 //!
 //! ```sh
 //! cargo xtask swift                     # Leaf.app, on a copy of the sample
-//! cargo run --manifest-path apps/leaf-dioxus/Cargo.toml -- corpus/document.md
+//! cargo run -p leaf-dioxus-app -- corpus/document.md
 //! ```
 //!
 //! Each window is a Dioxus page, drawn by Blitz on wgpu, and the same on

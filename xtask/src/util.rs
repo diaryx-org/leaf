@@ -115,6 +115,24 @@ pub fn stdout(cmd: &mut Command) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// The version `[workspace.package]` states.
+pub fn workspace_version() -> Result<String> {
+    let manifest = read("Cargo.toml")?;
+    let mut in_package = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[workspace.package]";
+            continue;
+        }
+        if in_package && let Some(rest) = line.strip_prefix("version") {
+            let value = rest.trim_start().trim_start_matches('=').trim();
+            return Ok(value.trim_matches('"').to_string());
+        }
+    }
+    bail!("no `version` under [workspace.package] in Cargo.toml")
+}
+
 /// Read a repo file, named by its path from the root.
 pub fn read(path: impl AsRef<Path>) -> Result<String> {
     let path = root().join(path);

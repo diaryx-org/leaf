@@ -1,5 +1,2 @@
-# A standalone workspace with its own target dir — the root .gitignore's
-# `/target` is anchored to the main workspace and does not reach here.
-/target
-# wasm-pack's output, which the page loads; built, not kept.
+# The page's build (`cargo xtask web`), which the page loads; built, not kept.
 /pkg

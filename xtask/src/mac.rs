@@ -17,7 +17,8 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 pub const APP: &str = "Leaf";
-const MANIFEST: &str = "apps/leaf-dioxus/Cargo.toml";
+/// The app's package, as `-p` names it.
+const PACKAGE: &str = "leaf-dioxus-app";
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -48,31 +49,25 @@ pub fn run_task(args: Args) -> Result<()> {
     launch(&app, &file)
 }
 
-/// The app's version: its manifest's, which `cargo xtask sync-versions`
-/// keeps at the workspace's.
+/// The app's version: the workspace's, which its manifest inherits.
 pub fn version() -> Result<String> {
-    let manifest = crate::util::read(MANIFEST)?;
-    manifest
-        .lines()
-        .find_map(|l| l.strip_prefix("version = \""))
-        .map(|v| v.trim_end_matches('"').to_string())
-        .context("no version in apps/leaf-dioxus/Cargo.toml")
+    crate::util::workspace_version()
 }
 
-/// Build the binary and put `Leaf.app` together around it, in the app's
+/// Build the binary and put `Leaf.app` together around it, in
 /// `target/<profile>/`. Answers the bundle's path.
 pub fn bundle(release: bool) -> Result<PathBuf> {
     require_tool("xcrun", "install Xcode and its command-line tools")?;
     let root = root();
     let mut build = cargo();
-    build.args(["build", "--manifest-path", MANIFEST]);
+    build.args(["build", "-p", PACKAGE]);
     if release {
         build.arg("--release");
     }
     run(&mut build)?;
 
     let profile = if release { "release" } else { "debug" };
-    let out = root.join("apps/leaf-dioxus/target").join(profile);
+    let out = root.join("target").join(profile);
     let app = out.join(format!("{APP}.app"));
     if app.exists() {
         std::fs::remove_dir_all(&app)?;

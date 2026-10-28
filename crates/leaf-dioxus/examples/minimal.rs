@@ -2,7 +2,7 @@
 //! with the system clipboard and every request ignored.
 //!
 //! ```sh
-//! cargo run --manifest-path crates/leaf-dioxus/Cargo.toml --example minimal
+//! cargo run -p leaf-dioxus --example minimal
 //! ```
 
 use std::rc::Rc;

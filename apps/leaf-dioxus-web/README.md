@@ -12,7 +12,7 @@ cargo xtask web --serve 8000     # then open http://localhost:8000
 The page is `index.html`, `pkg/`, `fonts/` and `media/` (the demo's
 picture); serve all four. The first
 build installs `wasm-bindgen` (and, for `--split`, `wasm-split-cli`), at the
-versions the lockfile names, into the app's `target/tools`.
+versions the lockfile names, into the workspace's `target/tools`.
 
 `cargo xtask web --quick` builds without the fat LTO, in about a minute
 rather than five: for trying a change, not for serving.

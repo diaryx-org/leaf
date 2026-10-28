@@ -9,7 +9,7 @@ pictures, links and footnotes, and the status line. The app is one host for
 it, as `apps/leaf` is for `leaf-gpui`; Diaryx's Dioxus port is to be another.
 
 ```sh
-cargo test --manifest-path crates/leaf-dioxus/Cargo.toml
+cargo test -p leaf-dioxus
 ```
 
 `apps/leaf-dioxus/README.md` says what the editor does and how each part was
