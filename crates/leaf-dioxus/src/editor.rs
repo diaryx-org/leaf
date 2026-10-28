@@ -269,6 +269,8 @@ pub struct Signals {
     pub status: Signal<String>,
     /// The word count, as of a revision; see `status::recount`.
     pub words: Signal<Option<(u64, usize)>>,
+    /// What the host shows beside the word count; see [`Editor::set_aside`].
+    pub aside: Signal<Option<String>>,
     /// What the find bar draws.
     pub bar: Signal<BarView>,
     /// The viewport: how far down the document it starts, and how tall it
@@ -306,6 +308,7 @@ impl Signals {
             layout: use_signal(Layout::default),
             status: use_signal(String::new),
             words: use_signal(|| None),
+            aside: use_signal(|| None),
             bar: use_signal(BarView::default),
             top: use_signal(|| 0.0),
             height: use_signal(|| viewport_height(size.height, scale)),
@@ -899,6 +902,15 @@ impl Editor {
     /// forward. A drag let go far enough that way is [`Host::turn`].
     pub fn set_turns(&self, back: bool, forward: bool) {
         self.st.turns.set((back, forward));
+    }
+
+    /// Show `aside` in the status line, before the word count: a host's
+    /// count of its own, such as the pages a paged view of the document
+    /// sets it on. `None` shows nothing there.
+    pub fn set_aside(&self, aside: Option<String>) {
+        if *self.sig.aside.peek() != aside {
+            set(self.sig.aside, aside);
+        }
     }
 
     /// The find bar's height, open or not: what covers the top of the

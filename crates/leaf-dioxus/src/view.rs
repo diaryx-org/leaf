@@ -292,6 +292,7 @@ fn render(ed: &Editor) -> Element {
     let column = *sig.width.read() + 2.0 * row::PAD as f32;
     let status = sig.status.read().clone();
     let words = *sig.words.read();
+    let aside = sig.aside.read().clone();
     let look = sig.look.read().clone();
     // The editor's box, which the column is centred in and the bars are
     // pinned to; and how far a finger has slid the page aside.
@@ -370,6 +371,9 @@ fn render(ed: &Editor) -> Element {
                 "{status}"
             }
             span { class: "grow" }
+            if let Some(a) = aside {
+                span { class: "aside", "{a}" }
+            }
             match words {
                 Some((_, n)) => rsx! { "{n} words" },
                 None => rsx! { "counting…" },
