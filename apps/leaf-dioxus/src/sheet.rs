@@ -208,9 +208,10 @@ mod tests {
         });
     }
 
-    // Off the Mac, the default face is not installed, and the editor and
-    // Blitz fall back to different faces: docs/tasks/the-editor-and-blitz-
-    // fall-back-to-different-faces.md.
+    // Off the Mac, in the face the default falls back to, a quoted line
+    // fits only with its trailing space hanging, and parley breaks it after
+    // the bar: docs/tasks/a-quotes-bar-breaks-a-line-blitz-was-told-not-to-
+    // wrap.md.
     #[test]
     #[cfg(target_os = "macos")]
     fn a_quotes_bars_meet_down_its_lines_and_rows() {
