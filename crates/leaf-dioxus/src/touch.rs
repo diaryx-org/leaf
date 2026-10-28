@@ -166,8 +166,9 @@ impl Editor {
         self.st.glide.get() % 2 == 1
     }
 
-    /// Stop the page where it is.
-    fn stop_glide(&self) {
+    /// Stop the page where it is: a finger landed, or a host's wheel
+    /// started to scroll again.
+    pub fn stop_glide(&self) {
         let g = self.st.glide.get();
         if g % 2 == 1 {
             self.st.glide.set(g + 1);
@@ -178,8 +179,10 @@ impl Editor {
     /// phone's scroll view slows, and spring back if it is past an end —
     /// frame by frame, each moved as far as the time since the last says.
     /// An odd `glide` is a glide under way; landing a finger, or starting
-    /// another, makes it even and the loop below stops.
-    fn start_glide(&self, vel: f64) {
+    /// another, makes it even and the loop below stops. A finger's throw
+    /// starts one; so does a host's, for a touchpad's fingers lifting from
+    /// a scroll where the system gives it no momentum of its own.
+    pub fn start_glide(&self, vel: f64) {
         let st = &*self.st;
         let max = self.max_top().max(0.0);
         let top = self.top();

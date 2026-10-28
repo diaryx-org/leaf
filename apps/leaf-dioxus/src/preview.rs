@@ -54,6 +54,9 @@ pub struct Preview {
     drawn: Cell<Option<(usize, Option<usize>, u64)>>,
     /// Which setting of the pages is on show, counting up.
     set: Cell<u64>,
+    /// The pages' throw: odd while one is under way. Starting another, or
+    /// stopping it, moves it on, and the loop that moves the pages stops.
+    glide: Cell<u64>,
 }
 
 impl Preview {
@@ -317,6 +320,67 @@ pub fn pinch(page: &Page, delta: f64, at: Option<(f64, f64)>) -> bool {
         measure(page);
     }
     took
+}
+
+/// Carry the pages on at `vel` CSS pixels a millisecond down, slowing as
+/// the editor's throw slows (`unit::scroll::Glide`): frame by frame, each
+/// moved as far as the time since the last says.
+pub fn fling(page: &Page, vel: f64) {
+    let p = &page.preview;
+    let id = p.glide.get() / 2 * 2 + 3;
+    p.glide.set(id);
+    let Some(mut g) = page.with_view_peek(|v| {
+        let (_, (min, max)) = v.scroll.range();
+        Some(unit::scroll::Glide {
+            pos: v.scroll.y,
+            vel,
+            min,
+            max,
+        })
+    }) else {
+        return;
+    };
+    let window = page.window.id();
+    page.in_scope(|| {
+        spawn(async move {
+            let mut last = std::time::Instant::now();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+                let Some(page) = app::page(window) else {
+                    return;
+                };
+                if page.preview.glide.get() != id {
+                    return;
+                }
+                let now = std::time::Instant::now();
+                let dt = now.duration_since(last).as_secs_f64() * 1000.0;
+                last = now;
+                g.max = page.with_view_peek(|v| v.scroll.range().1.1);
+                let moving = g.step(dt);
+                page.with_view(|mut v| v.write().scroll.y = g.pos);
+                page.window.request_redraw();
+                if !moving {
+                    page.preview.glide.set(id + 1);
+                    return;
+                }
+            }
+        });
+    });
+}
+
+/// Stop the pages' throw where they are.
+pub fn stop_fling(page: &Page) {
+    let g = page.preview.glide.get();
+    if g % 2 == 1 {
+        page.preview.glide.set(g + 1);
+    }
+}
+
+/// Whether the pages are shown under window point (`x`, `y`).
+pub fn under(page: &Page, (x, y): (f64, f64)) -> bool {
+    page.preview.mode() != Mode::Off
+        && y >= crate::page::chrome_height()
+        && page.with_view_peek(|v| v.width > 0.0 && x >= v.left && x <= v.left + v.width)
 }
 
 /// An SVG as a URL Blitz draws a picture from.

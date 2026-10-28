@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use dioxus::prelude::*;
 use dioxus_core::{Runtime, ScopeId};
-use dioxus_native::winit::event::{ElementState, Ime, WindowEvent};
+use dioxus_native::winit::event::{ElementState, Ime, MouseScrollDelta, TouchPhase, WindowEvent};
 use dioxus_native::winit::keyboard::ModifiersState;
 use dioxus_native::winit::window::Window;
 use leaf_core::{Doc, InlineMarks, LineFlow, MarkColor, View};
@@ -219,6 +219,10 @@ pub struct Page {
     composing: Cell<bool>,
     /// Where the pointer last was, in the page's CSS pixels.
     pointer: Cell<Option<(f64, f64)>>,
+    /// A touchpad's scroll under way, for the throw it leaves.
+    touchpad: RefCell<Touchpad>,
+    /// When the page was made: what the wheel's times count from.
+    since: std::time::Instant,
     /// The pages beside a document's editor, or in its place.
     pub preview: Preview,
 }
@@ -233,6 +237,8 @@ impl Page {
             reported: Cell::new(0),
             composing: Cell::new(false),
             pointer: Cell::new(None),
+            touchpad: RefCell::default(),
+            since: std::time::Instant::now(),
             preview: Preview::default(),
         }
     }
@@ -396,6 +402,11 @@ impl Page {
             // A trackpad's pinch, over the pages: they zoom about the
             // pointer.
             WindowEvent::PinchGesture { delta, .. } => preview::pinch(self, *delta, self.pointer()),
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                self.inertia(delta, *phase);
+                self.with_editor(|ed, _| ed.window_event(event));
+                false
+            }
             // A force click: the trackpad's Look Up, where the system gives
             // Look Up to one.
             WindowEvent::TouchpadPressure { stage, .. } => {
@@ -415,6 +426,39 @@ impl Page {
                 false
             }
         }
+    }
+
+    /// A touchpad's scroll, followed for the throw its fingers leave as they
+    /// lift: the view under the pointer, the editor or the pages, carries on
+    /// as a phone's does. Off the Mac, whose system sends a scroll's momentum
+    /// itself; where the system reports when the fingers lift (Wayland, not
+    /// X11). A wheel's notch, or a new scroll, stops a throw under way.
+    fn inertia(&self, delta: &MouseScrollDelta, phase: TouchPhase) {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let now = self.since.elapsed().as_secs_f64() * 1000.0;
+        // A wheel's notch counts in lines; a touchpad's travel in pixels.
+        let dy = match delta {
+            MouseScrollDelta::PixelDelta(d) => Some(d.y / self.window.scale_factor()),
+            _ => None,
+        };
+        match self.touchpad.borrow_mut().wheel(now, dy, phase) {
+            Wheeled::Stop => self.stop_throws(),
+            Wheeled::Throw(vel) => match self.pointer() {
+                Some(at) if preview::under(self, at) => preview::fling(self, vel),
+                _ => {
+                    self.with_editor(|ed, _| ed.start_glide(vel));
+                }
+            },
+            Wheeled::Scrolled => {}
+        }
+    }
+
+    /// Stop a throw under way, the editor's or the pages'.
+    fn stop_throws(&self) {
+        preview::stop_fling(self);
+        self.with_editor(|ed, _| ed.stop_glide());
     }
 
     /// After Blitz has had an event: a new size moves the editor's box, and
@@ -618,8 +662,93 @@ impl Page {
     }
 }
 
+/// A touchpad's scroll, followed for the throw its fingers leave as they
+/// lift: their travel, and its recent times.
+#[derive(Default)]
+struct Touchpad {
+    tracker: unit::scroll::Tracker,
+    travelled: f64,
+}
+
+/// What a wheel event asks of the views.
+#[derive(Debug, PartialEq)]
+enum Wheeled {
+    /// Stop a throw under way: a notch, or fingers that came down to scroll.
+    Stop,
+    /// The fingers lifted while moving: throw the view at this many CSS
+    /// pixels a millisecond, down the offset.
+    Throw(f64),
+    /// The scroll goes on, or ended at rest.
+    Scrolled,
+}
+
+impl Touchpad {
+    /// A wheel event at `now` (milliseconds): a touchpad's `dy` in CSS
+    /// pixels (positive toward the top, as Blitz has it), or a notch's
+    /// (`None`), in its scroll's `phase`.
+    fn wheel(&mut self, now: f64, dy: Option<f64>, phase: TouchPhase) -> Wheeled {
+        let Some(dy) = dy else { return Wheeled::Stop };
+        match phase {
+            TouchPhase::Started => {
+                self.tracker.reset();
+                self.travelled = dy;
+                self.tracker.push(now, dy);
+                Wheeled::Stop
+            }
+            TouchPhase::Moved => {
+                self.travelled += dy;
+                self.tracker.push(now, self.travelled);
+                Wheeled::Scrolled
+            }
+            TouchPhase::Ended => {
+                // A positive delta moves toward the top: the offset falls.
+                let vel = -self.tracker.velocity(now);
+                if vel.abs() < 0.05 {
+                    Wheeled::Scrolled
+                } else {
+                    Wheeled::Throw(vel)
+                }
+            }
+            TouchPhase::Cancelled => Wheeled::Scrolled,
+        }
+    }
+}
+
 /// An edit no key stands for, then a repaint.
 fn edit(ed: &Editor, f: impl FnOnce(&mut Doc)) {
     f(&mut ed.doc());
     ed.refresh();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fingers moving up the pad at a steady 1 px/ms (the page going down)
+    /// throw it on down; fingers that rested before they lifted throw
+    /// nothing; a notch or a new scroll stops a throw.
+    #[test]
+    fn a_touchpad_throws_the_view_its_fingers_were_moving() {
+        let mut t = Touchpad::default();
+        assert_eq!(t.wheel(0.0, Some(-8.0), TouchPhase::Started), Wheeled::Stop);
+        for i in 1..=10 {
+            assert_eq!(
+                t.wheel(i as f64 * 8.0, Some(-8.0), TouchPhase::Moved),
+                Wheeled::Scrolled
+            );
+        }
+        match t.wheel(84.0, Some(0.0), TouchPhase::Ended) {
+            Wheeled::Throw(v) => assert!((v - 1.0).abs() < 0.05, "{v}"),
+            w => panic!("no throw: {w:?}"),
+        }
+
+        t.wheel(200.0, Some(-8.0), TouchPhase::Started);
+        t.wheel(208.0, Some(-8.0), TouchPhase::Moved);
+        assert_eq!(
+            t.wheel(400.0, Some(0.0), TouchPhase::Ended),
+            Wheeled::Scrolled
+        );
+
+        assert_eq!(t.wheel(500.0, None, TouchPhase::Moved), Wheeled::Stop);
+    }
 }
