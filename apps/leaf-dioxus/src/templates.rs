@@ -14,27 +14,17 @@
 //! reader's; and a template not twig-export's own is set in another
 //! process (`typeset.rs`), which a template that loops or eats memory
 //! takes down without taking the app.
+//!
+//! The list itself, and the built-ins, are leaf-pages's
+//! (`leaf_pages::templates`): the app hands it what is installed
+//! ([`installed`]) when it starts (`main.rs`).
 
 use std::path::PathBuf;
 use std::sync::RwLock;
 
 use twig_export::templates::{self as tx, Spec};
 
-/// A template, as a menu lists it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Entry {
-    /// What a setting stores: a built-in's name, or a package's spec.
-    pub key: String,
-    pub label: String,
-    /// Whether it sets a reflowed page; one that does not is reflowed in
-    /// Classic.
-    pub reflows: bool,
-    /// Whether it is twig-export's own, set in the app's process.
-    pub builtin: bool,
-}
-
-/// The template a reflowed view falls back to.
-pub const FALLBACK: &str = "classic";
+pub use leaf_pages::templates::{Entry, all, entry};
 
 /// The folder templates are installed in, laid out as Typst's own: the
 /// app's data folder's `packages`.
@@ -62,26 +52,9 @@ fn data_dir() -> PathBuf {
 
 static INSTALLED: RwLock<Option<Vec<Entry>>> = RwLock::new(None);
 
-/// Every template: the built-ins, then those installed, by label.
-pub fn all() -> Vec<Entry> {
-    let mut out: Vec<Entry> = tx::BUILTIN
-        .iter()
-        .map(|b| {
-            let m = b.manifest();
-            Entry {
-                key: b.name.into(),
-                label: m.twig().map_or(b.name.into(), |t| t.label.clone()),
-                reflows: m.sets("reflow"),
-                builtin: true,
-            }
-        })
-        .collect();
-    out.extend(installed());
-    out
-}
-
-/// The templates installed, read from the folder the first time asked.
-fn installed() -> Vec<Entry> {
+/// The templates installed, by label, read from the folder the first time
+/// asked.
+pub fn installed() -> Vec<Entry> {
     if let Some(found) = INSTALLED.read().ok().and_then(|g| g.clone()) {
         return found;
     }
@@ -110,16 +83,6 @@ pub fn reload() {
         *g = None;
     }
     crate::menus::changed();
-}
-
-/// The template a setting names.
-pub fn entry(key: &str) -> Option<Entry> {
-    all().into_iter().find(|e| e.key == key)
-}
-
-/// Whether `key` names a template that can be: a built-in, or a spec.
-pub fn valid(key: &str) -> bool {
-    tx::spec(key).is_some()
 }
 
 /// What the reader gives to install a template: a spec (`@preview/name:1.0.0`),
@@ -277,13 +240,5 @@ mod tests {
             Some("@local/x:1.0.0")
         );
         assert_eq!(spec_of("charged-ieee"), None);
-    }
-
-    #[test]
-    fn the_builtins_lead_and_reflow() {
-        let all = all();
-        let keys: Vec<&str> = all.iter().take(3).map(|e| e.key.as_str()).collect();
-        assert_eq!(keys, ["classic", "modern", "editorial"]);
-        assert!(all.iter().take(3).all(|e| e.builtin && e.reflows));
     }
 }

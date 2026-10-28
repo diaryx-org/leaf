@@ -11,7 +11,8 @@
 //!
 //! With the PDF preview shown, the editor has the window's left half and
 //! the pages its right; in the page view the pages are over the editor,
-//! which still has the keys and the document (`preview.rs`, `pages.rs`).
+//! which still has the keys and the document (leaf-pages, hosted by
+//! `pages.rs`).
 //!
 //! What the menus and the toolbar show — the marks in force, the heading,
 //! whether there is anything to undo — is the [`Chrome`], read off the
@@ -32,9 +33,9 @@ use unit::{Keys, Theme, Unit, UnitRoot, use_unit};
 
 use crate::app::{self, AppEvent};
 use crate::commands::Command;
-use crate::pages::PagesView;
+use leaf_pages::{Mode, Pages};
+
 use crate::platform;
-use crate::preview::{self, Mode, Preview};
 use crate::shell::Shell;
 
 /// The toolbar's row, under the title bar's band.
@@ -110,7 +111,6 @@ pub struct Made {
     pub unit: Rc<Cell<Option<Unit>>>,
     pub editor: Rc<RefCell<Option<Editor>>>,
     pub chrome: Rc<Cell<Option<Signal<Chrome>>>>,
-    pub view: Rc<Cell<Option<Signal<PagesView>>>>,
 }
 
 /// What a document's page is made with.
@@ -119,14 +119,21 @@ pub struct DocInit {
     pub doc: Rc<RefCell<Doc>>,
     pub shell: Rc<Shell>,
     pub made: Made,
+    /// The pages beside the editor, or in its place; and what they ask of
+    /// the window, told its id once it is made.
+    pub pages: Rc<Pages>,
+    pub desk: Rc<crate::pages::Desk>,
 }
 
 impl DocInit {
     pub fn new(doc: Doc, shell: Shell) -> Self {
+        let desk = Rc::new(crate::pages::Desk::default());
         Self {
             doc: Rc::new(RefCell::new(doc)),
             shell: Rc::new(shell),
             made: Made::default(),
+            pages: Rc::new(Pages::new(desk.clone())),
+            desk,
         }
     }
 }
@@ -137,7 +144,6 @@ impl DocInit {
 pub fn DocumentPage() -> Element {
     let init = use_context::<DocInit>();
     let chrome = use_signal(Chrome::default);
-    let view = use_signal(PagesView::default);
     let ed = use_shared_editor(
         || init.doc.clone(),
         || init.shell.look(),
@@ -146,7 +152,6 @@ pub fn DocumentPage() -> Element {
     use_hook(|| {
         *init.made.editor.borrow_mut() = Some(ed.clone());
         init.made.chrome.set(Some(chrome));
-        init.made.view.set(Some(view));
     });
     let appearance = app::settings().appearance;
     rsx! {
@@ -155,8 +160,8 @@ pub fn DocumentPage() -> Element {
             {ed.render()}
             style { {themed(crate::toolbar::CSS, appearance)} }
             {crate::toolbar::render(&ed, &chrome.read())}
-            style { {themed(crate::pages::CSS, appearance)} }
-            crate::pages::Pages { view }
+            style { {themed(leaf_pages::CSS, appearance)} }
+            leaf_pages::PagesPane { pages: init.pages.clone() }
         }
     }
 }
@@ -230,8 +235,6 @@ pub struct Page {
     held: Cell<Option<Held>>,
     /// When the page was made: what the wheel's times count from.
     since: std::time::Instant,
-    /// The pages beside a document's editor, or in its place.
-    pub preview: Preview,
 }
 
 impl Page {
@@ -247,7 +250,6 @@ impl Page {
             touchpad: RefCell::default(),
             held: Cell::new(None),
             since: std::time::Instant::now(),
-            preview: Preview::default(),
         }
     }
 
@@ -271,6 +273,11 @@ impl Page {
 
     pub fn shell(&self) -> Option<&Rc<Shell>> {
         self.init().map(|i| &i.shell)
+    }
+
+    /// A document's pages, beside its editor or in its place.
+    pub fn pages(&self) -> Option<&Rc<Pages>> {
+        self.init().map(|i| &i.pages)
     }
 
     /// The editor, if the page has made it.
@@ -301,23 +308,6 @@ impl Page {
         let ed = self.editor()?;
         let shell = self.shell()?.clone();
         Some(self.in_scope(|| f(&ed, &shell)))
-    }
-
-    /// Change what the pages' view draws, inside the page's runtime; not
-    /// without a document's page.
-    pub fn with_view(&self, f: impl FnOnce(Signal<PagesView>)) {
-        if let Some(view) = self.init().and_then(|i| i.made.view.get()) {
-            self.in_scope(|| f(view));
-        }
-    }
-
-    /// Read what the pages' view draws; the default without a document's
-    /// page.
-    pub fn with_view_peek<R: Default>(&self, f: impl FnOnce(&PagesView) -> R) -> R {
-        match self.init().and_then(|i| i.made.view.get()) {
-            Some(view) => f(&view.peek()),
-            None => R::default(),
-        }
     }
 
     /// Read or change the document; `None` without one, or while the
@@ -409,7 +399,9 @@ impl Page {
             }
             // A trackpad's pinch, over the pages: they zoom about the
             // pointer.
-            WindowEvent::PinchGesture { delta, .. } => preview::pinch(self, *delta, self.pointer()),
+            WindowEvent::PinchGesture { delta, .. } => self
+                .pages()
+                .is_some_and(|p| p.pinch(*delta, self.pointer())),
             WindowEvent::MouseWheel { delta, phase, .. } => self.touchpad(delta, *phase),
             // A force click: the trackpad's Look Up, where the system gives
             // Look Up to one.
@@ -459,9 +451,12 @@ impl Page {
             }
             Wheeled::Begin(travelled) => {
                 self.stop_throws();
-                let pages = self.pointer().is_some_and(|at| preview::under(self, at));
+                let pages = self
+                    .pointer()
+                    .zip(self.pages())
+                    .is_some_and(|(at, p)| p.under(at));
                 let from = if pages {
-                    self.with_view_peek(|v| v.scroll.y)
+                    self.pages().map_or(0.0, |p| p.peek(|v| v.scroll.y))
                 } else {
                     self.editor().map_or(0.0, |ed| ed.top())
                 };
@@ -482,8 +477,8 @@ impl Page {
                 let Some(held) = self.held.take() else {
                     return false;
                 };
-                if held.pages {
-                    preview::fling(self, vel);
+                if let (true, Some(p)) = (held.pages, self.pages()) {
+                    p.fling(vel);
                 } else {
                     self.with_editor(|ed, _| ed.start_glide(vel));
                 }
@@ -508,8 +503,8 @@ impl Page {
                 }
                 page.touchpad.borrow_mut().down = false;
                 let held = page.held.take().expect("checked above");
-                if held.pages {
-                    preview::fling(&page, 0.0);
+                if let (true, Some(p)) = (held.pages, page.pages()) {
+                    p.fling(0.0);
                 } else {
                     page.with_editor(|ed, _| ed.start_glide(0.0));
                 }
@@ -524,8 +519,8 @@ impl Page {
     fn pull(&self, travelled: f64, dx: f64) {
         let Some(held) = self.held.get() else { return };
         let raw = held.from - travelled;
-        if held.pages {
-            self.with_view(|mut v| {
+        if let (true, Some(p)) = (held.pages, self.pages()) {
+            p.with_view(|mut v| {
                 let mut v = v.write();
                 let ((x0, x1), (lo, hi)) = v.scroll.range();
                 let d = v.scroll.view.1;
@@ -542,7 +537,9 @@ impl Page {
 
     /// Stop a throw under way, the editor's or the pages'.
     fn stop_throws(&self) {
-        preview::stop_fling(self);
+        if let Some(p) = self.pages() {
+            p.stop_fling();
+        }
         self.with_editor(|ed, _| ed.stop_glide());
     }
 
@@ -569,7 +566,7 @@ impl Page {
             self.in_scope(|| unit.set_viewport(w, h));
         }
         let top = chrome_height();
-        let pane = preview::place(self, w);
+        let pane = self.pages().map_or(0.0, |p| p.place());
         self.with_editor(|ed, _| {
             ed.set_bounds(Some(Bounds {
                 left: 0.0,
@@ -595,10 +592,10 @@ impl Page {
         let t_chrome = t0.elapsed();
         // ⌘E, or the editor's own command, turns the source view on or off:
         // the window shows it beside the pages, or goes back.
-        preview::follow(self, chrome.source_view);
-        chrome.pages = self.preview.mode() == Mode::Pages;
-        chrome.reflow = self.preview.mode() == Mode::Reflow;
-        preview::update(self);
+        init.pages.follow(chrome.source_view);
+        chrome.pages = init.pages.mode() == Mode::Pages;
+        chrome.reflow = init.pages.mode() == Mode::Reflow;
+        init.pages.update();
         if chrome.dirty && chrome.revision != self.reported.get() {
             self.reported.set(chrome.revision);
             init.shell.document.edited();
@@ -681,8 +678,8 @@ impl Page {
         // The toolbar's menus tick the choices.
         if let Some(init) = self.init() {
             init.shell.stale.set(true);
+            init.pages.update();
         }
-        preview::update(self);
         app::poll(self.window.id());
     }
 
@@ -712,8 +709,16 @@ impl Page {
             Command::Link => crate::context::prompt_link(self),
             Command::InstallTemplate => crate::templates::prompt_install(self),
             Command::ExportPdf => platform::print::export(self),
-            Command::PageView => preview::show(self, Mode::Pages),
-            Command::Reflow => preview::show(self, Mode::Reflow),
+            Command::PageView => {
+                if let Some(p) = self.pages() {
+                    p.show(Mode::Pages);
+                }
+            }
+            Command::Reflow => {
+                if let Some(p) = self.pages() {
+                    p.show(Mode::Reflow);
+                }
+            }
             Command::Save => {
                 if let Some(s) = self.shell() {
                     s.document.save();

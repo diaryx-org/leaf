@@ -1,5 +1,6 @@
-//! Where a document is set: in the app's process, in one of twig-export's
-//! own templates; in a typesetter of its own, in any other.
+//! Where a document is set in a template not twig-export's own: in a
+//! typesetter of its own, the app's [`leaf_pages::Elsewhere`]. One of
+//! twig-export's own is set in the app's process, by leaf-pages.
 //!
 //! A template is Typst, and Typst has no limit on how long it runs or how
 //! much it takes: a `while true {}`, or a layout that never settles, would
@@ -16,18 +17,19 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use base64::Engine;
 use leaf_core::Format;
+use leaf_pages::pdf::{Paper, Sheet, Type};
+use leaf_pages::typeset::{Job, Laid, Tiled};
 use serde_json::{Value, json};
-use twig_export::pdf::{Glyph, Layout, Packages, Page, Typesetter};
+use twig_export::pdf::{Glyph, Page};
 
-use crate::pdf::{Sheet, Type};
 use crate::settings::Template;
 
 /// The most one setting may take before its typesetter is ended.
@@ -36,138 +38,29 @@ pub const TIME: Duration = Duration::from_secs(30);
 /// The most memory a typesetter may have, in bytes.
 pub const MEMORY: u64 = 2 << 30;
 
-/// A document laid out, by this process or a typesetter: each page's size
-/// and glyphs, and its pieces, twig-export's tiles, each with its picture
-/// unless the window has that picture already.
-pub struct Laid {
-    pub pages: Vec<Page>,
-    pub tiles: Vec<Tiled>,
-}
+/// The typesetter, as leaf-pages asks it: the app's way of setting a
+/// template not twig-export's own.
+pub struct Sandbox;
 
-/// A piece of a page as laid out: where it is on its page, in points, what
-/// it draws as a key, and its SVG if the window asking has none of that key.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Tiled {
-    pub page: usize,
-    pub top: f64,
-    pub height: f64,
-    pub width: f64,
-    pub key: u128,
-    pub svg: Option<String>,
-}
-
-/// `layout` as pages and pieces, a picture made for each piece whose key is
-/// not `known`, once.
-fn laid(layout: &Layout, known: &HashSet<u128>) -> Laid {
-    let mut made = HashSet::new();
-    let tiles = layout
-        .tiles()
-        .iter()
-        .map(|t| Tiled {
-            page: t.page,
-            top: t.top,
-            height: t.height,
-            width: t.width,
-            key: t.key,
-            svg: (!known.contains(&t.key) && made.insert(t.key)).then(|| layout.tile_svg(t)),
-        })
-        .collect();
-    Laid {
-        pages: layout.pages(),
-        tiles,
+impl leaf_pages::Elsewhere for Sandbox {
+    fn layout(&self, job: &Job, known: &HashSet<u128>) -> Result<Laid, String> {
+        let known: Vec<String> = known.iter().map(|k| format!("{k:x}")).collect();
+        let answer = ask(json!({ "kind": "layout", "job": job_json(job), "known": known }))?;
+        laid_of(&answer)
     }
-}
 
-/// What a setting is asked of: a document, how it is set, and on what.
-#[derive(Clone, Debug)]
-pub struct Job {
-    pub source: String,
-    pub format: Format,
-    pub path: Option<PathBuf>,
-    pub ty: Type,
-    pub sheet: Sheet,
-}
-
-/// `job` laid out, with a picture for each piece whose key is not `known`.
-pub fn layout(job: &Job, known: &HashSet<u128>) -> Result<Laid, String> {
-    if is_ours(&job.ty.template) {
-        return here(job).map(|l| laid(&l, known));
+    fn pdf(&self, job: &Job) -> Result<Vec<u8>, String> {
+        let answer = ask(json!({ "kind": "pdf", "job": job_json(job) }))?;
+        base64::engine::general_purpose::STANDARD
+            .decode(answer["pdf"].as_str().unwrap_or_default())
+            .map_err(|e| e.to_string())
     }
-    let known: Vec<String> = known.iter().map(|k| format!("{k:x}")).collect();
-    let answer = ask(json!({ "kind": "layout", "job": job_json(job), "known": known }))?;
-    laid_of(&answer)
-}
-
-/// `job` as a PDF.
-pub fn pdf(job: &Job) -> Result<Vec<u8>, String> {
-    if is_ours(&job.ty.template) {
-        return here(job)?.pdf().map_err(|e| format!("{e:#}"));
-    }
-    let answer = ask(json!({ "kind": "pdf", "job": job_json(job) }))?;
-    base64::engine::general_purpose::STANDARD
-        .decode(answer["pdf"].as_str().unwrap_or_default())
-        .map_err(|e| e.to_string())
 }
 
 /// Check that the template `key` sets a sample in each of `layouts`, in a
 /// typesetter.
 pub fn check(key: &str, layouts: &[String]) -> Result<(), String> {
     ask(json!({ "kind": "check", "template": key, "layouts": layouts })).map(|_| ())
-}
-
-/// Whether a template is twig-export's own, and set in this process.
-fn is_ours(t: &Template) -> bool {
-    twig_export::templates::builtin(t.key()).is_some()
-}
-
-/// The typesetter's own: the folder of templates, and today, which many
-/// templates date a document by.
-fn typesetter() -> &'static Typesetter {
-    static TYPESETTER: OnceLock<Typesetter> = OnceLock::new();
-    TYPESETTER.get_or_init(|| {
-        Typesetter::new()
-            .with_packages(Packages::new([crate::templates::packages()]))
-            .with_today(Some(today()))
-    })
-}
-
-fn here(job: &Job) -> Result<Layout, String> {
-    let tree = leaf_core::parse_tree(&job.source, job.format).map_err(|e| e.to_string())?;
-    let cfg = crate::pdf::config(&job.ty, job.sheet);
-    let words = twig_export::render_words(tree, &job.source, &cfg).map_err(|e| format!("{e:#}"))?;
-    here_words(&words, root(job.path.as_deref()))
-}
-
-/// Words already rendered, laid out in this process.
-pub(crate) fn here_words(words: &twig_export::Words, root: &Path) -> Result<Layout, String> {
-    typesetter()
-        .lay_out(words, root)
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// The folder a document at `path` finds its pictures in.
-pub fn root(path: Option<&Path>) -> &Path {
-    path.and_then(Path::parent)
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
-}
-
-/// Today's date, in UTC, as (year, month, day).
-fn today() -> (i32, u8, u8) {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    // Howard Hinnant's days-to-civil.
-    let z = (secs / 86_400) as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u8;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
-    let y = (yoe + era * 400 + i64::from(m <= 2)) as i32;
-    (y, m, d)
 }
 
 // ── The app's side ──────────────────────────────────────────────────────────
@@ -312,19 +205,17 @@ pub fn serve() {
 fn answer(request: &Value) -> Result<Value, String> {
     match request["kind"].as_str() {
         Some("layout") => {
-            let layout = here(&job_of(&request["job"])?)?;
+            let job = job_of(&request["job"])?;
             let known: HashSet<u128> = request["known"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(|k| u128::from_str_radix(k.as_str()?, 16).ok())
                 .collect();
-            Ok(laid_json(&laid(&layout, &known)))
+            Ok(laid_json(&leaf_pages::typeset::layout_here(&job, &known)?))
         }
         Some("pdf") => {
-            let pdf = here(&job_of(&request["job"])?)?
-                .pdf()
-                .map_err(|e| format!("{e:#}"))?;
+            let pdf = leaf_pages::typeset::pdf_here(&job_of(&request["job"])?)?;
             Ok(json!({ "pdf": base64::engine::general_purpose::STANDARD.encode(pdf) }))
         }
         Some("check") => {
@@ -335,9 +226,7 @@ fn answer(request: &Value) -> Result<Value, String> {
                 .flatten()
                 .filter_map(|l| l.as_str().map(str::to_owned))
                 .collect();
-            typesetter()
-                .check(template, &layouts)
-                .map_err(|e| format!("{e:#}"))?;
+            leaf_pages::typeset::check_here(template, &layouts)?;
             Ok(json!({}))
         }
         other => Err(format!("no such request: {other:?}")),
@@ -366,7 +255,7 @@ fn job_of(v: &Value) -> Result<Job, String> {
     let sheet = &v["sheet"];
     let sheet = if let Some(p) = sheet["paper"].as_array() {
         let n = |i: usize| p.get(i).and_then(Value::as_f64).unwrap_or_default() as f32;
-        Sheet::Paper(crate::pdf::Paper {
+        Sheet::Paper(Paper {
             width: n(0),
             height: n(1),
             margin: n(2),

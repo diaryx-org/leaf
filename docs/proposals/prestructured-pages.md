@@ -70,7 +70,7 @@ Adam, 2026-10-27:
 **Yes, Typst sets a reflowable view.** A page as wide as the view and
 `height: auto` is one page as tall as the document: Typst breaks its lines
 and nothing else, with no running heads and no page numbers, and its
-footnotes go at the end of it. The page view (`apps/leaf-dioxus/src/pages.rs`)
+footnotes go at the end of it. The page view (`crates/leaf-pages/src/view.rs`)
 already draws pages of any size with the caret on them, so a reflowed view
 is the same view on one tall page whose width follows the window.
 

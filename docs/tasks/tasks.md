@@ -23,6 +23,7 @@ contents:
 - '[What Linux and Windows do not do yet](/docs/tasks/what-linux-and-windows-do-not-do-yet.md)'
 - '[A quote''s bar breaks a line Blitz was told not to wrap](/docs/tasks/a-quotes-bar-breaks-a-line-blitz-was-told-not-to-wrap.md)'
 - '[Tests leave their fixtures in the temp directory](/docs/tasks/tests-leave-their-fixtures-in-temp.md)'
+- '[Typst sets in a host''s own fonts](/docs/tasks/typst-sets-in-a-hosts-own-fonts.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks

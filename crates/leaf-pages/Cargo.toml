@@ -1,0 +1,56 @@
+# leaf-pages — the document as Typst sets it, edited there: the Reflow and
+# Pages views over the leaf-dioxus editor, for any Dioxus-native host. The
+# Leaf app (`apps/leaf-dioxus`) is one host; Diaryx, on the Mac and on iOS,
+# is to be another.
+#
+# Everything here runs in the host's process and reaches nothing of the
+# system's but its fonts and the files a document's pictures are read from:
+# no child process, no network, no window of its own. What a host does its
+# own way — waking its UI after a setting, its toolbar, its window's size,
+# a template set somewhere safer — it answers through `Host` and `Setup`.
+#
+#     cargo test -p leaf-pages
+[package]
+name = "leaf-pages"
+version = "0.0.0"
+edition = "2024"
+description = "The Reflow and Pages views for leaf's Dioxus editor: the document set by Typst (twig-export), drawn as pictures, with the caret, the selection and presses on its glyphs."
+publish = false
+
+[features]
+# Blitz's classic renderer, as the editor's `vello` (its Cargo.toml says why
+# a feature): dioxus-native needs a renderer to build, and a host that cannot
+# run classic vello turns default features off and picks its own.
+default = ["vello"]
+vello = ["leaf-dioxus/vello"]
+
+[dependencies]
+dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+] }
+# The editor the views show the document of. Its default features (the
+# system clipboard; classic vello, above) are the host's to choose.
+leaf-dioxus = { path = "../leaf-dioxus", default-features = false }
+leaf-core = { path = "../leaf-core", default-features = false, features = [
+    "syntax",
+] }
+# The pages' scrolling, zoom and scroll bars (`unit::scroll`), as the
+# editor's.
+unit = { git = "https://github.com/diaryx-org/unit", branch = "main" }
+# The document set by Typst: its layout, its pieces (tiles) as SVG, and the
+# built-in templates. `pdf` and `svg` alone: no `network`, no `install`, so
+# nothing here fetches; a host that installs templates turns `install` on in
+# its own dependency. It brings diaryx-org's Typst fork.
+twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "main", default-features = false, features = ["pdf", "svg"] }
+# The pieces' pictures, as `data:` URLs for Blitz to draw (`pages.rs`), and
+# read back in order (`net.rs`).
+base64 = "0.22"
+# A network provider's interface, for the in-order loader (`net.rs`): the
+# version dioxus-native's Blitz uses.
+blitz-traits = "=0.3.0-beta.4"
+# A setting runs on tokio's blocking pool, and a throw's frames on its
+# timer: the runtime dioxus-native starts and enters.
+tokio = { version = "1", default-features = false, features = ["rt", "time"] }

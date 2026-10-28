@@ -98,24 +98,9 @@ choice!(
     /// The sheet a PDF is laid on — Swift's `Paper`.
     Paper { UsLetter = "usLetter", "US Letter"; A4 = "a4", "A4"; }
 );
-/// The template the pages, the reflowed view and a PDF are set in, by what
-/// names it: one of twig-export's, by its name (`classic`), or one
-/// installed, by its package's spec (`@adapted/charged-ieee:0.1.4`). See
-/// `templates.rs`.
-#[derive(Clone, PartialEq, Eq, Debug, Hash)]
-pub struct Template(String);
-
-impl Template {
-    /// The template `key` names, if it can name one.
-    pub fn parse(key: &str) -> Option<Template> {
-        crate::templates::valid(key).then(|| Template(key.to_owned()))
-    }
-
-    /// What names it, as stored.
-    pub fn key(&self) -> &str {
-        &self.0
-    }
-}
+/// The template the pages, the reflowed view and a PDF are set in: one of
+/// twig-export's, or one installed (`templates.rs`).
+pub use leaf_pages::Template;
 // Light or dark: the system's, or one of them for this app. The Swift app
 // followed the system; this is how to see one appearance without changing
 // the whole Mac's.
@@ -126,12 +111,6 @@ choice!(impl Appearance { System = "system", "System"; Light = "light", "Light";
 impl Default for TextSize {
     fn default() -> Self {
         TextSize::Medium
-    }
-}
-
-impl Default for Template {
-    fn default() -> Self {
-        Template(crate::templates::FALLBACK.to_owned())
     }
 }
 

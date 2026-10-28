@@ -77,6 +77,9 @@ blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = 
 skrifa = "0.44"
 # The font `Editor::font_at` answers with, for Look Up.
 parley = "=0.12.0"
+# The Reflow and Pages views, and the preview beside the source: the
+# document set by Typst, edited on its pages (`pages.rs` hosts them).
+leaf-pages = { path = "../../crates/leaf-pages" }
 # Export as PDF, Print and the PDF preview (`pdf.rs`): the document set by
 # Typst, as every paged format Diaryx writes is. `pdf` without `network`: a
 # document's Typst never reaches Typst Universe from the app. `svg`: the
@@ -90,7 +93,7 @@ twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "mai
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "blocking"] }
 # What a typesetter is asked, and answers, a line each (`typeset.rs`).
 serde_json = "1"
-# The preview's pages, as `data:` URLs for Blitz to draw (`preview.rs`).
+# A PDF from the typesetter, on the wire (`typeset.rs`).
 base64 = "0.22"
 # Blitz's network provider and the editor's timers run on tokio.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }

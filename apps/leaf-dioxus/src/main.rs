@@ -19,10 +19,11 @@
 //!   for one window, done for as many as there are documents open.
 //! - [`menus`]: every menu, as data; [`commands`]: what each item does, and
 //!   whether it can.
-//! - [`pdf`]: Export as PDF and Print, set by twig-export; [`preview`]: the
-//!   same pages beside the editor, as it is edited, or in its place, edited
-//!   on the page ([`pages`]). [`templates`]: what they are set in, and
-//!   installing more; [`typeset`]: where, in this process or another.
+//! - [`pdf`]: Export as PDF and Print, set by twig-export; the same pages
+//!   beside the editor, as it is edited, or in its place, edited on the
+//!   page, are leaf-pages's ([`leaf_pages`]), which [`pages`] hosts.
+//!   [`templates`]: installing more templates to set them in; [`typeset`]:
+//!   where one not twig-export's own is set, in another process.
 //!
 //! `LEAF_TRACE=1` logs keys, pointer events and repaint timings to stderr;
 //! `LEAF_OUTLINE=1` outlines every visual line and run.
@@ -35,8 +36,6 @@
 
 mod access;
 mod app;
-#[cfg(test)]
-mod bench;
 mod commands;
 mod context;
 #[cfg(debug_assertions)]
@@ -46,7 +45,6 @@ mod head;
 #[cfg(test)]
 mod headless;
 mod menus;
-mod net;
 #[cfg(test)]
 mod offscreen;
 mod page;
@@ -54,8 +52,6 @@ mod pages;
 mod pdf;
 mod platform;
 mod prefs;
-mod preview;
-mod reflow;
 mod renderer;
 mod settings;
 #[cfg(test)]
@@ -68,8 +64,21 @@ mod typeset;
 
 fn main() {
     // Run again as a typesetter, for a template not twig-export's own
-    // (`typeset.rs`): no window, a request a line on stdin.
-    if std::env::args().nth(1).as_deref() == Some("--typeset") {
+    // (`typeset.rs`): no window, a request a line on stdin, set here.
+    let serving = std::env::args().nth(1).as_deref() == Some("--typeset");
+    // What every window's pages are set with: the templates installed, and,
+    // but in the typesetter, the typesetter for those not twig-export's.
+    let setup = leaf_pages::Setup {
+        packages: Some(templates::packages()),
+        installed: Some(std::sync::Arc::new(templates::installed)),
+        elsewhere: (!serving).then(|| {
+            std::sync::Arc::new(typeset::Sandbox) as std::sync::Arc<dyn leaf_pages::Elsewhere>
+        }),
+        ..Default::default()
+    };
+    // The first setup, so taken.
+    let _ = leaf_pages::set_up(setup);
+    if serving {
         typeset::serve();
         return;
     }

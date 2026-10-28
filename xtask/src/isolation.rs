@@ -46,6 +46,7 @@ const ISOLATED: &[&[&str]] = &[
         "--features",
         "vello",
     ],
+    &["-p", "leaf-pages"],
     &["-p", "leaf-dioxus-app"],
     &["-p", "leaf-dioxus-tui"],
     &["-p", "leaf-dioxus-web"],

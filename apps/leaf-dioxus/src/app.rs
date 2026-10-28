@@ -162,6 +162,17 @@ pub fn poll(id: WindowId) {
     proxy().send_event(BlitzShellEvent::Poll { window_id: id });
 }
 
+/// A window's network provider: blitz-net's, with the pages' `data:` URLs
+/// loaded in order (`leaf_pages::net`); and blitz-net's own under it, which
+/// the window's root context holds.
+pub fn net(
+    waker: Arc<dyn blitz_traits::net::NetWaker>,
+) -> (Arc<leaf_pages::net::Ordered>, Arc<blitz_net::Provider>) {
+    let inner = Arc::new(blitz_net::Provider::new(Some(Arc::clone(&waker))));
+    let net = leaf_pages::net::Ordered::new(inner.clone(), waker);
+    (net, inner)
+}
+
 /// The loop's proxy — or, with no loop (a test laying out a PDF), one that
 /// wakes nothing, with a tokio runtime entered for Blitz's network provider.
 pub fn proxy() -> BlitzShellProxy {
@@ -395,7 +406,7 @@ impl App {
         for c in contexts {
             vdom.insert_any_root_context(c);
         }
-        let (net, fetches) = crate::net::Net::new(Arc::new(proxy.clone()));
+        let (net, fetches) = net(Arc::new(proxy.clone()));
         vdom.provide_root_context(fetches);
         let document = DioxusDocument::new(
             vdom,
@@ -454,6 +465,7 @@ impl App {
         );
         let id = window.id();
         FOCUSED.set(Some(id));
+        init.desk.id.set(Some(id));
         let page = Rc::new(Page::new(window.clone(), runtime, PageKind::Document(init)));
         PAGES.with_borrow_mut(|p| p.insert(id, page.clone()));
         document.attach(id, &*window);

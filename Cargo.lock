@@ -3855,6 +3855,7 @@ dependencies = [
  "dispatch2",
  "leaf-core",
  "leaf-dioxus",
+ "leaf-pages",
  "libc",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -3944,6 +3945,20 @@ name = "leaf-mermaid"
 version = "0.5.1"
 dependencies = [
  "mermaid-rs-renderer",
+]
+
+[[package]]
+name = "leaf-pages"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "blitz-traits",
+ "dioxus",
+ "leaf-core",
+ "leaf-dioxus",
+ "tokio",
+ "twig-export",
+ "unit",
 ]
 
 [[package]]

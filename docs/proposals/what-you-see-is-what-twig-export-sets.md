@@ -15,7 +15,7 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 route and a page view that is a mode of its own. What landed:
 
 - **C1**: File ▸ PDF Preview (⌥⌘P) draws twig-export's pages beside the
-  editor (`apps/leaf-dioxus/src/preview.rs`), set again on a worker after
+  editor (now `crates/leaf-pages/src/pages.rs`), set again on a worker after
   each edit through a `Typesetter` that reads the fonts once. A click on a
   page puts the editor's caret on the word clicked.
 - **C2**: File ▸ Pages (⌥⌘L) draws the pages in the editor's place, with

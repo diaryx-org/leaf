@@ -78,7 +78,7 @@ pub fn export(page: &Page) {
                 let Some(page) = crate::app::page(id) else {
                     return;
                 };
-                let paper = Paper::of(&crate::app::settings());
+                let paper = crate::pdf::paper_of(&crate::app::settings());
                 match crate::pdf::of_page(&page, paper) {
                     Ok(bytes) => {
                         if let Err(e) = std::fs::write(&path, bytes) {
