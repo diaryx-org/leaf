@@ -163,6 +163,7 @@ impl Doc {
             // Fold by default — flowing prose that reflows to the viewport, the
             // behaviour every frontend had before this preference existed.
             line_flow: LineFlow::default(),
+            typeset: false,
             last_edit_kind: None,
             pending_marks: InlineMarks::empty(),
             pending_at: None,
@@ -287,6 +288,15 @@ impl Doc {
     /// cache, forcing the next [`build_visual`] to rebuild under the new flow.
     ///
     /// [`build_visual`]: Self::build_visual
+    /// Tell the document its rich view is drawn by a typesetter (Leaf's
+    /// reflowed and paged views), where an empty paragraph sets as nothing:
+    /// Enter in one does nothing, and Enter at a paragraph's start puts the
+    /// caret in the paragraph it opens above, the one empty paragraph a
+    /// typesetter's view can show, as the caret's line.
+    pub fn set_typeset(&mut self, typeset: bool) {
+        self.typeset = typeset;
+    }
+
     pub fn set_line_flow(&mut self, mode: LineFlow) {
         if self.line_flow == mode {
             return;

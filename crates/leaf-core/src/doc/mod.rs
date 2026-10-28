@@ -660,6 +660,10 @@ pub struct Doc {
     /// they were written (see [`LineFlow`]) — an independent frontend
     /// preference the WYSIWYG builder consults when it lays out a block.
     line_flow: LineFlow,
+    /// Whether the rich view is drawn by a typesetter, as Leaf's pages are,
+    /// rather than by core's rows: an empty paragraph sets as nothing there,
+    /// so Enter never writes one the caret is not in (see `newline`).
+    typeset: bool,
     /// The kind of the last edit, for coalescing: twig owns the undo *history*
     /// (see `undo`/`redo`), but "what counts as one undo step" is a frontend-UX
     /// call, so leaf decides when a run continues and tells twig to coalesce.

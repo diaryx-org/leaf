@@ -120,13 +120,15 @@ pub fn place(page: &Page, width: f64) -> f64 {
         }
         Mode::Pages | Mode::Reflow => (0.0, width, leaf_dioxus::STATUS),
     };
-    // Edited on the pages, the editor moves by their lines.
+    // Edited on the pages, the editor moves by their lines, and its Enter
+    // writes no empty paragraph Typst would set as nothing.
     if page.preview.lines_on.get() != mode.edits() {
         page.preview.lines_on.set(mode.edits());
         let lines = mode
             .edits()
             .then(|| page.preview.lines.clone() as Rc<dyn leaf_dioxus::Lines>);
         page.with_editor(|ed, _| ed.set_lines(lines));
+        page.with_doc(|d| d.set_typeset(mode.edits()));
     }
     let screen = page.size().1;
     let reflow = mode == Mode::Reflow;

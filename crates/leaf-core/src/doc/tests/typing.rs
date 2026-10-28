@@ -553,3 +553,26 @@ fn a_double_click_at_a_lines_end_selects_its_last_word() {
     d.select_word_at(7);
     assert_eq!(d.selected_text(), Some("two"));
 }
+
+/// Typeset, Enter never writes an empty paragraph the caret is not in: a
+/// second Enter on an empty line does nothing, and Enter at a paragraph's
+/// start leaves the caret in the paragraph it opens above.
+#[test]
+fn typeset_enter_writes_no_empty_paragraph_but_the_carets() {
+    let mut d = wysiwyg_doc("typeset", "one\n");
+    d.set_typeset(true);
+    d.move_doc_end(false);
+    d.newline();
+    let once = d.source.clone();
+    d.newline();
+    assert_eq!(d.source, once, "a second Enter does nothing");
+    d.insert("two");
+    assert_eq!(d.source.trim_end(), "one\n\ntwo");
+
+    let mut d = wysiwyg_doc("above", "one\n\ntwo\n");
+    d.set_typeset(true);
+    d.place_caret(5, false);
+    d.newline();
+    d.insert("new");
+    assert_eq!(d.source, "one\n\nnew\n\ntwo\n");
+}

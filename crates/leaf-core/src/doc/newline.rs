@@ -136,6 +136,11 @@ impl Doc {
             .find('\n')
             .map_or(self.source.len(), |i| self.caret + i);
         if self.source[line_start..line_end].trim().is_empty() {
+            // Typeset, a second empty paragraph would set as nothing: the
+            // caret is on the one the view shows already.
+            if self.typeset {
+                return;
+            }
             self.insert_raw("\n");
             return;
         }
@@ -150,7 +155,9 @@ impl Doc {
         if let Some((at, text)) = self.paragraph_opening_at_caret() {
             let caret = self.caret;
             if self.splice(at, at, text, EditKind::Other) {
-                self.caret = caret + text.len();
+                // Typeset, the paragraph opened above shows only as the
+                // caret's line: the caret goes into it, not on with the text.
+                self.caret = if self.typeset { at } else { caret + text.len() };
                 self.record_caret();
             }
             return;
