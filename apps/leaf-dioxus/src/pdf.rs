@@ -125,6 +125,10 @@ fn config(ty: &Type, paper: Paper) -> Config {
     d.margin = Some(format!("{}pt", paper.margin));
     d.font = Some(ty.face.clone());
     d.size = Some(format!("{}pt", ty.size));
+    // A run with nowhere to break that is wider than a line (a URL, a string
+    // of punctuation) breaks where it must, rather than run off the page:
+    // the text is whatever the writer typed, at whatever width.
+    d.overflow_wrap = Some("break-word".into());
     let page = format!(
         "#set page(width: {}pt, height: {}pt)",
         paper.width, paper.height
@@ -180,6 +184,20 @@ mod tests {
         let path = std::path::PathBuf::from(format!("{dir}/Media/Untitled.md"));
         let pdf = render(&src, Format::Markdown, Some(&path), &ty(), US_LETTER).expect("a pdf");
         assert!(pdf.starts_with(b"%PDF"), "not a PDF");
+    }
+
+    /// A run longer than a line with nowhere to break stays on the page.
+    #[test]
+    fn a_run_too_long_for_a_line_stays_on_the_page() {
+        let src = format!("This is a test{} and more words.\n", "!".repeat(300));
+        let layout = layout(&src, Format::Markdown, None, &ty(), US_LETTER).expect("a layout");
+        let pages = layout.pages();
+        let right = pages[0]
+            .glyphs
+            .iter()
+            .map(|g| g.x + g.width)
+            .fold(0.0, f64::max);
+        assert!(right <= f64::from(US_LETTER.width), "a glyph at {right}");
     }
 
     #[test]
