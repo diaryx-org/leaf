@@ -354,9 +354,14 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
                 }
                 // Only the pieces within a screen of the view: a long
                 // document is a few screens' pictures, not all of them.
-                for (k, x, y, w, h, url) in shown {
+                // A piece's height is its picture's: a node given a new
+                // picture of another height (a line added or taken away)
+                // keeps drawing the old one until the new one is loaded,
+                // and given the new height, the old picture, which fills
+                // its box, would be stretched to it for as long.
+                for (k, x, y, w, _, url) in shown {
                     img { key: "i{k}", class: "piece", src: "{url}", alt: "",
-                        style: "left: {x}px; top: {y}px; width: {w}px; height: {h}px",
+                        style: "left: {x}px; top: {y}px; width: {w}px",
                     }
                 }
                 for (i, (x, y, w, h)) in selection.into_iter().enumerate() {

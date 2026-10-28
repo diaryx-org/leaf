@@ -20,6 +20,16 @@ use crate::offscreen::HostedWindow;
 
 /// A page of `root`, `width` × `height` CSS pixels, built and laid out.
 pub fn page(root: fn() -> Element, width: f64, height: f64) -> DioxusDocument {
+    page_with(root, width, height, DocumentConfig::default())
+}
+
+/// [`page`], made with `config`: a test's own fetches, say.
+pub fn page_with(
+    root: fn() -> Element,
+    width: f64,
+    height: f64,
+    config: DocumentConfig,
+) -> DioxusDocument {
     let window = Arc::new(HostedWindow::new(
         NonNull::dangling(),
         width,
@@ -30,7 +40,7 @@ pub fn page(root: fn() -> Element, width: f64, height: f64) -> DioxusDocument {
     let as_dyn: Arc<dyn Window> = window.clone();
     let proxy = crate::app::proxy();
     let vdom = VirtualDom::new(root);
-    let mut document = DioxusDocument::new(vdom, DocumentConfig::default());
+    let mut document = DioxusDocument::new(vdom, config);
     {
         let w = as_dyn.clone();
         document
@@ -175,5 +185,65 @@ mod blitz {
             });
             settle(&mut doc);
         }
+    }
+
+    thread_local! {
+        static PICTURE: RefCell<Option<Signal<&'static str>>> = const { RefCell::new(None) };
+    }
+
+    #[allow(non_snake_case)]
+    fn OnePiece() -> Element {
+        let svg = use_signal(|| WIDE);
+        use_hook(|| PICTURE.with_borrow_mut(|p| *p = Some(svg)));
+        let url = leaf_pages::data_url(svg());
+        rsx! {
+            style { {leaf_pages::CSS} }
+            div { class: "pages",
+                img { id: "piece", class: "piece", src: "{url}", alt: "",
+                    style: "left: 0px; top: 0px; width: 200px" }
+            }
+        }
+    }
+
+    const WIDE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="20" viewBox="0 0 100 20"></svg>"#;
+    const TALL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40" viewBox="0 0 100 40"></svg>"#;
+
+    /// A piece's box is as high as the picture it draws: a node given a
+    /// taller picture keeps the old one's height, not stretching it, until
+    /// the new one is loaded.
+    #[test]
+    fn a_piece_keeps_its_pictures_shape_until_the_next_is_loaded() {
+        let (net, _) = crate::app::net(Arc::new(|_| {}));
+        let config = blitz_dom::DocumentConfig {
+            net_provider: Some(net),
+            ..Default::default()
+        };
+        let mut doc = page_with(OnePiece, 600.0, 400.0, config);
+        let height = |doc: &mut dioxus_native::DioxusDocument| {
+            let inner = doc.inner.borrow();
+            let id = inner.get_element_by_id("piece").expect("the piece");
+            inner.get_node(id).unwrap().final_layout().size.height
+        };
+        let wait = |doc: &mut dioxus_native::DioxusDocument, want: f32| {
+            let start = std::time::Instant::now();
+            while height(doc) != want && start.elapsed().as_secs() < 5 {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                settle(doc);
+            }
+            height(doc)
+        };
+        assert_eq!(wait(&mut doc, 40.0), 40.0);
+        let rt = doc.vdom.runtime();
+        rt.in_scope(dioxus_core::ScopeId::ROOT, || {
+            PICTURE.with_borrow(|p| p.unwrap()).set(TALL);
+        });
+        // Rendered, its new picture not yet loaded: the old one's height.
+        blitz_dom::Document::poll(
+            &mut doc,
+            Some(std::task::Context::from_waker(std::task::Waker::noop())),
+        );
+        doc.inner.borrow_mut().resolve(0.0);
+        assert_eq!(height(&mut doc), 40.0);
+        assert_eq!(wait(&mut doc, 80.0), 80.0);
     }
 }
