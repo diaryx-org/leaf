@@ -374,9 +374,14 @@ fn render(ed: &Editor) -> Element {
             if let Some(a) = aside {
                 span { class: "aside", "{a}" }
             }
-            match words {
-                Some((_, n)) => rsx! { "{n} words" },
-                None => rsx! { "counting…" },
+            // In an element of its own: a flex row's gap is between its
+            // elements, and Blitz leaves a bare text run out of it, which
+            // ran a host's aside into the count ("177 pages66272 words").
+            span { class: "words",
+                match words {
+                    Some((_, n)) => rsx! { "{n} words" },
+                    None => rsx! { "counting…" },
+                }
             }
         }
     }
