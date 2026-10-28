@@ -738,7 +738,7 @@ impl Editor {
 
     /// The furthest down the viewport goes: to where the last row sits
     /// mid-viewport.
-    pub(crate) fn max_top(&self) -> f64 {
+    pub fn max_top(&self) -> f64 {
         self.scroller().range().1.1
     }
 

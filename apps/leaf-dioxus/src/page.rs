@@ -219,8 +219,10 @@ pub struct Page {
     composing: Cell<bool>,
     /// Where the pointer last was, in the page's CSS pixels.
     pointer: Cell<Option<(f64, f64)>>,
-    /// A touchpad's scroll under way, for the throw it leaves.
+    /// A touchpad's scroll under way, for the throw it leaves, and the view
+    /// its fingers hold.
     touchpad: RefCell<Touchpad>,
+    held: Cell<Option<Held>>,
     /// When the page was made: what the wheel's times count from.
     since: std::time::Instant,
     /// The pages beside a document's editor, or in its place.
@@ -238,6 +240,7 @@ impl Page {
             composing: Cell::new(false),
             pointer: Cell::new(None),
             touchpad: RefCell::default(),
+            held: Cell::new(None),
             since: std::time::Instant::now(),
             preview: Preview::default(),
         }
@@ -402,11 +405,7 @@ impl Page {
             // A trackpad's pinch, over the pages: they zoom about the
             // pointer.
             WindowEvent::PinchGesture { delta, .. } => preview::pinch(self, *delta, self.pointer()),
-            WindowEvent::MouseWheel { delta, phase, .. } => {
-                self.inertia(delta, *phase);
-                self.with_editor(|ed, _| ed.window_event(event));
-                false
-            }
+            WindowEvent::MouseWheel { delta, phase, .. } => self.touchpad(delta, *phase),
             // A force click: the trackpad's Look Up, where the system gives
             // Look Up to one.
             WindowEvent::TouchpadPressure { stage, .. } => {
@@ -428,30 +427,111 @@ impl Page {
         }
     }
 
-    /// A touchpad's scroll, followed for the throw its fingers leave as they
-    /// lift: the view under the pointer, the editor or the pages, carries on
-    /// as a phone's does. Off the Mac, whose system sends a scroll's momentum
-    /// itself; where the system reports when the fingers lift (Wayland, not
-    /// X11). A wheel's notch, or a new scroll, stops a throw under way.
-    fn inertia(&self, delta: &MouseScrollDelta, phase: TouchPhase) {
+    /// A touchpad's scroll, which the page takes from Blitz where the
+    /// system says when the fingers come down and lift (Wayland, not X11):
+    /// the view under the pointer, the editor or the pages, follows the
+    /// fingers, stretching past either end as a phone's does, and as they
+    /// lift carries on, or springs back to the end it was pulled past. Off
+    /// the Mac, whose system does all of this itself. A wheel's notch stops
+    /// a throw under way, and Blitz scrolls by it. Whether the page took the
+    /// event.
+    fn touchpad(&self, delta: &MouseScrollDelta, phase: TouchPhase) -> bool {
         if cfg!(target_os = "macos") {
-            return;
+            return false;
         }
         let now = self.since.elapsed().as_secs_f64() * 1000.0;
+        let scale = self.window.scale_factor();
         // A wheel's notch counts in lines; a touchpad's travel in pixels.
-        let dy = match delta {
-            MouseScrollDelta::PixelDelta(d) => Some(d.y / self.window.scale_factor()),
-            _ => None,
+        let (dx, dy) = match delta {
+            MouseScrollDelta::PixelDelta(d) => (d.x / scale, Some(d.y / scale)),
+            _ => (0.0, None),
         };
-        match self.touchpad.borrow_mut().wheel(now, dy, phase) {
-            Wheeled::Stop => self.stop_throws(),
-            Wheeled::Throw(vel) => match self.pointer() {
-                Some(at) if preview::under(self, at) => preview::fling(self, vel),
-                _ => {
+        let wheeled = self.touchpad.borrow_mut().wheel(now, dy, phase);
+        match wheeled {
+            Wheeled::Notch => {
+                self.stop_throws();
+                false
+            }
+            Wheeled::Begin(travelled) => {
+                self.stop_throws();
+                let pages = self.pointer().is_some_and(|at| preview::under(self, at));
+                let from = if pages {
+                    self.with_view_peek(|v| v.scroll.y)
+                } else {
+                    self.editor().map_or(0.0, |ed| ed.top())
+                };
+                self.held.set(Some(Held { pages, from }));
+                self.pull(travelled, dx);
+                self.settle_after_pause(now);
+                true
+            }
+            Wheeled::Pull(travelled) => {
+                if self.held.get().is_none() {
+                    return false;
+                }
+                self.pull(travelled, dx);
+                self.settle_after_pause(now);
+                true
+            }
+            Wheeled::Throw(vel) => {
+                let Some(held) = self.held.take() else {
+                    return false;
+                };
+                if held.pages {
+                    preview::fling(self, vel);
+                } else {
                     self.with_editor(|ed, _| ed.start_glide(vel));
                 }
-            },
-            Wheeled::Scrolled => {}
+                true
+            }
+            Wheeled::Ignored => false,
+        }
+    }
+
+    /// A scroll that has gone quiet since `at` (milliseconds) by the time a
+    /// pause is over has ended, whether or not the system said so: the view
+    /// it pulled past an end springs back, with no throw.
+    fn settle_after_pause(&self, at: f64) {
+        let id = self.window.id();
+        self.in_scope(|| {
+            spawn(async move {
+                let wait = std::time::Duration::from_millis(PAUSE as u64 + 10);
+                tokio::time::sleep(wait).await;
+                let Some(page) = app::page(id) else { return };
+                if page.touchpad.borrow().last != at || page.held.get().is_none() {
+                    return;
+                }
+                page.touchpad.borrow_mut().down = false;
+                let held = page.held.take().expect("checked above");
+                if held.pages {
+                    preview::fling(&page, 0.0);
+                } else {
+                    page.with_editor(|ed, _| ed.start_glide(0.0));
+                }
+            });
+        });
+    }
+
+    /// The view the fingers hold, moved `travelled` CSS pixels (positive
+    /// toward the top) from where they came down: past either end, the
+    /// rubber band's share of it. The pages move across by `dx` too, within
+    /// their ends.
+    fn pull(&self, travelled: f64, dx: f64) {
+        let Some(held) = self.held.get() else { return };
+        let raw = held.from - travelled;
+        if held.pages {
+            self.with_view(|mut v| {
+                let mut v = v.write();
+                let ((x0, x1), (lo, hi)) = v.scroll.range();
+                let d = v.scroll.view.1;
+                v.scroll.y = unit::scroll::rubber(raw, lo, hi, d);
+                v.scroll.x = (v.scroll.x - dx).clamp(x0, x1);
+            });
+        } else {
+            self.with_editor(|ed, _| {
+                let max = ed.max_top().max(0.0);
+                ed.scroll_to(unit::scroll::rubber(raw, 0.0, max, ed.bounds().height));
+            });
         }
     }
 
@@ -668,18 +748,41 @@ impl Page {
 struct Touchpad {
     tracker: unit::scroll::Tracker,
     travelled: f64,
+    /// Fingers came down, and have not lifted.
+    down: bool,
+    /// When the last event came, in milliseconds.
+    last: f64,
+}
+
+/// The longest pause between a scroll's events, in milliseconds: one that
+/// comes after a longer one begins a scroll of its own. Winit does not
+/// promise a lift for every device (a mouse's, or a virtual pointer's,
+/// smooth scroll never says its fingers lifted), and a scroll that never
+/// ended would hold the view it began on for good.
+const PAUSE: f64 = 150.0;
+
+/// The view a touchpad's fingers hold, and its offset when they came down.
+#[derive(Clone, Copy, Debug)]
+struct Held {
+    pages: bool,
+    from: f64,
 }
 
 /// What a wheel event asks of the views.
 #[derive(Debug, PartialEq)]
 enum Wheeled {
-    /// Stop a throw under way: a notch, or fingers that came down to scroll.
-    Stop,
-    /// The fingers lifted while moving: throw the view at this many CSS
-    /// pixels a millisecond, down the offset.
+    /// A wheel's notch: stop a throw under way, and let Blitz scroll.
+    Notch,
+    /// Fingers came down to scroll, and have moved this far (positive
+    /// toward the top) since.
+    Begin(f64),
+    /// They have moved this far since they came down.
+    Pull(f64),
+    /// They lifted: throw the view at this many CSS pixels a millisecond,
+    /// down the offset, which may be none, to spring back to an end.
     Throw(f64),
-    /// The scroll goes on, or ended at rest.
-    Scrolled,
+    /// A scroll whose fingers were never seen to come down (X11's): Blitz's.
+    Ignored,
 }
 
 impl Touchpad {
@@ -687,29 +790,33 @@ impl Touchpad {
     /// pixels (positive toward the top, as Blitz has it), or a notch's
     /// (`None`), in its scroll's `phase`.
     fn wheel(&mut self, now: f64, dy: Option<f64>, phase: TouchPhase) -> Wheeled {
-        let Some(dy) = dy else { return Wheeled::Stop };
+        let Some(dy) = dy else { return Wheeled::Notch };
+        let paused = now - self.last > PAUSE;
+        self.last = now;
+        let phase = match phase {
+            TouchPhase::Moved if paused => TouchPhase::Started,
+            phase => phase,
+        };
         match phase {
             TouchPhase::Started => {
                 self.tracker.reset();
                 self.travelled = dy;
                 self.tracker.push(now, dy);
-                Wheeled::Stop
+                self.down = true;
+                Wheeled::Begin(self.travelled)
             }
-            TouchPhase::Moved => {
+            TouchPhase::Moved if self.down => {
                 self.travelled += dy;
                 self.tracker.push(now, self.travelled);
-                Wheeled::Scrolled
+                Wheeled::Pull(self.travelled)
             }
-            TouchPhase::Ended => {
+            TouchPhase::Ended | TouchPhase::Cancelled if self.down => {
+                self.down = false;
                 // A positive delta moves toward the top: the offset falls.
                 let vel = -self.tracker.velocity(now);
-                if vel.abs() < 0.05 {
-                    Wheeled::Scrolled
-                } else {
-                    Wheeled::Throw(vel)
-                }
+                Wheeled::Throw(if vel.abs() < 0.05 { 0.0 } else { vel })
             }
-            TouchPhase::Cancelled => Wheeled::Scrolled,
+            _ => Wheeled::Ignored,
         }
     }
 }
@@ -725,30 +832,61 @@ mod tests {
     use super::*;
 
     /// Fingers moving up the pad at a steady 1 px/ms (the page going down)
-    /// throw it on down; fingers that rested before they lifted throw
-    /// nothing; a notch or a new scroll stops a throw.
+    /// pull the view as far as they go and throw it on as they lift;
+    /// fingers that rested before they lifted throw nothing; a notch is the
+    /// wheel's, and a scroll whose fingers were never seen to come down is
+    /// Blitz's.
     #[test]
-    fn a_touchpad_throws_the_view_its_fingers_were_moving() {
+    fn a_touchpad_pulls_the_view_and_throws_it() {
         let mut t = Touchpad::default();
-        assert_eq!(t.wheel(0.0, Some(-8.0), TouchPhase::Started), Wheeled::Stop);
+        assert_eq!(
+            t.wheel(0.0, Some(-8.0), TouchPhase::Moved),
+            Wheeled::Ignored
+        );
+        assert_eq!(
+            t.wheel(0.0, Some(-8.0), TouchPhase::Started),
+            Wheeled::Begin(-8.0)
+        );
         for i in 1..=10 {
-            assert_eq!(
-                t.wheel(i as f64 * 8.0, Some(-8.0), TouchPhase::Moved),
-                Wheeled::Scrolled
-            );
+            let pulled = t.wheel(i as f64 * 8.0, Some(-8.0), TouchPhase::Moved);
+            assert_eq!(pulled, Wheeled::Pull(-8.0 * (i + 1) as f64));
         }
         match t.wheel(84.0, Some(0.0), TouchPhase::Ended) {
             Wheeled::Throw(v) => assert!((v - 1.0).abs() < 0.05, "{v}"),
             w => panic!("no throw: {w:?}"),
         }
+        assert_eq!(
+            t.wheel(90.0, Some(-8.0), TouchPhase::Moved),
+            Wheeled::Ignored
+        );
 
         t.wheel(200.0, Some(-8.0), TouchPhase::Started);
         t.wheel(208.0, Some(-8.0), TouchPhase::Moved);
         assert_eq!(
             t.wheel(400.0, Some(0.0), TouchPhase::Ended),
-            Wheeled::Scrolled
+            Wheeled::Throw(0.0)
         );
 
-        assert_eq!(t.wheel(500.0, None, TouchPhase::Moved), Wheeled::Stop);
+        assert_eq!(t.wheel(500.0, None, TouchPhase::Moved), Wheeled::Notch);
+    }
+
+    /// A smooth scroll whose fingers are never seen to lift (a mouse's, a
+    /// virtual pointer's) begins again after a pause, so it holds the view
+    /// under the pointer now, not the one it first began on.
+    #[test]
+    fn a_scroll_that_never_lifts_begins_again_after_a_pause() {
+        let mut t = Touchpad::default();
+        assert_eq!(
+            t.wheel(1000.0, Some(-8.0), TouchPhase::Started),
+            Wheeled::Begin(-8.0)
+        );
+        assert_eq!(
+            t.wheel(1008.0, Some(-8.0), TouchPhase::Moved),
+            Wheeled::Pull(-16.0)
+        );
+        assert_eq!(
+            t.wheel(2000.0, Some(-8.0), TouchPhase::Moved),
+            Wheeled::Begin(-8.0)
+        );
     }
 }
