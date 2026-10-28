@@ -110,6 +110,8 @@ fn App() -> Element {
                 faces: Default::default(),
             },
             measure: OPTIONS.get().measure,
+            // A terminal's cells have no room for a bar a few pixels wide.
+            scroll_bar: false,
             appearance: if dark {
                 Appearance::Dark
             } else {

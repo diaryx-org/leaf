@@ -302,6 +302,19 @@ fn render(ed: &Editor) -> Element {
     let pinned = |top: f64| format!("left: {bx}px; top: {top}px; width: {box_w}px");
     let host = ed.st.host.clone();
     let (wheel, press_end, tap_end) = (ed.clone(), ed.clone(), ed.clone());
+    // The scroll bar's: the viewport under the find bar, which ends where
+    // the editor's own scroll ends.
+    let bar_scroll = {
+        let mut s = ed.scroller();
+        s.view.1 -= bar_h;
+        s.slack -= bar_h;
+        s
+    };
+    let thumb_w = unit::components::scrollbar::BAR;
+    let (bar_left, bar_top) = (bx + box_w as f64 - thumb_w, by + bar_h);
+    let bar_len = (height - bar_h).max(0.0);
+    let shown = if look.scroll_bar { "block" } else { "none" };
+    let scroller = ed.clone();
 
     rsx! {
         style { {themed(STYLESHEET, look.appearance)} }
@@ -342,6 +355,15 @@ fn render(ed: &Editor) -> Element {
         // Always present, shown or hidden, as the find bar is: Blitz does not
         // lay out an absolutely positioned element inserted after the first
         // frame.
+        // The scroll bar, down the box's right edge, under the find bar and
+        // over the status line: over the rows, and under whatever a host
+        // draws over the editor.
+        div { style: "display: {shown}; position: fixed; left: {bar_left}px; top: {bar_top}px; width: {thumb_w}px; height: {bar_len}px; z-index: 1",
+            unit::ScrollBar { axis: unit::Axis::Vertical, scroll: bar_scroll,
+                label: "Document".to_string(),
+                onscroll: move |y| scroller.scroll_to(y),
+            }
+        }
         div { class: "status",
             style: if look.status == Status::Hidden { "display: none".to_string() } else { pinned(by + height) },
             if look.status == Status::Full {

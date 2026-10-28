@@ -139,6 +139,10 @@ pub struct Look {
     pub appearance: Appearance,
     /// What the status line shows, if there is one.
     pub status: Status,
+    /// Whether a scroll bar runs down the box's right edge
+    /// ([`unit::ScrollBar`]): not where the editor is drawn in a terminal's
+    /// cells, which a bar a few pixels wide does not fit.
+    pub scroll_bar: bool,
 }
 
 impl Default for Look {
@@ -150,6 +154,7 @@ impl Default for Look {
             measure: Some(68.0),
             appearance: Appearance::System,
             status: Status::Full,
+            scroll_bar: true,
         }
     }
 }
@@ -706,7 +711,7 @@ impl Editor {
     /// The viewport over the rows, as every view of leaf's scrolls: with
     /// half a viewport of room under the last row, so that it can come up
     /// to the middle.
-    fn scroller(&self) -> unit::scroll::Scroll {
+    pub(crate) fn scroller(&self) -> unit::scroll::Scroll {
         let height = *self.sig.height.peek();
         unit::scroll::Scroll {
             y: *self.sig.top.peek(),

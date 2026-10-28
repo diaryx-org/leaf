@@ -571,6 +571,24 @@ pub fn Pages(props: PagesProps) -> Element {
             if let Some(n) = note {
                 div { class: "note", "{n}" }
             }
+            // Down the right edge, and along the bottom once the pages are
+            // zoomed wider than the view.
+            unit::ScrollBar { axis: unit::Axis::Vertical, scroll: v.scroll,
+                label: "Pages".to_string(),
+                onscroll: move |y| {
+                    let mut v = view.write();
+                    v.scroll.y = y;
+                    v.scroll.clamp();
+                },
+            }
+            unit::ScrollBar { axis: unit::Axis::Horizontal, scroll: v.scroll,
+                label: "Pages across".to_string(),
+                onscroll: move |x| {
+                    let mut v = view.write();
+                    v.scroll.x = x;
+                    v.scroll.clamp();
+                },
+            }
             div { class: "spread", style: "left: {-ox}px; top: {-oy}px; width: {total_w}px; height: {total_h}px",
                 for (i, sheet) in v.sheets.iter().enumerate() {
                     img { key: "{i}", class: "sheet", src: "{sheet.url}", alt: "Page {i + 1}",
