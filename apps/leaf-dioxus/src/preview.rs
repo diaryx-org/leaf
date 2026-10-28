@@ -713,8 +713,19 @@ fn dark(page: &Page) -> bool {
     }
 }
 
-/// An SVG as a URL Blitz draws a picture from.
+/// An SVG as a URL Blitz draws a picture from, filling the box it is
+/// drawn in. Blitz rounds an `img`'s box to whole pixels, by where it falls
+/// on the screen; a picture that kept its own shape (SVG's default, `meet`)
+/// would shrink to the rounded box and centre in it, a line's piece moved
+/// across by as much as ten pixels, a different piece at each step of a
+/// scroll.
 pub(crate) fn data_url(svg: &str) -> String {
+    let svg = match svg.strip_prefix("<svg") {
+        Some(rest) if !svg.contains("preserveAspectRatio") => {
+            format!("<svg preserveAspectRatio=\"none\"{rest}")
+        }
+        _ => svg.to_owned(),
+    };
     let b64 = base64::engine::general_purpose::STANDARD.encode(svg);
     format!("data:image/svg+xml;base64,{b64}")
 }
@@ -839,7 +850,8 @@ mod tests {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(b64)
                 .unwrap();
-            assert!(bytes.starts_with(b"<svg"));
+            // It fills the box it is drawn in, rounded or not.
+            assert!(bytes.starts_with(b"<svg preserveAspectRatio=\"none\""));
             assert_eq!(t.width, 612.0);
         }
         // A key the window has is sent with no picture.
