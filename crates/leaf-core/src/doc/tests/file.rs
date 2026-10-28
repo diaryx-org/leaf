@@ -54,20 +54,14 @@ fn a_blank_document_becomes_a_real_one_at_the_first_save_as() {
     d.insert("!");
     d.save();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "hi!");
-    let _ = std::fs::remove_file(&p);
 }
 
 // ── a file that isn't there yet ───────────────────────────────────────────
 
-/// A unique path in the temp dir with the given extension, guaranteed not to
+/// A unique path in a temp dir with the given extension, guaranteed not to
 /// exist — what `leaf notes.md` is handed when the file has never been made.
 fn missing_path(name: &str, ext: &str) -> PathBuf {
-    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut p = std::env::temp_dir();
-    p.push(format!("leaf_test_new_{name}_{seq}.{ext}"));
-    let _ = std::fs::remove_file(&p);
-    p
+    fixture_path(&format!("{name}.{ext}"))
 }
 
 #[test]
@@ -104,7 +98,6 @@ fn a_new_file_is_created_by_its_first_save() {
     );
     assert!(!d.dirty);
     assert_eq!(d.disk_state(), DiskState::Unchanged);
-    let _ = std::fs::remove_file(&p);
 }
 
 #[test]
@@ -137,7 +130,6 @@ fn a_new_file_reports_itself_missing_until_it_is_saved() {
     d.save();
     assert_eq!(d.disk_state(), DiskState::Unchanged);
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "ours\n");
-    let _ = std::fs::remove_file(&p);
 }
 
 #[test]
@@ -152,19 +144,15 @@ fn open_or_create_still_opens_a_file_that_is_there() {
 fn a_missing_file_with_no_readable_extension_is_still_an_error() {
     // A mistyped flag or a stray argument must not become a buffer promising
     // to save somewhere — the same refusal `open` gives a real file.
-    let mut p = std::env::temp_dir();
-    p.push("leaf_test_new_bad_ext.wat");
-    assert!(Doc::open_or_create(p).is_err());
-    let mut none = std::env::temp_dir();
-    none.push("leaf_test_new_no_ext");
-    assert!(Doc::open_or_create(none).is_err());
+    assert!(Doc::open_or_create(fixture_path("bad_ext.wat")).is_err());
+    assert!(Doc::open_or_create(fixture_path("no_ext")).is_err());
 }
 
 #[test]
 fn a_new_file_in_a_directory_that_doesnt_exist_opens_but_wont_save() {
     // Opening reads nothing, so there is nothing to fail on yet; the write is
     // where it fails, and it says so rather than claiming a save.
-    let p = std::env::temp_dir().join("leaf_test_no_such_dir_c41/doc.md");
+    let p = fixture_path("no_such_dir").join("doc.md");
     let mut d = Doc::open_or_create(p).unwrap();
     d.insert("x");
     d.save();
@@ -178,14 +166,9 @@ fn a_new_file_in_a_directory_that_doesnt_exist_opens_but_wont_save() {
 
 // ── save as ───────────────────────────────────────────────────────────────
 
-/// A unique path in the temp dir that no fixture wrote — a Save As target.
+/// A unique path in a temp dir that no fixture wrote — a Save As target.
 fn temp_path(name: &str) -> PathBuf {
-    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut p = std::env::temp_dir();
-    p.push(format!("leaf_test_target_{name}_{seq}.md"));
-    let _ = std::fs::remove_file(&p);
-    p
+    fixture_path(&format!("{name}.md"))
 }
 
 #[test]
@@ -218,7 +201,6 @@ fn save_as_moves_the_document_and_leaves_the_old_file_alone() {
         "re-edited: original\n"
     );
     assert_eq!(std::fs::read_to_string(&old).unwrap(), "original\n");
-    let _ = std::fs::remove_file(&new);
 }
 
 #[test]
@@ -230,7 +212,6 @@ fn save_as_overwrites_an_existing_target() {
     let mut d = doc_with("save_as_over", "ours\n");
     d.save_as(new.clone());
     assert_eq!(std::fs::read_to_string(&new).unwrap(), "ours\n");
-    let _ = std::fs::remove_file(&new);
 }
 
 #[test]
@@ -239,7 +220,7 @@ fn a_save_as_that_fails_leaves_the_document_where_it_was() {
     let old = d.path.clone();
     d.insert("x");
     // A directory that doesn't exist: the write can't land.
-    let bad = std::env::temp_dir().join("leaf_test_no_such_dir_9f2/doc.md");
+    let bad = fixture_path("no_such_dir").join("doc.md");
     d.save_as(bad);
 
     assert_eq!(
@@ -268,7 +249,6 @@ fn save_as_renames_without_reparsing_the_format() {
     new.set_extension("dj");
     d.save_as(new.clone());
     assert_eq!(d.format_name(), "markdown");
-    let _ = std::fs::remove_file(&new);
 }
 
 // ── external change / reload ──────────────────────────────────────────────
@@ -754,4 +734,40 @@ fn a_new_file_is_made_with_the_permissions_any_new_file_gets() {
     assert!(d.save_as(new.clone()));
     let mode = std::fs::metadata(&new).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, want);
+}
+
+// ── the suite's own fixtures ──────────────────────────────────────────────
+
+#[test]
+fn a_test_takes_its_fixtures_with_it() {
+    // Every run used to add its fixtures to the shared temp directory and
+    // never take them away, under names the next run reused. A thread stands
+    // in for a test here: libtest runs each on its own.
+    let paths = std::thread::spawn(|| {
+        let mut saved = doc_with("takes_fixtures", "body\n");
+        let target = temp_path("takes_fixtures");
+        assert!(saved.save_as(target.clone()));
+        let made = missing_path("takes_fixtures", "md");
+        std::fs::write(&made, "made\n").unwrap();
+        vec![doc_with("takes_fixtures", "body\n").path, target, made]
+    })
+    .join()
+    .unwrap();
+
+    let temp = std::env::temp_dir();
+    let shared = [temp.clone(), temp.canonicalize().unwrap()];
+    for p in &paths {
+        assert!(
+            !shared.iter().any(|t| p.parent() == Some(t.as_path())),
+            "{} sat loose in the shared temp directory",
+            p.display()
+        );
+        assert!(!p.exists(), "{} outlived its test", p.display());
+        assert!(!p.parent().unwrap().exists(), "and so did its directory");
+    }
+    assert_ne!(
+        paths[0].parent(),
+        doc_with("takes_fixtures", "").path.parent(),
+        "two fixtures with one name share no directory"
+    );
 }

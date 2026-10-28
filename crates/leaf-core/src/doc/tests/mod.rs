@@ -34,14 +34,7 @@ mod view_parity;
 /// renderer stamps each frame, so the map is built here too — a WYSIWYG doc
 /// without one is a view no user is ever in.
 fn doc_in(view: View, name: &str, body: &str) -> Doc {
-    // The fixture name doubles as the temp file's, so two tests picking the
-    // same one raced under the parallel runner and read each other's body —
-    // a green suite proving the wrong thing. The counter makes that
-    // unreachable rather than asking every future caller to notice.
-    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut p = std::env::temp_dir();
-    p.push(format!("leaf_test_{name}_{seq}.md"));
+    let p = fixture_path(&format!("{name}.md"));
     std::fs::write(&p, body).unwrap();
     let mut d = Doc::open(p).unwrap();
     d.view = view;
@@ -49,6 +42,26 @@ fn doc_in(view: View, name: &str, body: &str) -> Doc {
         d.build_visual(80);
     }
     d
+}
+
+thread_local! {
+    /// The directories this thread's test has asked for. libtest runs each
+    /// test on a thread of its own, so they drop, and are removed with
+    /// whatever the test wrote in them, when the test ends, pass or fail.
+    static FIXTURE_DIRS: std::cell::RefCell<Vec<tempfile::TempDir>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `file_name` in a temp directory no other fixture shares, in this run or a
+/// concurrent one, removed when the calling test ends. Nothing is written.
+fn fixture_path(file_name: &str) -> PathBuf {
+    let dir = tempfile::Builder::new()
+        .prefix("leaf_test_")
+        .tempdir()
+        .unwrap();
+    let p = dir.path().join(file_name);
+    FIXTURE_DIRS.with(|dirs| dirs.borrow_mut().push(dir));
+    p
 }
 
 // Source-view document for the source-behaviour tests. `Doc::open` now

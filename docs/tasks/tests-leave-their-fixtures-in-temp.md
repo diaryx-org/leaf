@@ -2,11 +2,21 @@
 title: Tests leave their fixtures in the temp directory
 description: leaf-core's unit tests write every fixture to the shared temp directory and remove almost none, so each run leaves about 830 files behind and two runs at once write to the same paths
 part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+status: done
 created: 2026-10-27
 updated: 2026-10-27
 ---
 # Tests leave their fixtures in the temp directory
+
+**Done, 2026-10-27**, by `test(core): each test's fixtures live in a temp
+directory of their own, removed when it ends`. `doc_in`, `missing_path` and
+`temp_path` take their paths from `fixture_path`, which makes a
+`tempfile::TempDir` for each and hands it to the calling test's thread, so
+the directory goes when the test does, pass or fail. libtest runs every test
+on a thread of its own, `--test-threads=1` included. The helpers still
+return a `Doc` and a `PathBuf`, so no test changed. `TMPDIR=$(mktemp -d)
+cargo test -p leaf-core` leaves that directory empty, and
+`a_test_takes_its_fixtures_with_it` holds it.
 
 **Where.** `crates/leaf-core/src/doc/tests/mod.rs`, `doc_in`, which every
 `doc_with` and `wysiwyg_doc` goes through; and `missing_path` and
