@@ -412,3 +412,22 @@ fn typing_in_a_cell_edits_that_cell() {
     d.insert("s");
     assert!(d.source.contains("| Pears | 3 |"), "got {:?}", d.source);
 }
+
+#[test]
+fn table_cells_are_the_grids_cells_read_off_the_parse() {
+    // The cells a host reads without a visual map are the map's own: an
+    // empty cell's home included, in source order.
+    let src = "Intro\n\n| a | b |\n|---|---|\n|   | dd |\n| e |  |\n";
+    let mut d = wysiwyg_doc("tbl_cells", src);
+    let from_map: Vec<_> = d.vmap.tables[0]
+        .grid
+        .iter()
+        .flat_map(|r| r.cells.iter().map(|c| c.start..c.end))
+        .collect();
+    assert_eq!(d.table_cells(), from_map);
+    let empty: Vec<_> = from_map.iter().filter(|r| r.is_empty()).collect();
+    assert_eq!(empty.len(), 2, "{from_map:?}");
+    // Without a table, nothing.
+    let mut d = wysiwyg_doc("tbl_cells_none", "Just text.\n");
+    assert!(d.table_cells().is_empty());
+}

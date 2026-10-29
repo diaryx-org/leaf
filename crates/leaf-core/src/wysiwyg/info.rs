@@ -20,7 +20,7 @@ use super::*;
 /// most that one pipe, at its start, and the closing one is the byte past
 /// its end. The two are told apart by the pipes the span holds — a row's
 /// span has several, or one that is not at its start.
-pub(super) fn empty_cell_offset(src: &str, start: usize, col: usize) -> usize {
+pub(crate) fn empty_cell_offset(src: &str, start: usize, col: usize) -> usize {
     let bytes = src.as_bytes();
     let mut pipes = Vec::new();
     for (i, &b) in bytes.iter().enumerate() {

@@ -14,6 +14,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -401,7 +402,7 @@ impl Pages {
         // the document's top-level blocks are what it is cut by.
         let chunked =
             matches!(sheet, crate::pdf::Sheet::Reflow { .. }) && crate::reflow::chunks(&ty);
-        let Some((source, setting, blocks)) = self
+        let Some((source, setting, blocks, cells)) = self
             .with_doc(|d| {
                 let setting = Setting {
                     revision: d.revision(),
@@ -414,7 +415,7 @@ impl Pages {
                 let chunked = chunked && matches!(d.format, Format::Markdown | Format::Djot);
                 (self.from.borrow().as_ref() != Some(&setting)).then(|| {
                     let blocks = chunked.then(|| d.top_level());
-                    (d.source.clone(), setting, blocks)
+                    (d.source.clone(), setting, blocks, d.table_cells())
                 })
             })
             .flatten()
@@ -452,7 +453,7 @@ impl Pages {
             p.scoped(|| ());
         }));
         tokio::task::spawn_blocking(move || {
-            let answer = set(source, &setting, blocks.as_deref(), &known);
+            let answer = set(source, &setting, blocks.as_deref(), &cells, &known);
             if let Ok(mut a) = inbox.lock() {
                 *a = Some(answer);
             }
@@ -704,18 +705,19 @@ impl Pages {
 }
 
 /// Set `source` as `s` says, on the worker: a chunk at a time if `blocks`
-/// (its top-level blocks) are given and it is reflowed, else whole.
+/// (its top-level blocks) are given and it is reflowed, else whole. `cells`
+/// are its table cells' text (`Doc::table_cells`), which its lines are
+/// split at.
 fn set(
     source: String,
     s: &Setting,
     blocks: Option<&[leaf_core::TopBlock]>,
+    cells: &[Range<usize>],
     known: &HashSet<u128>,
 ) -> Answer {
-    // The caret's empty line, set with a stand-in where the caret is.
-    let set_from = match s.hole {
-        Some(at) => format!("{}{STAND_IN}{}", &source[..at], &source[at..]),
-        None => source.clone(),
-    };
+    // The caret's empty line, and every empty cell, set with a stand-in.
+    let holes = holes(s.hole, cells);
+    let set_from = stand_in(&source, &holes);
     if let (Some(blocks), crate::pdf::Sheet::Reflow { width }) = (blocks, s.sheet) {
         let how = crate::reflow::How {
             format: s.format,
@@ -724,7 +726,7 @@ fn set(
             root: crate::typeset::root(Some(&s.path)).to_path_buf(),
         };
         let t = std::time::Instant::now();
-        let laid = crate::reflow::lay_out(&source, blocks, s.hole, &how, known);
+        let laid = crate::reflow::lay_out(&source, blocks, s.hole, &holes, cells, &how, known);
         let t_lay = t.elapsed();
         let set = laid.map(|r| Set {
             sheets: vec![r.sheet],
@@ -754,13 +756,7 @@ fn set(
         let lines: Vec<(f64, Vec<Glyph>)> = l
             .pages
             .into_iter()
-            .map(|p| {
-                let glyphs = match s.hole {
-                    Some(at) => unhole(p.glyphs, at),
-                    None => p.glyphs,
-                };
-                (p.height, glyphs)
-            })
+            .map(|p| (p.height, unhole(p.glyphs, &holes)))
             .collect();
         let pieces = l
             .tiles
@@ -772,7 +768,7 @@ fn set(
             .collect();
         Set {
             sheets,
-            geometry: Geometry::new(&lines),
+            geometry: Geometry::new(&lines, cells),
             pieces,
         }
     });
@@ -828,24 +824,65 @@ fn hole(source: &str, caret: usize) -> Option<usize> {
         .then_some(caret)
 }
 
-/// Glyphs set from a source with a stand-in at `at`, as glyphs of the
-/// source without it: the stand-in's at `at`, empty, which a caret there
-/// is drawn before.
-fn unhole(glyphs: Vec<Glyph>, at: usize) -> Vec<Glyph> {
+/// Where stand-ins are set: at the caret's empty line, if it is on one
+/// ([`hole`]), and in every empty table cell, which Typst would otherwise
+/// set as nothing, with no glyph to press or draw a caret by. In order.
+fn holes(caret: Option<usize>, cells: &[Range<usize>]) -> Vec<usize> {
+    let mut out: Vec<usize> = cells
+        .iter()
+        .filter(|c| c.is_empty())
+        .map(|c| c.start)
+        .chain(caret)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// `source` with a stand-in at each of `holes`, which are in order.
+pub(crate) fn stand_in(source: &str, holes: &[usize]) -> String {
+    let mut out = String::with_capacity(source.len() + holes.len() * STAND_IN.len());
+    let mut from = 0;
+    for &at in holes {
+        let at = at.clamp(from, source.len());
+        out.push_str(&source[from..at]);
+        out.push_str(STAND_IN);
+        from = at;
+    }
+    out.push_str(&source[from..]);
+    out
+}
+
+/// A byte of a source set with stand-ins at `holes` ([`stand_in`]) as one of
+/// the source without them: a stand-in's own bytes are where it stands.
+pub(crate) fn unstand(at: usize, holes: &[usize]) -> usize {
     let len = STAND_IN.len();
+    for (k, &h) in holes.iter().enumerate() {
+        // Where the `k`th stand-in is, with those before it.
+        let set = h + k * len;
+        if at <= set {
+            return at - k * len;
+        }
+        if at < set + len {
+            return h;
+        }
+    }
+    at - holes.len() * len
+}
+
+/// Glyphs set from a source with stand-ins at `holes`, as glyphs of the
+/// source without them: each stand-in's at its hole, empty, which a caret
+/// there is drawn before.
+fn unhole(glyphs: Vec<Glyph>, holes: &[usize]) -> Vec<Glyph> {
+    if holes.is_empty() {
+        return glyphs;
+    }
     glyphs
         .into_iter()
         .map(|mut g| {
-            g.source = g.source.map(|r| {
-                let map = |b: usize| {
-                    if b <= at {
-                        b
-                    } else {
-                        b.saturating_sub(len).max(at)
-                    }
-                };
-                map(r.start)..map(r.end)
-            });
+            g.source = g
+                .source
+                .map(|r| unstand(r.start, holes)..unstand(r.end, holes));
             g
         })
         .collect()
@@ -898,6 +935,163 @@ mod tests {
         }
     }
 
+    /// Stand-ins at several holes: each stood-in byte goes back to its own
+    /// hole, and the bytes after each are the source's again.
+    #[test]
+    fn stand_ins_go_back_to_their_holes() {
+        let src = "|  | b |  |";
+        let holes = [2, 9];
+        let set = stand_in(src, &holes);
+        assert_eq!(set, format!("| {STAND_IN} | b | {STAND_IN} |"));
+        let back: Vec<usize> = (0..=set.len()).map(|b| unstand(b, &holes)).collect();
+        // Every byte of the source is some byte of the set source's.
+        for (i, c) in src.char_indices() {
+            assert!(back.contains(&i), "{i} {c:?}");
+        }
+        assert_eq!(unstand(2, &holes), 2);
+        assert_eq!(unstand(2 + STAND_IN.len(), &holes), 2);
+        assert_eq!(
+            unstand(set.find('b').unwrap(), &holes),
+            src.find('b').unwrap()
+        );
+        assert_eq!(unstand(set.len(), &holes), src.len());
+    }
+
+    /// A document with a table, set reflowed or on paper as the views set
+    /// it: its geometry, and its cells' text.
+    fn table_set(src: &str, reflow: bool) -> (Geometry, Vec<Range<usize>>) {
+        let mut d = leaf_core::Doc::from_source(src.to_owned(), Format::Markdown).unwrap();
+        let cells = d.table_cells();
+        let blocks = d.top_level();
+        let setting = Setting {
+            revision: 0,
+            hole: None,
+            format: Format::Markdown,
+            path: PathBuf::from("table.md"),
+            ty: Type {
+                template: crate::Template::default(),
+                size: 12.0,
+                dark: false,
+            },
+            sheet: if reflow {
+                crate::pdf::Sheet::Reflow { width: 400.0 }
+            } else {
+                crate::pdf::Sheet::Paper(crate::pdf::Paper {
+                    width: 612.0,
+                    height: 792.0,
+                    margin: 72.0,
+                })
+            },
+        };
+        let blocks = reflow.then_some(&blocks[..]);
+        let (_, set) = set(src.to_owned(), &setting, blocks, &cells, &HashSet::new());
+        (set.expect("set").geometry, cells)
+    }
+
+    const TABLE: &str = "Above.\n\n| Name | Notes |\n|---|---|\n|   | dd |\n| e |  |\n";
+
+    /// An empty cell is set with a stand-in: a caret in it is drawn in its
+    /// column and its row, and a press there lands in it.
+    #[test]
+    fn an_empty_cell_has_a_caret_and_takes_a_press() {
+        for reflow in [true, false] {
+            let (g, cells) = table_set(TABLE, reflow);
+            let empty: Vec<usize> = cells
+                .iter()
+                .filter(|c| c.is_empty())
+                .map(|c| c.start)
+                .collect();
+            assert_eq!(empty.len(), 2);
+            let at = |b: usize| g.caret_box(b, TABLE).expect("a caret");
+            let name = at(TABLE.find("Name").unwrap());
+            let notes = at(TABLE.find("Notes").unwrap());
+            let dd = at(TABLE.find("dd").unwrap());
+            let e = at(TABLE.find("| e").unwrap() + 2);
+            // Under Name, beside dd; under Notes, beside e.
+            let (one, two) = (at(empty[0]), at(empty[1]));
+            assert!(
+                (one.x - name.x).abs() < 1.0 && (one.top - dd.top).abs() < 1.0,
+                "{reflow} {one:?}"
+            );
+            assert!(
+                (two.x - notes.x).abs() < 1.0 && (two.top - e.top).abs() < 1.0,
+                "{reflow} {two:?}"
+            );
+            // A press a little right of the stand-in, in its cell.
+            let mid = one.top + one.height / 2.0;
+            assert_eq!(
+                g.hit(one.page, one.x + 6.0, mid).map(|h| h.1),
+                Some(empty[0]),
+                "{reflow}"
+            );
+            let mid = two.top + two.height / 2.0;
+            assert_eq!(
+                g.hit(two.page, two.x + 6.0, mid).map(|h| h.1),
+                Some(empty[1]),
+                "{reflow}"
+            );
+        }
+    }
+
+    /// Home and End are the cell's text's edges, not the row's; a selection
+    /// across a row is a box a cell.
+    #[test]
+    fn a_cells_edges_are_its_own() {
+        for reflow in [true, false] {
+            let (g, _) = table_set(TABLE, reflow);
+            let name = TABLE.find("Name").unwrap();
+            let notes = TABLE.find("Notes").unwrap();
+            assert_eq!(g.line_edge(name + 2, true), Some(name + 4), "{reflow}");
+            assert_eq!(g.line_edge(notes + 2, false), Some(notes), "{reflow}");
+            assert_eq!(g.line_edge(notes + 2, true), Some(notes + 5), "{reflow}");
+            assert_eq!(g.selection(name, notes + 5).len(), 2, "{reflow}");
+        }
+    }
+
+    /// A press in the gap between two cells' text lands in the cell it is
+    /// in: the cell before, unless it is in the padding before the next
+    /// cell's text.
+    #[test]
+    fn a_press_between_cells_lands_in_its_cell() {
+        let (g, _) = table_set(TABLE, true);
+        let name = TABLE.find("Name").unwrap();
+        let notes = TABLE.find("Notes").unwrap();
+        let a = g.caret_box(name + 4, TABLE).unwrap();
+        let b = g.caret_box(notes, TABLE).unwrap();
+        let mid = a.top + a.height / 2.0;
+        assert_eq!(g.hit(0, a.x + 2.0, mid).map(|h| h.1), Some(name + 4));
+        assert_eq!(g.hit(0, b.x - 1.0, mid).map(|h| h.1), Some(notes));
+    }
+
+    /// In a row whose cells wrap to different heights, a press under the
+    /// shorter cell's text is in that cell, not the taller one beside it.
+    #[test]
+    fn a_press_under_a_short_cells_text_stays_in_it() {
+        let long = "words ".repeat(30);
+        let src = format!("| short | {long}|\n|---|---|\n| x | y |\n");
+        let (g, _) = table_set(&src, true);
+        let short = src.find("short").unwrap();
+        let s = g.caret_box(short, &src).unwrap();
+        let w = g.caret_box(src.find("words").unwrap(), &src).unwrap();
+        // Two lines below "short", in its column, beside the long cell's
+        // third line.
+        let y = s.top + s.height * 2.5;
+        assert!(y < g.caret_box(src.find("| x").unwrap() + 2, &src).unwrap().top);
+        assert!(w.x > s.x + 20.0);
+        let (_, at) = g.hit(0, s.x + 5.0, y).unwrap();
+        assert!((short..=short + 5).contains(&at), "{at}");
+    }
+
+    /// The blank well under the document's last line is past its end; its
+    /// last line is not.
+    #[test]
+    fn the_blank_under_the_last_line_is_past_the_end() {
+        let (g, _) = table_set(TABLE, true);
+        let e = g.caret_box(TABLE.find("| e").unwrap() + 2, TABLE).unwrap();
+        assert!(!g.past_end(0, e.top + e.height / 2.0));
+        assert!(g.past_end(0, e.top + e.height * 4.0));
+    }
+
     /// The stand-in's glyph is the caret's place; the glyphs after it are
     /// the source's again.
     #[test]
@@ -911,7 +1105,7 @@ mod tests {
             text: String::new(),
             source: Some(r),
         };
-        let out = unhole(vec![g(0..1), g(3..5), g(5..6)], 3);
+        let out = unhole(vec![g(0..1), g(3..5), g(5..6)], &[3]);
         let ranges: Vec<_> = out.into_iter().map(|g| g.source.unwrap()).collect();
         assert_eq!(ranges, [0..1, 3..3, 3..4]);
     }
@@ -933,7 +1127,7 @@ mod tests {
             &Default::default(),
         )
         .expect("a layout");
-        let glyphs = unhole(layout.pages.clone()[0].glyphs.clone(), 7);
+        let glyphs = unhole(layout.pages.clone()[0].glyphs.clone(), &[7]);
         let hello = glyphs.iter().find(|g| g.source == Some(0..1)).unwrap();
         let caret = glyphs
             .iter()
@@ -1001,7 +1195,7 @@ mod tests {
         assert!(again.tiles.iter().all(|t| t.svg.is_none()));
 
         let pages = layout.pages.clone();
-        let g = Geometry::new(&[(pages[0].height, pages[0].glyphs.clone())]);
+        let g = Geometry::new(&[(pages[0].height, pages[0].glyphs.clone())], &[]);
         let one = g.caret_box(5, source).expect("after the heading");
         let a = g.caret_box(7, source).expect("before the paragraph");
         assert!(a.top > one.top, "{one:?} {a:?}");

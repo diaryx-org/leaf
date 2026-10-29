@@ -85,7 +85,11 @@ struct Set {
     /// then.
     tiles: Vec<twig_export::tiles::Tile>,
     layout: Arc<twig_export::pdf::Layout>,
+    /// Its lines, naming the document's bytes as they were when it was set:
+    /// [`place`] moves them to where its segments' text is now.
     lines: Vec<Line>,
+    /// Where each of its segments' text was in the document then.
+    globals: Vec<Range<usize>>,
     /// Where its context block, and its last own block, begin: the top of
     /// each one's piece, and the first baseline of its text if it has text.
     context_top: Option<(f64, Option<f64>)>,
@@ -134,12 +138,15 @@ pub fn chunks(ty: &Type) -> bool {
 }
 
 /// `source`, whose top-level blocks are `blocks`, reflowed as `how` says,
-/// with a stand-in at `hole` if there is one (`pages.rs`); pictures made
-/// for the pieces whose keys are not `known`.
+/// with a stand-in at each of `holes` (`pages.rs`), among them the caret's
+/// empty line, `hole`, if it is on one; its lines split at its table
+/// `cells`; pictures made for the pieces whose keys are not `known`.
 pub fn lay_out(
     source: &str,
     blocks: &[TopBlock],
     hole: Option<usize>,
+    holes: &[usize],
+    cells: &[Range<usize>],
     how: &How,
     known: &HashSet<u128>,
 ) -> Result<Reflowed, String> {
@@ -148,13 +155,15 @@ pub fn lay_out(
     let (chunks, notes) = plan(source, &blocks);
     let all: Vec<&Chunk> = chunks.iter().chain(notes.iter()).collect();
 
-    // What each chunk is set from, as a key: its text, the stand-in in it,
+    // What each chunk is set from, as a key: its text, the stand-ins in it,
     // and how it is set.
-    let keyed: Vec<(u64, &Chunk, Option<usize>)> = all
+    let keyed: Vec<(u64, &Chunk, Vec<usize>)> = all
         .iter()
         .map(|c| {
-            let hole = hole.and_then(|h| local(c, h, source));
-            (key(c, source, hole, how), *c, hole)
+            let mut mine: Vec<usize> = holes.iter().filter_map(|&h| local(c, h, source)).collect();
+            mine.sort_unstable();
+            mine.dedup();
+            (key(c, source, &mine, how), *c, mine)
         })
         .collect();
 
@@ -167,7 +176,7 @@ pub fn lay_out(
     let now = kept.refresh;
 
     // Set the chunks not kept, each on a core of its own.
-    let missing: Vec<&(u64, &Chunk, Option<usize>)> = keyed
+    let missing: Vec<&(u64, &Chunk, Vec<usize>)> = keyed
         .iter()
         .filter(|(k, ..)| !kept.sets.contains_key(k))
         .collect();
@@ -184,7 +193,7 @@ pub fn lay_out(
     let made: Vec<(u64, Result<Set, String>)> = if missing.len() <= 1 {
         missing
             .iter()
-            .map(|(k, c, h)| (*k, set_chunk(c, source, *h, how, known)))
+            .map(|(k, c, h)| (*k, set_chunk(c, source, h, cells, how, known)))
             .collect()
     } else {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
@@ -198,7 +207,7 @@ pub fn lay_out(
                         let Some((k, c, h)) = missing.get(i) else {
                             break;
                         };
-                        let set = set_chunk(c, source, *h, how, known);
+                        let set = set_chunk(c, source, h, cells, how, known);
                         out.lock().expect("the chunks set").push((*k, set));
                     }
                 });
@@ -220,7 +229,7 @@ pub fn lay_out(
     let mut sent = HashSet::new();
     let mut bottom = 0.0;
     let mut height = 0.0;
-    for (k, ..) in keyed.iter().filter(|(_, c, _)| !c.notes) {
+    for (k, chunk, _) in keyed.iter().filter(|(_, c, _)| !c.notes) {
         let entry = kept.sets.get_mut(k).expect("every chunk set");
         entry.1 = now;
         let set = Arc::clone(&entry.0);
@@ -232,13 +241,13 @@ pub fn lay_out(
                 _ => py + p.last_top.0 - ctx.0,
             };
         }
-        place(&set, y, known, &mut sent, &mut pieces, &mut lines);
+        place(&set, chunk, y, known, &mut sent, &mut pieces, &mut lines);
         bottom = y + set.content_bottom;
         height = y + set.height;
         prev = Some((y, set));
     }
     // The notes, under the text, as the one page sets them.
-    if let Some((k, ..)) = keyed.iter().find(|(_, c, _)| c.notes) {
+    if let Some((k, chunk, _)) = keyed.iter().find(|(_, c, _)| c.notes) {
         let entry = kept.sets.get_mut(k).expect("the notes set");
         entry.1 = now;
         let set = Arc::clone(&entry.0);
@@ -250,7 +259,7 @@ pub fn lay_out(
         if first.is_finite() {
             let gap = f64::from(how.ty.size) * 2.0;
             let y = bottom + gap - first;
-            place(&set, y, known, &mut sent, &mut pieces, &mut lines);
+            place(&set, chunk, y, known, &mut sent, &mut pieces, &mut lines);
             let margin = (height - bottom).max(0.0);
             height = y + set.content_bottom + margin;
         }
@@ -278,8 +287,11 @@ pub fn lay_out(
 /// A chunk's pieces and lines, `y` points down the page: a picture sent
 /// for each key the window has not got and is not sent already, the one
 /// made when the chunk was set or, if the window had it then, made now.
+/// Its lines name the bytes its text is at in the document now, which an
+/// edit above it, or between its blocks, has moved since it was set.
 fn place(
     set: &Set,
+    chunk: &Chunk,
     y: f64,
     known: &HashSet<u128>,
     sent: &mut HashSet<u128>,
@@ -295,7 +307,20 @@ fn place(
             ..p.clone()
         });
     }
-    lines.extend(set.lines.iter().map(|l| l.shifted(y)));
+    let now: Vec<&Range<usize>> = chunk.segments.iter().map(|s| &s.global).collect();
+    if set.globals.iter().eq(now.iter().copied()) {
+        lines.extend(set.lines.iter().map(|l| l.shifted(y)));
+        return;
+    }
+    // A byte as it was, in the segment it was in, as that segment's now.
+    let to = |b: usize| {
+        set.globals
+            .iter()
+            .zip(&now)
+            .find(|(then, _)| then.start <= b && b <= then.end)
+            .map_or(b, |(then, now)| now.start + (b - then.start))
+    };
+    lines.extend(set.lines.iter().map(|l| l.moved(y, to)));
 }
 
 /// The document's blocks, and the stand-in's line as a block of its own,
@@ -501,13 +526,13 @@ fn local(chunk: &Chunk, at: usize, source: &str) -> Option<usize> {
     })
 }
 
-fn key(chunk: &Chunk, source: &str, hole: Option<usize>, how: &How) -> u64 {
+fn key(chunk: &Chunk, source: &str, holes: &[usize], how: &How) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     source_of(chunk, source).0.hash(&mut h);
     for s in &chunk.segments {
         s.role.hash(&mut h);
     }
-    (chunk.footnotes_from, chunk.notes, hole).hash(&mut h);
+    (chunk.footnotes_from, chunk.notes, holes).hash(&mut h);
     (
         how.ty.template.key(),
         how.ty.size.to_bits(),
@@ -519,25 +544,22 @@ fn key(chunk: &Chunk, source: &str, hole: Option<usize>, how: &How) -> u64 {
     h.finish()
 }
 
-/// Set one chunk: its own source, laid out by Typst, its pieces and glyphs
-/// taken back to the document's bytes.
+/// Set one chunk: its own source, with stand-ins at `holes` in it, laid out
+/// by Typst, its pieces and glyphs taken back to the document's bytes, its
+/// lines split at the document's table `cells`.
 fn set_chunk(
     chunk: &Chunk,
     source: &str,
-    hole: Option<usize>,
+    holes: &[usize],
+    cells: &[Range<usize>],
     how: &How,
     known: &HashSet<u128>,
 ) -> Result<Set, String> {
-    let (mut text, starts) = source_of(chunk, source);
-    if let Some(at) = hole {
-        text.insert_str(at, crate::STAND_IN);
-    }
-    // A byte of the source set, with the stand-in, as one of the chunk's
-    // source without it: the stand-in's own bytes are where it stands.
-    let unhole = |at: usize| match hole {
-        Some(h) if at > h => at.saturating_sub(crate::STAND_IN.len()).max(h),
-        _ => at,
-    };
+    let (text, starts) = source_of(chunk, source);
+    let text = crate::pages::stand_in(&text, holes);
+    // A byte of the source set, with the stand-ins, as one of the chunk's
+    // source without them.
+    let unhole = |at: usize| crate::pages::unstand(at, holes);
     // A byte of the chunk's source as the document's, its segment's role,
     // and which segment.
     let to_global = |at: usize| -> Option<(usize, Role, usize)> {
@@ -672,7 +694,8 @@ fn set_chunk(
         pieces,
         tiles: drawn,
         layout: Arc::new(layout),
-        lines: Geometry::lines_of(0, &glyphs, 0.0),
+        lines: Geometry::lines_of(0, &glyphs, 0.0, cells),
+        globals: chunk.segments.iter().map(|s| s.global.clone()).collect(),
         context_top,
         last_top,
         content_bottom,
@@ -725,7 +748,7 @@ mod tests {
         let (chunks, notes) = plan(&src, &b);
         assert!(chunks.len() > 2, "{} chunks", chunks.len());
         assert!(notes.is_some());
-        let out = lay_out(&src, &b, None, &how(), &HashSet::new()).unwrap();
+        let out = lay_out(&src, &b, None, &[], &[], &how(), &HashSet::new()).unwrap();
         // Every paragraph's first letter is on a line, top to bottom in
         // source order.
         let mut last = -1.0;
@@ -752,7 +775,7 @@ mod tests {
     fn a_chunk_is_placed_as_the_whole_page_places_it() {
         let src = document(40);
         let b = blocks(&src);
-        let chunked = lay_out(&src, &b, None, &how(), &HashSet::new()).unwrap();
+        let chunked = lay_out(&src, &b, None, &[], &[], &how(), &HashSet::new()).unwrap();
         let whole = crate::pdf::layout(
             &src,
             Format::Markdown,
@@ -762,7 +785,10 @@ mod tests {
             &HashSet::new(),
         )
         .unwrap();
-        let whole = Geometry::new(&[(whole.pages[0].height, whole.pages[0].glyphs.clone())]);
+        let whole = Geometry::new(
+            &[(whole.pages[0].height, whole.pages[0].glyphs.clone())],
+            &[],
+        );
         for i in [0, 13, 27, 39] {
             let at = src.find(&format!("Paragraph {i},")).unwrap();
             let a = chunked.geometry.caret_box(at, &src).unwrap().top;
@@ -777,7 +803,7 @@ mod tests {
     fn an_empty_document_has_a_caret() {
         for (src, at) in [("", 0), ("\n", 0), ("\n\n", 1)] {
             let b = blocks(src);
-            let out = lay_out(src, &b, Some(at), &how(), &HashSet::new()).unwrap();
+            let out = lay_out(src, &b, Some(at), &[at], &[], &how(), &HashSet::new()).unwrap();
             let caret = out.geometry.caret_box(at, src);
             assert!(caret.is_some_and(|c| c.height > 0.0), "{src:?}: {caret:?}");
         }
@@ -789,7 +815,16 @@ mod tests {
     fn a_new_last_paragraph_has_a_caret_below() {
         let src = "Hello\n\nWorld\n\n";
         let b = blocks(src);
-        let out = lay_out(src, &b, Some(src.len()), &how(), &HashSet::new()).unwrap();
+        let out = lay_out(
+            src,
+            &b,
+            Some(src.len()),
+            &[src.len()],
+            &[],
+            &how(),
+            &HashSet::new(),
+        )
+        .unwrap();
         let world = out.geometry.caret_box(7, src).expect("World's caret");
         let caret = out.geometry.caret_box(src.len(), src).expect("a caret");
         assert!(
@@ -803,15 +838,18 @@ mod tests {
     fn an_edit_sets_only_its_chunk() {
         let src = document(60);
         let b = blocks(&src);
-        let first = lay_out(&src, &b, None, &how(), &HashSet::new()).unwrap();
+        let first = lay_out(&src, &b, None, &[], &[], &how(), &HashSet::new()).unwrap();
         let known: HashSet<u128> = first.pieces.iter().map(|p| p.key).collect();
         let at = src.find("Paragraph 30,").unwrap();
         let mut edited = src.clone();
         edited.insert_str(at, "Edited. ");
         let b = blocks(&edited);
-        let second = lay_out(&edited, &b, None, &how(), &known).unwrap();
+        let second = lay_out(&edited, &b, None, &[], &[], &how(), &known).unwrap();
         let drawn = second.pieces.iter().filter(|p| p.svg.is_some()).count();
         assert_eq!(drawn, 1, "one piece drawn anew");
+        // A chunk kept, below the edit, names the bytes it is at now.
+        let p50 = edited.find("Paragraph 50,").unwrap();
+        assert_eq!(second.geometry.line_edge(p50, false), Some(p50));
     }
 
     /// A chunk kept from an earlier setting, used again once the window has
@@ -822,7 +860,7 @@ mod tests {
     fn a_chunk_used_again_sends_the_pictures_the_window_let_go() {
         let src = "Undone first, a block of its own.\n\nUndone second, the block below it.\n";
         let step = |src: &str, known: &HashSet<u128>| {
-            let out = lay_out(src, &blocks(src), None, &how(), known).unwrap();
+            let out = lay_out(src, &blocks(src), None, &[], &[], &how(), known).unwrap();
             let missing: Vec<u128> = out
                 .pieces
                 .iter()

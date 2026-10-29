@@ -173,7 +173,7 @@ mod tests {
             .map(|p| (p.height, p.glyphs))
             .collect();
         let lines = Rc::new(PageLines::default());
-        *lines.geometry.borrow_mut() = Rc::new(Geometry::new(&pages));
+        *lines.geometry.borrow_mut() = Rc::new(Geometry::new(&pages, &[]));
         let (document, ed, _) = crate::sheet::offscreen(
             src,
             leaf_core::Format::Markdown,

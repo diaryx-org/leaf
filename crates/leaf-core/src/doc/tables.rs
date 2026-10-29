@@ -26,6 +26,45 @@ impl Doc {
             .unwrap_or(false)
     }
 
+    /// Every table cell's text in the source, in source order: the bytes a
+    /// [`crate::TableCell`]'s `start..end` spans, an empty cell's the one
+    /// caret home core derives for it. Read off the parse, not the
+    /// visual map, so a host that draws the document its own way (Leaf's
+    /// pages), and builds no map between keystrokes, has it for the source
+    /// it is setting.
+    pub fn table_cells(&mut self) -> Vec<std::ops::Range<usize>> {
+        // A pipe table spells a `|`; a document without one has no grid to
+        // walk the whole tree for.
+        if !self.source.contains('|') && !self.source.contains("<t") {
+            return Vec::new();
+        }
+        let nodes = self.nodes();
+        let len = self.source.len();
+        let mut out = Vec::new();
+        for row in nodes.iter().filter(|n| n.kind == Kind::Row) {
+            let mut col = 0;
+            let mut c = row.first_child;
+            while let Some(id) = c {
+                let Some(n) = nodes.get(id.0 as usize) else {
+                    break;
+                };
+                c = n.next_sibling;
+                if n.kind != Kind::Cell {
+                    continue;
+                }
+                out.push(n.content_span.clone().unwrap_or_else(|| {
+                    let (start, end) = (n.span.start.min(len), n.span.end.min(len));
+                    let at =
+                        crate::wysiwyg::empty_cell_offset(&self.source[start..end], start, col);
+                    at..at
+                }));
+                col += 1;
+            }
+        }
+        out.sort_by_key(|r| (r.start, r.end));
+        out
+    }
+
     /// One grid op, guarded and settled — the shared body of the seven below.
     ///
     /// The guard is why this exists rather than seven copies of the same three

@@ -27,13 +27,16 @@ pub const PAD: f64 = 16.0;
 /// host that draws the document laid out its own way (Leaf's page view),
 /// the byte of the source a press landed on, which the host found itself:
 /// the [`Pointer`]'s `line` is then the host's line, which a second press
-/// must be on to count as a double-click, and its `x` is not read.
+/// must be on to count as a double-click, and its `x` is not read. Or, from
+/// such a host, the blank under the document's last line, where a press or
+/// a tap is one under the last row ([`Editor::past_end`](crate::Editor::past_end)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
     Row(usize),
     Cell { first: usize, r: usize, c: usize },
     Block { first: usize },
     Offset(usize),
+    PastEnd,
 }
 
 /// What the pointer did on a line: at visual line `line` of `at`, `x` CSS

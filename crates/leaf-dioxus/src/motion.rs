@@ -271,6 +271,29 @@ impl Editor {
     /// the other's; a tap also asks for the keyboard.
     pub fn pointer(&self, p: Pointer) {
         let st = &*self.st;
+        // The blank under a document a host draws itself: a press or a tap
+        // there is one under the last row. A drag or a ⇧-press there means
+        // nothing the host did not already send as a byte.
+        match p {
+            Pointer::Press {
+                at: Target::PastEnd,
+                extend: false,
+                ..
+            } => return self.past_end(false),
+            Pointer::Tap {
+                at: Target::PastEnd,
+                ..
+            } => return self.past_end(true),
+            Pointer::Press {
+                at: Target::PastEnd,
+                ..
+            }
+            | Pointer::Drag {
+                at: Target::PastEnd,
+                ..
+            } => return,
+            _ => {}
+        }
         self.ensure_map();
         // A finger's tap, or a plain click on a document only to be read,
         // follows a link or footnote as ⌘-click does: a phone has no ⌘, and
@@ -331,6 +354,7 @@ impl Editor {
             }
             // The host found the byte; its line stands in for the row.
             Target::Offset(off) => (line, off, Spot::Offset(off)),
+            Target::PastEnd => return,
             Target::Cell { first, .. } | Target::Block { first } => {
                 let blocks = self.sig.blocks.peek();
                 let Some(off) = blocks
