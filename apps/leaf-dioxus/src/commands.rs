@@ -54,6 +54,8 @@ pub enum Command {
     CopyLink,
     FollowFootnote,
     InsertFootnote,
+    /// Ask for a picture, and put it in at the caret.
+    InsertImage,
     InsertRule,
     InsertPageBreak,
     Verse,

@@ -36,11 +36,31 @@ pub fn type_of(settings: &crate::settings::Settings) -> Type {
 /// The document in `page`, in the display choices, on `paper`, as a PDF;
 /// `Err` if the editor has it borrowed or Typst will not set it.
 pub fn of_page(page: &crate::page::Page, paper: Paper) -> Result<Vec<u8>, String> {
-    let (source, format, path) = page
-        .with_doc(|d| (d.source.clone(), d.format, d.path.clone()))
+    let host = page.editor().map(|ed| ed.host());
+    let (source, format, path, supply) = page
+        .with_doc(|d| {
+            // The pictures where the editor finds them; no room for a view
+            // the host draws on the screen, which paper has none of.
+            let pictures = host
+                .as_ref()
+                .map(|h| leaf_pages::gather(d, &**h, false).0.pictures)
+                .unwrap_or_default();
+            let supply = leaf_pages::typeset::Supply {
+                pictures,
+                rooms: Default::default(),
+            };
+            (d.source.clone(), d.format, d.path.clone(), supply)
+        })
         .ok_or("the document is busy")?;
     let ty = type_of(&crate::app::settings());
-    render(&source, format, Some(&path), &ty, paper)
+    render(
+        &source,
+        format,
+        Some(&path),
+        &ty,
+        paper,
+        std::sync::Arc::new(supply),
+    )
 }
 
 #[cfg(test)]
@@ -65,7 +85,15 @@ mod tests {
             height: 792.0,
             margin: 72.0,
         };
-        let pdf = render(&src, Format::Markdown, Some(&path), &ty, paper).expect("a pdf");
+        let pdf = render(
+            &src,
+            Format::Markdown,
+            Some(&path),
+            &ty,
+            paper,
+            Default::default(),
+        )
+        .expect("a pdf");
         assert!(pdf.starts_with(b"%PDF"), "not a PDF");
     }
 }

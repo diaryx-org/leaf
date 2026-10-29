@@ -164,6 +164,7 @@ mod tests {
                 height: 792.0,
                 margin: 72.0,
             }),
+            Default::default(),
             &Default::default(),
         )
         .expect("a layout");

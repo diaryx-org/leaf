@@ -7597,7 +7597,7 @@ dependencies = [
 [[package]]
 name = "twig-export"
 version = "0.1.0"
-source = "git+https://github.com/diaryx-org/twig-export?branch=main#8c2114fbc9abc4d5bb36be67d7b5ebb2e5e1dbf1"
+source = "git+https://github.com/diaryx-org/twig-export?branch=main#b692f457beae9acfbd58ba2353761678f8fe55d6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

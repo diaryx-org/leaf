@@ -44,6 +44,7 @@ mod guard;
 mod head;
 #[cfg(test)]
 mod headless;
+mod insert;
 mod menus;
 #[cfg(test)]
 mod offscreen;

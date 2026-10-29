@@ -33,9 +33,11 @@ use dioxus_core::{ScopeId, VirtualDom};
 use dioxus_native::DioxusDocument;
 use dioxus_native::LogicalSize;
 use dioxus_native::winit::application::ApplicationHandler;
+use dioxus_native::winit::data_transfer::TypeHint;
 use dioxus_native::winit::event::{StartCause, WindowEvent};
 use dioxus_native::winit::event_loop::{
-    ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy, EventLoopProxyProvider,
+    ActiveEventLoop, AsyncRequestSerial, ControlFlow, DndAction, EventLoop, EventLoopProxy,
+    EventLoopProxyProvider,
 };
 use dioxus_native::winit::keyboard::ModifiersState;
 use dioxus_native::winit::window::{Window, WindowAttributes, WindowButtons, WindowId};
@@ -296,6 +298,7 @@ pub fn run() {
         ready: false,
         mods: HashMap::new(),
         frames: HashMap::new(),
+        drops: HashMap::new(),
     };
     event_loop.run_app(app).expect("the event loop");
 }
@@ -308,6 +311,8 @@ struct App {
     mods: HashMap<WindowId, ModifiersState>,
     /// What each window has painted, for [`redraw`].
     frames: HashMap<WindowId, Frame>,
+    /// Files dropped on a window, asked for and on their way.
+    drops: HashMap<AsyncRequestSerial, WindowId>,
 }
 
 /// What a window has painted, for [`redraw`].
@@ -625,6 +630,33 @@ impl ApplicationHandler for App {
                 return;
             }
             WindowEvent::Destroyed => return,
+            // Files dragged over a document window are taken as a copy, and
+            // read once they are dropped: a picture among them is put in at
+            // the caret (`insert.rs`).
+            WindowEvent::DragEntered { id, .. } | WindowEvent::DragPosition { id, .. }
+                if page.is_some() =>
+            {
+                let files = event_loop
+                    .data_transfer(*id)
+                    .is_ok_and(|t| t.has_type(&TypeHint::UriList));
+                let actions: &[DndAction] = if files { &[DndAction::Copy] } else { &[] };
+                let _ = event_loop.set_valid_dnd_actions(*id, actions);
+            }
+            WindowEvent::DragDropped { id, .. } if page.is_some() => {
+                if let Ok(serial) = event_loop.fetch_data_transfer(*id, &TypeHint::UriList) {
+                    self.drops.insert(serial, window_id);
+                }
+            }
+            WindowEvent::DataTransferReceived { serial, value, .. } => {
+                if self.drops.get(serial) == Some(&window_id)
+                    && let Ok(paths) = value.try_as_file_paths()
+                {
+                    self.drops.remove(serial);
+                    if let Some(p) = &page {
+                        guard(|| crate::insert::dropped(p, paths));
+                    }
+                }
+            }
             WindowEvent::ModifiersChanged(m) => {
                 self.mods.insert(window_id, m.state());
             }

@@ -142,6 +142,7 @@ fn lists() -> Vec<Node> {
 
 fn inserts() -> Vec<Node> {
     vec![
+        I("Insert Image…", Command::InsertImage),
         I("Insert Footnote", Command::InsertFootnote),
         I("Insert Horizontal Rule", Command::InsertRule),
         I("Insert Page Break", Command::InsertPageBreak),
@@ -401,6 +402,7 @@ pub fn lists_menu() -> Vec<Node> {
 /// The toolbar's Insert ▾.
 pub fn insert() -> Vec<Node> {
     vec![
+        I("Image…", Command::InsertImage),
         Sub("Table", table()),
         I("Horizontal Rule", Command::InsertRule),
         I("Footnote", Command::InsertFootnote),
