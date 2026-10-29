@@ -7,8 +7,10 @@
 //! editor reads (`leaf_core::parse_tree`, with leaf's features), and
 //! pictures resolve against the document's folder. The page is Typst's, not
 //! the editor's: lines and pages break where Typst breaks them, and what
-//! twig-export does not draw yet (math, highlights, the presentation CSS in
-//! `style`) is not on it. See docs/proposals/what-you-see-is-what-twig-export-sets.md.
+//! twig-export does not draw yet (math; of the presentation CSS in `style`,
+//! all but `text-align`) is not on it. Underlines, strikethroughs,
+//! highlights and alignment it draws as [`config`]'s rules ask. See
+//! docs/proposals/what-you-see-is-what-twig-export-sets.md.
 //!
 //! Where it is set is `typeset.rs`'s: in this process, which reads the
 //! system's fonts when it is first asked, and not again; or, in a template
@@ -17,7 +19,8 @@
 use std::path::Path;
 
 use leaf_core::Format;
-use twig_export::config::Config;
+use twig_export::config::{Config, Rule};
+use twig_export::style::Style;
 
 use crate::typeset::{Job, Laid};
 
@@ -120,7 +123,97 @@ pub fn config(ty: &Type, sheet: Sheet) -> Config {
     // of punctuation) breaks where it must, rather than run off the page:
     // the text is whatever the writer typed, at whatever width.
     d.overflow_wrap = Some("break-word".into());
+    cfg.rules = rules(ty.dark);
     cfg
+}
+
+/// What leaf draws that twig-export draws only when a rule asks: the
+/// marks a run carries (underline, strikethrough, a highlight in its
+/// colour, a superscript, a subscript), and a block's alignment, as leaf
+/// writes it (`text-align` in its `style`) and as leaf 0.2 did (a `class`
+/// token). The highlights are the editor's (`leaf-dioxus`'s
+/// `--leaf-mark` inks), in light ink or dark.
+fn rules(dark: bool) -> Vec<Rule> {
+    use twig_export::style::{Align, RawTypst};
+    let rule = |select: &str, style: Style| Rule {
+        select: select.to_owned(),
+        style,
+    };
+    // A Typst function of the content, by name, defined once where it is
+    // used: a call in markup takes its content block only by name.
+    let wrap = |f: &str, define: Option<String>| Style {
+        raw: Some(RawTypst {
+            wrap: Some(f.to_owned()),
+            preamble: define,
+            ..RawTypst::default()
+        }),
+        ..Style::default()
+    };
+    let mut rules = vec![
+        rule(
+            "insert",
+            Style {
+                underline: Some(true),
+                ..Style::default()
+            },
+        ),
+        rule(
+            "delete",
+            Style {
+                strike: Some(true),
+                ..Style::default()
+            },
+        ),
+        rule("superscript", wrap("super", None)),
+        rule("subscript", wrap("sub", None)),
+    ];
+    // (name, light, dark), as `rgb`'s components; yellow is a plain mark's.
+    let marks: [(&str, [u8; 3], [u8; 3]); 7] = [
+        ("yellow", [255, 204, 0], [255, 214, 10]),
+        ("red", [255, 59, 48], [255, 69, 58]),
+        ("orange", [255, 149, 0], [255, 159, 10]),
+        ("green", [52, 199, 89], [48, 209, 88]),
+        ("blue", [0, 122, 255], [10, 132, 255]),
+        ("purple", [175, 82, 222], [191, 90, 242]),
+        ("brown", [162, 132, 94], [172, 142, 104]),
+    ];
+    for (name, light, ink) in marks {
+        let [r, g, b] = if dark { ink } else { light };
+        let select = match name {
+            "yellow" => "mark".to_owned(),
+            _ => format!("mark[data-color={name}]"),
+        };
+        let f = format!("leaf-mark-{name}");
+        let define = format!("#let {f} = highlight.with(fill: rgb({r}, {g}, {b}, 28%))");
+        rules.push(rule(&select, wrap(&f, Some(define))));
+    }
+    // Justified is a paragraph's setting, not an alignment, in Typst.
+    let justify = || {
+        wrap(
+            "leaf-justify",
+            Some("#let leaf-justify(body) = { set par(justify: true); body }".to_owned()),
+        )
+    };
+    let align = |a: Align| Style {
+        align: Some(a),
+        ..Style::default()
+    };
+    // The class first, so that where both are written, the `style` wins,
+    // as the editor reads it (`leaf_core::Align::from_attrs`).
+    rules.push(rule("*[class~=center]", align(Align::Center)));
+    rules.push(rule("*[class~=right]", align(Align::Right)));
+    rules.push(rule("*[class~=justify]", justify()));
+    for spelling in ["text-align: ", "text-align:"] {
+        for (name, style) in [
+            ("center", align(Align::Center)),
+            ("right", align(Align::Right)),
+            ("left", align(Align::Left)),
+            ("justify", justify()),
+        ] {
+            rules.push(rule(&format!("*[style*=\"{spelling}{name}\"]"), style));
+        }
+    }
+    rules
 }
 
 #[cfg(test)]
@@ -221,6 +314,42 @@ mod tests {
                 assert_eq!(pages.len(), 1, "{template:?}");
                 assert_eq!(pages[0].width, 400.0, "{template:?}");
             }
+        }
+    }
+
+    /// What leaf draws of a run and a block, Typst sets: an underline, a
+    /// strikethrough, a highlight in its colour, and the three alignments,
+    /// as leaf writes each, in light ink and dark.
+    #[test]
+    fn marks_and_alignments_are_set() {
+        let src = "An <u>underlined</u>, a ~~struck~~ and a ==marked== word.\n\n\
+            <div style=\"text-align: center\">\n\nCentred.\n\n</div>\n\n\
+            <div style=\"color: #c00; text-align:right\">\n\nRight.\n\n</div>\n\n\
+            <div class=\"justify\">\n\nJustified.\n\n</div>\n";
+        for dark in [false, true] {
+            let ty = Type { dark, ..ty() };
+            let cfg = config(&ty, Sheet::Reflow { width: 400.0 });
+            let tree = leaf_core::parse_tree(src, Format::Markdown).unwrap();
+            let typst = twig_export::render_parsed(tree, src, &cfg).unwrap().typst;
+            for set in [
+                "#underline[underlined]",
+                "#strike[struck]",
+                "#leaf-mark-yellow[marked]",
+                "#set align(center)",
+                "#set align(right)",
+                "#leaf-justify[",
+            ] {
+                assert!(typst.contains(set), "no {set:?} in:\n{typst}");
+            }
+            layout(
+                src,
+                Format::Markdown,
+                None,
+                &ty,
+                Sheet::Reflow { width: 400.0 },
+                &Default::default(),
+            )
+            .expect("Typst sets it");
         }
     }
 
