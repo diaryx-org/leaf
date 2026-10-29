@@ -26,6 +26,50 @@ impl Doc {
             .unwrap_or(false)
     }
 
+    /// Every table cell, in source order: its text, the bytes a
+    /// [`crate::TableCell`]'s `start..end` spans, an empty cell's the one
+    /// caret home core derives for it; and its table, row and column. Read
+    /// off the parse, not the visual map, so a host that draws the document
+    /// its own way (Leaf's pages), and builds no map between keystrokes, has
+    /// it for the source it is setting.
+    pub fn table_cells(&mut self) -> Vec<CellSpan> {
+        // A pipe table spells a `|`; a document without one has no grid to
+        // walk the whole tree for.
+        if !self.source.contains('|') && !self.source.contains("<t") {
+            return Vec::new();
+        }
+        let nodes = self.nodes();
+        let len = self.source.len();
+        let children = |id: Option<twig::NodeId>| {
+            std::iter::successors(id.and_then(|i| nodes.get(i.0 as usize)), |n| {
+                n.next_sibling.and_then(|i| nodes.get(i.0 as usize))
+            })
+        };
+        let mut out = Vec::new();
+        for table in nodes.iter().filter(|n| n.kind == Kind::Table) {
+            let rows = children(table.first_child).filter(|n| n.kind == Kind::Row);
+            for (row, r) in rows.enumerate() {
+                let cells = children(r.first_child).filter(|n| n.kind == Kind::Cell);
+                for (col, n) in cells.enumerate() {
+                    let text = n.content_span.clone().unwrap_or_else(|| {
+                        let (start, end) = (n.span.start.min(len), n.span.end.min(len));
+                        let at =
+                            crate::wysiwyg::empty_cell_offset(&self.source[start..end], start, col);
+                        at..at
+                    });
+                    out.push(CellSpan {
+                        text,
+                        table: table.span.start,
+                        row,
+                        col,
+                    });
+                }
+            }
+        }
+        out.sort_by_key(|c| (c.text.start, c.text.end));
+        out
+    }
+
     /// One grid op, guarded and settled — the shared body of the seven below.
     ///
     /// The guard is why this exists rather than seven copies of the same three

@@ -80,6 +80,7 @@ fn refresh(
             .iter()
             .map(|p| (p.height, p.glyphs.clone()))
             .collect::<Vec<_>>(),
+        &[],
     );
     c.lap("caret geometry", &mut out);
     std::hint::black_box((urls, geometry));
@@ -119,7 +120,7 @@ fn chunked(
         supply: Default::default(),
     };
     let start = Instant::now();
-    let out = crate::reflow::lay_out(source, &blocks, None, &how, known).unwrap();
+    let out = crate::reflow::lay_out(source, &blocks, None, &[], &[], &how, known).unwrap();
     let ms = start.elapsed().as_secs_f64() * 1000.0;
     let drawn = out.pieces.iter().filter(|p| p.svg.is_some()).count();
     *known = out.pieces.iter().map(|p| p.key).collect();

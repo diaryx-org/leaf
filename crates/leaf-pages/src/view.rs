@@ -294,13 +294,17 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
         .map(|((_, x, y, w, h, url), slot)| (slot, x, y, w, h, url))
         .collect();
     // A press, or a drag, at a point in the window: the line and the byte it
-    // lands on, as the editor's target.
-    let land = move |x: f64, y: f64| -> Option<(Target, usize)> {
+    // lands on, as the editor's target. A press or a tap, not a drag, in the
+    // blank under the document is the editor's own there (`end`).
+    let land = move |x: f64, y: f64, end: bool| -> Option<(Target, usize)> {
         let v = view.peek();
         let spread = v.spread();
         let (cx, cy) = v.scroll.to_content(x - v.left, y - top);
         let (page, px, py) = spread.nearest(&v.sheets, cx, cy)?;
         let (line, at) = v.geometry.hit(page, px, py)?;
+        if end && v.editing && v.geometry.past_end(page, py) {
+            return Some((Target::PastEnd, line));
+        }
         Some((Target::Offset(at), line))
     };
     let (press, drag, host) = (pages.clone(), pages.clone(), pages.clone());
@@ -312,15 +316,15 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
             onmousedown: move |e: MouseEvent| {
                 e.prevent_default();
                 let p = e.client_coordinates();
-                if let Some((at, line)) = land(p.x, p.y) {
-                    let (extend, mode) = press_mode(&e);
+                let (extend, mode) = press_mode(&e);
+                if let Some((at, line)) = land(p.x, p.y, !extend) {
                     press.point(Pointer::Press { at, line, x: 0.0, extend, mode });
                 }
             },
             onmousemove: move |e: MouseEvent| {
                 if e.held_buttons().contains(MouseButton::Primary) {
                     let p = e.client_coordinates();
-                    if let Some((at, line)) = land(p.x, p.y) {
+                    if let Some((at, line)) = land(p.x, p.y, false) {
                         drag.point(Pointer::Drag { at, line, x: 0.0 });
                     }
                 }
@@ -328,7 +332,7 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
             // A finger's tap, which sends no press (the editor's `touch.rs`).
             onclick: move |e: MouseEvent| {
                 let p = e.client_coordinates();
-                if let Some((at, line)) = land(p.x, p.y) {
+                if let Some((at, line)) = land(p.x, p.y, true) {
                     pages.point(Pointer::Tap { at, line, x: 0.0 });
                 }
             },
