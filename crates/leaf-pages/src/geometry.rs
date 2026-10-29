@@ -383,6 +383,21 @@ impl Geometry {
         boxes
     }
 
+    /// The box of the object set from `span` (a picture, a host's room:
+    /// twig-export's object glyph), if it is on the pages.
+    pub fn object(&self, span: Range<usize>) -> Option<PageBox> {
+        self.lines.iter().find_map(|l| {
+            let (x, w, _) = l.glyphs.iter().find(|g| g.2 == span)?;
+            Some(PageBox {
+                page: l.page,
+                x: *x,
+                top: l.baseline - l.ascent,
+                width: *w,
+                height: l.ascent + l.descent,
+            })
+        })
+    }
+
     /// The line a press at (`x`, `y`) on `page`, in its points, lands on,
     /// and the byte: the line whose glyphs' height it is within, else the
     /// nearest. Below the document's last line is its end, and above its

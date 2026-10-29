@@ -9,9 +9,9 @@
 //! through [`layout_here`] and [`pdf_here`]. A host with nowhere else sets it
 //! here.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use leaf_core::Format;
 use twig_export::pdf::{Layout, Packages, Page, Typesetter};
@@ -69,6 +69,113 @@ pub struct Job {
     pub path: Option<PathBuf>,
     pub ty: Type,
     pub sheet: Sheet,
+    /// What the host found for it.
+    pub supply: Arc<Supply>,
+}
+
+/// What the host finds for a setting that the source does not say: where
+/// its pictures are, as the editor draws them, and the room it draws its
+/// own views of its directives in. Read on the window's thread, where the
+/// host is; a setting is on a worker.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Supply {
+    /// Each picture the host found, by its destination as written. One it
+    /// was not asked about is read as the editor reads it, against the
+    /// document's folder.
+    pub pictures: BTreeMap<String, Found>,
+    /// The room to leave under each directive the host draws, in points,
+    /// by the byte of the source the directive starts at.
+    pub rooms: BTreeMap<usize, f32>,
+}
+
+/// Where a picture is.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Found {
+    /// In a file.
+    File(PathBuf),
+    /// In hand: a host's own, loaded.
+    Bytes(Arc<[u8]>),
+    /// Nowhere a picture can be read from: its alt text stands in.
+    Missing,
+}
+
+impl Supply {
+    /// The host's answers as twig-export asks for them, for a document in
+    /// the folder `dir`, whose bytes as set are at `global` in the
+    /// document's (a chunk's, a source with a stand-in in it).
+    pub fn hooks<'a>(
+        &'a self,
+        dir: Option<&'a Path>,
+        global: &'a dyn Fn(usize) -> Option<usize>,
+    ) -> impl twig_export::Hooks + 'a {
+        Supplied {
+            supply: self,
+            dir,
+            global,
+        }
+    }
+
+    /// A key of what it supplies that does not read the pictures' bytes:
+    /// a picture in hand is the same picture while it is the same `Arc`.
+    pub fn pictures_key(&self, h: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+        for (dest, found) in &self.pictures {
+            dest.hash(h);
+            match found {
+                Found::File(p) => (0u8, p).hash(h),
+                Found::Bytes(b) => (1u8, Arc::as_ptr(b) as *const u8 as usize, b.len()).hash(h),
+                Found::Missing => 2u8.hash(h),
+            }
+        }
+    }
+}
+
+struct Supplied<'a> {
+    supply: &'a Supply,
+    dir: Option<&'a Path>,
+    global: &'a dyn Fn(usize) -> Option<usize>,
+}
+
+impl twig_export::Hooks for Supplied<'_> {
+    fn picture(&self, destination: &str) -> twig_export::Picture {
+        use twig_export::Picture;
+        let found = match self.supply.pictures.get(destination) {
+            Some(f) => f.clone(),
+            None => match leaf_dioxus::media_path(destination, self.dir) {
+                Some(p) => Found::File(p),
+                None => Found::Missing,
+            },
+        };
+        match found {
+            Found::File(p) => read(&p).map_or(Picture::Missing, Picture::Bytes),
+            Found::Bytes(b) => Picture::Bytes(b),
+            Found::Missing => Picture::Missing,
+        }
+    }
+
+    fn room(&self, at: usize) -> Option<f64> {
+        let at = (self.global)(at)?;
+        self.supply.rooms.get(&at).map(|&h| f64::from(h))
+    }
+}
+
+/// The file at `path`, read once while it is unchanged.
+fn read(path: &Path) -> Option<Arc<[u8]>> {
+    type Read = HashMap<PathBuf, (std::time::SystemTime, u64, Arc<[u8]>)>;
+    static READ: OnceLock<Mutex<Read>> = OnceLock::new();
+    let meta = std::fs::metadata(path).ok()?;
+    let stamp = (meta.modified().ok()?, meta.len());
+    let read = READ.get_or_init(Mutex::default);
+    if let Some((m, l, b)) = read.lock().ok()?.get(path)
+        && (*m, *l) == stamp
+    {
+        return Some(Arc::clone(b));
+    }
+    let bytes: Arc<[u8]> = std::fs::read(path).ok()?.into();
+    read.lock()
+        .ok()?
+        .insert(path.to_path_buf(), (stamp.0, stamp.1, Arc::clone(&bytes)));
+    Some(bytes)
 }
 
 /// `job` laid out, with a picture for each piece whose key is not `known`.
@@ -132,7 +239,11 @@ fn typesetter() -> &'static Typesetter {
 pub fn here(job: &Job) -> Result<Layout, String> {
     let tree = leaf_core::parse_tree(&job.source, job.format).map_err(|e| e.to_string())?;
     let cfg = crate::pdf::config(&job.ty, job.sheet);
-    let words = twig_export::render_words(tree, &job.source, &cfg).map_err(|e| format!("{e:#}"))?;
+    let hooks = job
+        .supply
+        .hooks(job.path.as_deref().and_then(Path::parent), &Some);
+    let words = twig_export::render_words_with(tree, &job.source, &cfg, &hooks)
+        .map_err(|e| format!("{e:#}"))?;
     here_words(&words, root(job.path.as_deref()))
 }
 

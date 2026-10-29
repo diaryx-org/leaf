@@ -14,6 +14,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -21,13 +22,14 @@ use std::sync::{Arc, Mutex};
 use base64::Engine;
 use dioxus::prelude::*;
 use leaf_core::{Doc, Format};
-use leaf_dioxus::{Editor, Pointer, ZoomCommand};
+use leaf_dioxus::{Directive, Editor, Pointer, ZoomCommand};
 use twig_export::pdf::Glyph;
 
 use crate::Host;
 use crate::geometry::{Geometry, PageLines, Piece, Sheet};
 use crate::pdf::{Paper, Type};
-use crate::view::{PagesView, ZOOM_STEP};
+use crate::typeset::{Found, Supply};
+use crate::view::{Card, PagesView, ZOOM_STEP};
 
 /// The share of the area's width the preview takes.
 const SHARE: f64 = 0.5;
@@ -90,6 +92,9 @@ pub struct Pages {
     glide: Cell<u64>,
     /// The page count the host was last told of.
     counted: Cell<Option<Option<usize>>>,
+    /// The directives the host draws a view of, in the setting under way:
+    /// each one's bytes of the source, and what the host is given to draw.
+    asked: RefCell<Vec<(Range<usize>, Directive)>>,
 }
 
 /// Everything the pages depend on but the source: what decides whether
@@ -103,6 +108,8 @@ struct Setting {
     path: PathBuf,
     ty: Type,
     sheet: crate::pdf::Sheet,
+    /// What the host found: the pictures, and the room for its views.
+    supply: Arc<Supply>,
 }
 
 /// The pages as the worker sets them, for the view to take on its turn:
@@ -137,6 +144,7 @@ impl Pages {
             laid: RefCell::default(),
             glide: Cell::new(0),
             counted: Cell::new(None),
+            asked: RefCell::default(),
         }
     }
 
@@ -186,6 +194,14 @@ impl Pages {
         match self.view.get() {
             Some(view) => f(&view.peek()),
             None => R::default(),
+        }
+    }
+
+    /// The view the host draws of `directive`, over the room left for it.
+    pub(crate) fn draw(&self, directive: &Directive) -> Element {
+        match self.host.editor() {
+            Some(ed) => ed.host().draw_directive(directive),
+            None => rsx! {},
         }
     }
 
@@ -401,8 +417,14 @@ impl Pages {
         // the document's top-level blocks are what it is cut by.
         let chunked =
             matches!(sheet, crate::pdf::Sheet::Reflow { .. }) && crate::reflow::chunks(&ty);
-        let Some((source, setting, blocks)) = self
+        let host = self.host.editor().map(|ed| ed.host());
+        let dark = ty.dark;
+        let Some((source, setting, blocks, asked)) = self
             .with_doc(|d| {
+                let (supply, asked) = match &host {
+                    Some(host) => gather(d, &**host, dark),
+                    None => Default::default(),
+                };
                 let setting = Setting {
                     revision: d.revision(),
                     hole: hole(&d.source, d.caret),
@@ -410,11 +432,12 @@ impl Pages {
                     path: d.path.clone(),
                     ty,
                     sheet,
+                    supply: Arc::new(supply),
                 };
                 let chunked = chunked && matches!(d.format, Format::Markdown | Format::Djot);
                 (self.from.borrow().as_ref() != Some(&setting)).then(|| {
                     let blocks = chunked.then(|| d.top_level());
-                    (d.source.clone(), setting, blocks)
+                    (d.source.clone(), setting, blocks, asked)
                 })
             })
             .flatten()
@@ -422,6 +445,7 @@ impl Pages {
             return;
         };
         *self.from.borrow_mut() = Some(setting.clone());
+        *self.asked.borrow_mut() = asked;
         self.busy.set(true);
         let known: HashSet<u128> = self.pictures.borrow().keys().copied().collect();
         let started = std::time::Instant::now();
@@ -473,6 +497,18 @@ impl Pages {
         };
         let geometry = Rc::new(set.geometry);
         *self.lines.geometry.borrow_mut() = geometry.clone();
+        // Each view the host draws, over the room left for it.
+        let cards: Vec<Card> = self
+            .asked
+            .borrow()
+            .iter()
+            .filter_map(|(span, directive)| {
+                Some(Card {
+                    at: geometry.object(span.clone())?,
+                    directive: directive.clone(),
+                })
+            })
+            .collect();
         let pieces: Vec<Piece> = {
             let mut pictures = self.pictures.borrow_mut();
             let mut kept = HashMap::with_capacity(set.pieces.len());
@@ -512,6 +548,7 @@ impl Pages {
             let mut v = v.write();
             v.sheets = set;
             v.pieces = pieces;
+            v.cards = cards;
             v.geometry = geometry;
             v.error = None;
             v.fit();
@@ -722,6 +759,7 @@ fn set(
             ty: s.ty.clone(),
             width,
             root: crate::typeset::root(Some(&s.path)).to_path_buf(),
+            supply: Arc::clone(&s.supply),
         };
         let t = std::time::Instant::now();
         let laid = crate::reflow::lay_out(&source, blocks, s.hole, &how, known);
@@ -741,7 +779,29 @@ fn set(
         leaf_dioxus::trace(|| format!("reflow: laid {t_lay:?}, pictures by {:?}", t.elapsed()));
         return (source, set);
     }
-    let layout = crate::pdf::layout(&set_from, s.format, Some(&s.path), &s.ty, s.sheet, known);
+    // Set with the stand-in, a room is asked for by where its directive is
+    // in that source.
+    let supply = match s.hole {
+        Some(h) => Arc::new(Supply {
+            pictures: s.supply.pictures.clone(),
+            rooms: s
+                .supply
+                .rooms
+                .iter()
+                .map(|(&at, &room)| (if at >= h { at + STAND_IN.len() } else { at }, room))
+                .collect(),
+        }),
+        None => Arc::clone(&s.supply),
+    };
+    let layout = crate::pdf::layout(
+        &set_from,
+        s.format,
+        Some(&s.path),
+        &s.ty,
+        s.sheet,
+        supply,
+        known,
+    );
     let set: Result<Set, String> = layout.map(|l| {
         let sheets = l
             .pages
@@ -777,6 +837,84 @@ fn set(
         }
     });
     (source, set)
+}
+
+/// What the host finds for the document `d` that its source does not say:
+/// where its pictures are, as the editor draws them, in ink for a `dark`
+/// ground or a light one; and, for each directive it draws a view of, the
+/// room to leave, and the directive by its bytes of the source.
+pub fn gather(
+    d: &mut Doc,
+    host: &dyn leaf_dioxus::Host,
+    dark: bool,
+) -> (Supply, Vec<(Range<usize>, Directive)>) {
+    let mut supply = Supply::default();
+    let mut asked = Vec::new();
+    if d.view != leaf_core::View::Wysiwyg {
+        return (supply, asked);
+    }
+    d.build_visual_unwrapped();
+    let scheme = if dark {
+        leaf_core::ColorScheme::Dark
+    } else {
+        leaf_core::ColorScheme::Light
+    };
+    let doc: &Doc = d;
+    for m in &doc.vmap.media {
+        let Some(dest) = m.still(scheme) else {
+            continue;
+        };
+        let found = match host.picture(doc, dest) {
+            Some(p) => found_at(&p.url),
+            None => match leaf_dioxus::locate_media(host, doc, dest) {
+                Some(path) => Found::File(path),
+                None => Found::Missing,
+            },
+        };
+        supply.pictures.insert(m.destination.clone(), found);
+    }
+    for info in &doc.vmap.directives {
+        let directive = Directive {
+            name: info.name.clone(),
+            attrs: info.attrs.clone(),
+            label: info.label.clone(),
+        };
+        let Some(height) = host.directive_height(doc, &directive) else {
+            continue;
+        };
+        let Some(row) = doc.vmap.rows.get(info.rows_span.start) else {
+            continue;
+        };
+        let Some(start) = row.glyphs.last().map(|g| g.src) else {
+            continue;
+        };
+        // A CSS pixel is three quarters of a point.
+        supply.rooms.insert(start, height * 0.75);
+        asked.push((start..row.end_src, directive));
+    }
+    (supply, asked)
+}
+
+/// Where a picture a host loaded itself is, by the URL it draws it from: in
+/// hand, from a `data:` URL; a file, from a `file:` one. Typst reads no web
+/// address.
+fn found_at(url: &str) -> Found {
+    if let Some(data) = url.strip_prefix("data:") {
+        let Some((meta, body)) = data.split_once(',') else {
+            return Found::Missing;
+        };
+        let bytes = if meta.ends_with(";base64") {
+            let clean: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            base64::engine::general_purpose::STANDARD.decode(clean).ok()
+        } else {
+            Some(body.as_bytes().to_vec())
+        };
+        return bytes.map_or(Found::Missing, |b| Found::Bytes(b.into()));
+    }
+    match leaf_dioxus::media_path(url, None) {
+        Some(path) if url.starts_with("file:") || url.starts_with('/') => Found::File(path),
+        _ => Found::Missing,
+    }
 }
 
 /// What stands in for the text of a line that has none, where the caret
@@ -930,6 +1068,7 @@ mod tests {
                 dark: false,
             },
             crate::pdf::Sheet::Reflow { width: 400.0 },
+            Default::default(),
             &Default::default(),
         )
         .expect("a layout");
@@ -962,6 +1101,7 @@ mod tests {
                 height: 792.0,
                 margin: 72.0,
             }),
+            Default::default(),
             &Default::default(),
         )
         .expect("a layout");
@@ -995,6 +1135,7 @@ mod tests {
                 height: 792.0,
                 margin: 72.0,
             }),
+            Default::default(),
             &known,
         )
         .expect("a layout");
@@ -1007,5 +1148,42 @@ mod tests {
         assert!(a.top > one.top, "{one:?} {a:?}");
         assert_eq!(g.line_edge(9, false), Some(7));
         assert_eq!(g.line_edge(9, true), Some(14));
+    }
+
+    /// What the host found: the pictures as it reads them, and room under
+    /// each directive it draws, at three quarters of a point a pixel; none
+    /// for one it does not.
+    #[test]
+    fn the_host_supplies_its_pictures_and_its_rooms() {
+        struct H;
+        impl leaf_dioxus::Host for H {
+            fn picture(&self, _doc: &Doc, dest: &str) -> Option<leaf_dioxus::Picture> {
+                (dest == "web.png").then(|| leaf_dioxus::Picture {
+                    url: "data:image/png;base64,AAEC".into(),
+                    size: (1.0, 1.0),
+                })
+            }
+            fn directive_height(&self, _doc: &Doc, d: &Directive) -> Option<f32> {
+                (d.name == "card").then_some(40.0)
+            }
+        }
+        let src = "![a](web.png)\n\n![b](/abs/b.png)\n\n![c](https://x.org/c.png)\n\n::card[Hi]\n\n::other\n";
+        let mut d = Doc::from_source(src.to_owned(), Format::Markdown).unwrap();
+        let (supply, asked) = gather(&mut d, &H, false);
+        assert_eq!(
+            supply.pictures["web.png"],
+            Found::Bytes(vec![0, 1, 2].into())
+        );
+        assert_eq!(
+            supply.pictures["/abs/b.png"],
+            Found::File("/abs/b.png".into())
+        );
+        assert_eq!(supply.pictures["https://x.org/c.png"], Found::Missing);
+        let at = src.find("::card").unwrap();
+        assert_eq!(supply.rooms.len(), 1);
+        assert_eq!(supply.rooms[&at], 30.0);
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].0, at..at + "::card[Hi]".len());
+        assert_eq!(asked[0].1.label, "Hi");
     }
 }

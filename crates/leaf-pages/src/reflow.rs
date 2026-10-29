@@ -113,13 +113,15 @@ struct Kept {
 
 static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
 
-/// How a document is set: the template, the size, the width.
+/// How a document is set: the template, the size, the width, and what the
+/// host found for it.
 #[derive(Clone, Debug)]
 pub struct How {
     pub format: Format,
     pub ty: Type,
     pub width: f32,
     pub root: std::path::PathBuf,
+    pub supply: Arc<crate::typeset::Supply>,
 }
 
 /// Whether a document set in `ty` is reflowed a chunk at a time: when the
@@ -516,6 +518,17 @@ fn key(chunk: &Chunk, source: &str, hole: Option<usize>, how: &How) -> u64 {
     )
         .hash(&mut h);
     format!("{:?}", how.format).hash(&mut h);
+    // The pictures wherever they are, and the rooms in the chunk, by where
+    // they are in it: a chunk below an edit keeps its key.
+    how.supply.pictures_key(&mut h);
+    for (i, s) in chunk.segments.iter().enumerate() {
+        if s.made.is_some() {
+            continue;
+        }
+        for (at, room) in how.supply.rooms.range(s.global.clone()) {
+            (i, at - s.global.start, room.to_bits()).hash(&mut h);
+        }
+    }
     h.finish()
 }
 
@@ -564,7 +577,10 @@ fn set_chunk(
     }
     cfg.document.raw_preamble = Some(preamble);
     let tree = leaf_core::parse_tree(&text, how.format).map_err(|e| e.to_string())?;
-    let words = twig_export::render_words(tree, &text, &cfg).map_err(|e| format!("{e:#}"))?;
+    let global = |at: usize| to_global(at).map(|(g, ..)| g);
+    let hooks = how.supply.hooks(Some(&how.root), &global);
+    let words =
+        twig_export::render_words_with(tree, &text, &cfg, &hooks).map_err(|e| format!("{e:#}"))?;
     let layout = crate::typeset::here_words(&words, &how.root)?;
 
     // Which role a tile's block has, by where the block begins.
@@ -700,6 +716,7 @@ mod tests {
             },
             width: 400.0,
             root: Path::new(".").into(),
+            supply: Arc::default(),
         }
     }
 
@@ -759,6 +776,7 @@ mod tests {
             None,
             &how().ty,
             crate::pdf::Sheet::Reflow { width: 400.0 },
+            Default::default(),
             &HashSet::new(),
         )
         .unwrap();
@@ -840,5 +858,83 @@ mod tests {
         // Undone: the chunk set for `first`, whose second block's picture
         // the window had then, and has not now.
         step(&first, &known);
+    }
+
+    /// A picture 40 points wide and 20 tall.
+    const BOX: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40pt" height="20pt"><rect width="40" height="20" fill="red"/></svg>"#;
+
+    fn supplied(supply: crate::typeset::Supply) -> How {
+        How {
+            supply: Arc::new(supply),
+            ..how()
+        }
+    }
+
+    /// A picture the host found is set where it is, a caret before it and
+    /// after it at its edges; one there is none of is its alt text, and the
+    /// document sets.
+    #[test]
+    fn a_picture_is_set_where_found_and_a_missing_one_is_its_alt() {
+        use crate::typeset::{Found, Supply};
+        let src = "Above\n\n![a box](box.svg)\n\n![gone away](nope.png)\n\nBelow\n";
+        let mut supply = Supply::default();
+        supply
+            .pictures
+            .insert("box.svg".into(), Found::Bytes(BOX.as_bytes().into()));
+        let out = lay_out(src, &blocks(src), None, &supplied(supply), &HashSet::new())
+            .expect("a missing picture does not stop the document setting");
+        let start = src.find("![a box]").unwrap();
+        let end = start + "![a box](box.svg)".len();
+        let pic = out.geometry.object(start..end).expect("the picture is set");
+        assert!((pic.width - 40.0).abs() < 0.01, "{pic:?}");
+        assert!((pic.height - 20.0).abs() < 0.01, "{pic:?}");
+        let before = out.geometry.caret_box(start, src).unwrap();
+        let after = out.geometry.caret_box(end, src).unwrap();
+        assert!((before.x - pic.x).abs() < 0.01 && (after.x - pic.x - pic.width).abs() < 0.01);
+        assert!(
+            (before.height - pic.height).abs() < 0.01,
+            "a caret as tall as the picture"
+        );
+        // A press on the picture's right half lands after it.
+        let (_, at) = out
+            .geometry
+            .hit(0, pic.x + pic.width * 0.8, pic.top + 5.0)
+            .unwrap();
+        assert_eq!(at, end);
+        // Above it, the paragraph before; below, the alt text, then the next.
+        let top = |w: &str| {
+            out.geometry
+                .caret_box(src.find(w).unwrap(), src)
+                .unwrap()
+                .top
+        };
+        assert!(top("Above") < pic.top);
+        assert!(top("gone away") > pic.top + pic.height);
+        assert!(top("Below") > top("gone away"));
+    }
+
+    /// The room a host asks for under a directive is left there, the
+    /// directive's object, and a chunk keeps its key while the room is the
+    /// same, wherever the directive has moved to.
+    #[test]
+    fn a_room_is_left_under_a_directive() {
+        use crate::typeset::Supply;
+        let src = "Above\n\n::card[A label]{x=\"1\"}\n\nBelow\n";
+        let at = src.find("::card").unwrap();
+        let end = at + "::card[A label]{x=\"1\"}".len();
+        let mut supply = Supply::default();
+        supply.rooms.insert(at, 45.0);
+        let out = lay_out(src, &blocks(src), None, &supplied(supply), &HashSet::new()).unwrap();
+        let room = out.geometry.object(at..end).expect("the room is left");
+        assert!((room.height - 45.0).abs() < 0.01, "{room:?}");
+        assert!(room.width > 200.0, "as wide as the text: {room:?}");
+        let top = |w: &str| {
+            out.geometry
+                .caret_box(src.find(w).unwrap(), src)
+                .unwrap()
+                .top
+        };
+        assert!(top("A label") < room.top);
+        assert!(top("Below") > room.top + room.height);
     }
 }

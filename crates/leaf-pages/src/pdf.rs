@@ -17,12 +17,13 @@
 //! not twig-export's own, wherever the host's [`crate::Elsewhere`] sets it.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use leaf_core::Format;
 use twig_export::config::{Config, Rule};
 use twig_export::style::Style;
 
-use crate::typeset::{Job, Laid};
+use crate::typeset::{Job, Laid, Supply};
 
 /// A sheet and its margin, in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,15 +52,17 @@ pub struct Type {
 }
 
 /// The document `source` in `format`, at `path` for its pictures, set in
-/// `ty` on `paper`, as a PDF.
+/// `ty` on `paper`, as a PDF; its pictures where `supply` says, or, where
+/// it says nothing, beside the document.
 pub fn render(
     source: &str,
     format: Format,
     path: Option<&Path>,
     ty: &Type,
     paper: Paper,
+    supply: Arc<Supply>,
 ) -> Result<Vec<u8>, String> {
-    crate::typeset::pdf(&job(source, format, path, ty, Sheet::Paper(paper)))
+    crate::typeset::pdf(&job(source, format, path, ty, Sheet::Paper(paper), supply))
 }
 
 /// The same document laid out once: as the PDF [`render`] writes, as SVG
@@ -71,18 +74,27 @@ pub fn layout(
     path: Option<&Path>,
     ty: &Type,
     sheet: Sheet,
+    supply: Arc<Supply>,
     known: &std::collections::HashSet<u128>,
 ) -> Result<Laid, String> {
-    crate::typeset::layout(&job(source, format, path, ty, sheet), known)
+    crate::typeset::layout(&job(source, format, path, ty, sheet, supply), known)
 }
 
-fn job(source: &str, format: Format, path: Option<&Path>, ty: &Type, sheet: Sheet) -> Job {
+fn job(
+    source: &str,
+    format: Format,
+    path: Option<&Path>,
+    ty: &Type,
+    sheet: Sheet,
+    supply: Arc<Supply>,
+) -> Job {
     Job {
         source: source.to_owned(),
         format,
         path: path.map(Path::to_path_buf),
         ty: ty.clone(),
         sheet,
+        supply,
     }
 }
 
@@ -244,7 +256,15 @@ mod tests {
                 "Paragraph {i} of a long document, to run onto more pages.\n\n"
             ));
         }
-        let pdf = render(&src, Format::Markdown, None, &ty(), US_LETTER).expect("a pdf");
+        let pdf = render(
+            &src,
+            Format::Markdown,
+            None,
+            &ty(),
+            US_LETTER,
+            Default::default(),
+        )
+        .expect("a pdf");
         assert!(pdf.starts_with(b"%PDF"), "not a PDF");
         if let Ok(out) = std::env::var("LEAF_PDF_OUT") {
             std::fs::write(out, &pdf).unwrap();
@@ -262,6 +282,7 @@ mod tests {
             None,
             &ty(),
             Sheet::Paper(US_LETTER),
+            Default::default(),
             &Default::default(),
         )
         .expect("a layout");
@@ -307,6 +328,7 @@ mod tests {
                     None,
                     &ty,
                     Sheet::Reflow { width: 400.0 },
+                    Default::default(),
                     &Default::default(),
                 )
                 .expect("a layout");
@@ -347,6 +369,7 @@ mod tests {
                 None,
                 &ty,
                 Sheet::Reflow { width: 400.0 },
+                Default::default(),
                 &Default::default(),
             )
             .expect("Typst sets it");
@@ -369,6 +392,7 @@ mod tests {
             Some(&path),
             &ty(),
             US_LETTER,
+            Default::default(),
         );
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(pdf.expect("the picture is found").starts_with(b"%PDF"));

@@ -116,6 +116,7 @@ fn chunked(
         ty: ty.clone(),
         width: 480.0,
         root: Path::new(".").into(),
+        supply: Default::default(),
     };
     let start = Instant::now();
     let out = crate::reflow::lay_out(source, &blocks, None, &how, known).unwrap();

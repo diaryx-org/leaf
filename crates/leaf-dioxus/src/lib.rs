@@ -75,13 +75,13 @@ mod view;
 mod viewport;
 
 pub use access::{TEXT_ID, is_text_run};
-pub use blocks::Directive;
+pub use blocks::{Directive, locate as locate_media};
 pub use editor::{Bounds, Editor, Look, STATUS, Status, use_editor, use_shared_editor};
 pub use host::{Around, Clipboard, Host, InputArea, Lines, Picture, Request};
 pub use input::{TableCommand, ZoomCommand};
 pub use keys::pressed;
 pub use link::{Context, Footnote};
-pub use media::picture_size;
+pub use media::{picture_size, resolve as media_path};
 pub use row::{PAD, Pointer, PressMode, Target, press_mode};
 pub use text::{Blob, Faces, Grid, Type};
 pub use trace::trace;
