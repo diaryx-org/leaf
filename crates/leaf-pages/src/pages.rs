@@ -14,14 +14,13 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use dioxus::prelude::*;
-use leaf_core::{Doc, Format};
+use leaf_core::{CellSpan, Doc, Format};
 use leaf_dioxus::{Editor, Pointer, ZoomCommand};
 use twig_export::pdf::Glyph;
 
@@ -712,7 +711,7 @@ fn set(
     source: String,
     s: &Setting,
     blocks: Option<&[leaf_core::TopBlock]>,
-    cells: &[Range<usize>],
+    cells: &[CellSpan],
     known: &HashSet<u128>,
 ) -> Answer {
     // The caret's empty line, and every empty cell, set with a stand-in.
@@ -827,11 +826,11 @@ fn hole(source: &str, caret: usize) -> Option<usize> {
 /// Where stand-ins are set: at the caret's empty line, if it is on one
 /// ([`hole`]), and in every empty table cell, which Typst would otherwise
 /// set as nothing, with no glyph to press or draw a caret by. In order.
-fn holes(caret: Option<usize>, cells: &[Range<usize>]) -> Vec<usize> {
+fn holes(caret: Option<usize>, cells: &[CellSpan]) -> Vec<usize> {
     let mut out: Vec<usize> = cells
         .iter()
-        .filter(|c| c.is_empty())
-        .map(|c| c.start)
+        .filter(|c| c.text.is_empty())
+        .map(|c| c.text.start)
         .chain(caret)
         .collect();
     out.sort_unstable();
@@ -959,7 +958,7 @@ mod tests {
 
     /// A document with a table, set reflowed or on paper as the views set
     /// it: its geometry, and its cells' text.
-    fn table_set(src: &str, reflow: bool) -> (Geometry, Vec<Range<usize>>) {
+    fn table_set(src: &str, reflow: bool) -> (Geometry, Vec<CellSpan>) {
         let mut d = leaf_core::Doc::from_source(src.to_owned(), Format::Markdown).unwrap();
         let cells = d.table_cells();
         let blocks = d.top_level();
@@ -998,8 +997,8 @@ mod tests {
             let (g, cells) = table_set(TABLE, reflow);
             let empty: Vec<usize> = cells
                 .iter()
-                .filter(|c| c.is_empty())
-                .map(|c| c.start)
+                .filter(|c| c.text.is_empty())
+                .map(|c| c.text.start)
                 .collect();
             assert_eq!(empty.len(), 2);
             let at = |b: usize| g.caret_box(b, TABLE).expect("a caret");

@@ -424,9 +424,15 @@ fn table_cells_are_the_grids_cells_read_off_the_parse() {
         .iter()
         .flat_map(|r| r.cells.iter().map(|c| c.start..c.end))
         .collect();
-    assert_eq!(d.table_cells(), from_map);
+    let cells = d.table_cells();
+    let text: Vec<_> = cells.iter().map(|c| c.text.clone()).collect();
+    assert_eq!(text, from_map);
     let empty: Vec<_> = from_map.iter().filter(|r| r.is_empty()).collect();
     assert_eq!(empty.len(), 2, "{from_map:?}");
+    // Each in its place in the grid, of the one table.
+    let at: Vec<_> = cells.iter().map(|c| (c.row, c.col)).collect();
+    assert_eq!(at, [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]);
+    assert!(cells.iter().all(|c| c.table == src.find('|').unwrap()));
     // Without a table, nothing.
     let mut d = wysiwyg_doc("tbl_cells_none", "Just text.\n");
     assert!(d.table_cells().is_empty());

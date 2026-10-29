@@ -259,6 +259,11 @@ impl Editor {
         if tap != self.st.touch_mode.get() || (tap && self.st.gripped.get()) {
             return;
         }
+        // A finger that landed on a gliding page stopped it, and only that,
+        // as on the text ([`pointer`](Self::pointer)).
+        if tap && self.st.caught.replace(false) {
+            return;
+        }
         if tap {
             self.enable_ime();
         }

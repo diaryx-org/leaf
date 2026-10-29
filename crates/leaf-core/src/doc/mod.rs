@@ -626,6 +626,17 @@ pub struct TopBlock {
     pub span: Range<usize>,
 }
 
+/// A table cell, as [`Doc::table_cells`] gives it: its text in the source,
+/// an empty cell's the one caret home core derives for it, and where it is
+/// in its grid, the table named by where its source begins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellSpan {
+    pub text: Range<usize>,
+    pub table: usize,
+    pub row: usize,
+    pub col: usize,
+}
+
 /// What a top-level block is, as a host laying blocks out apart tells them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TopKind {

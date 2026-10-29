@@ -196,6 +196,61 @@ mod tests {
         });
     }
 
+    /// A finger that lands on a gliding page stops it, and only that, under
+    /// the document as on its text: the tap it lifts as is not a tap in the
+    /// blank there, and the next tap is heard.
+    #[test]
+    fn a_tap_that_stops_a_glide_is_not_one_past_the_end() {
+        use dioxus_core::ScopeId;
+        use dioxus_native::winit::dpi::PhysicalPosition;
+        use dioxus_native::winit::event::{ButtonSource, ElementState, FingerId, WindowEvent};
+
+        let src = "First.\n\nSecond.\n";
+        let (document, ed, _) = crate::sheet::offscreen(
+            src,
+            leaf_core::Format::Markdown,
+            leaf_dioxus::Look::default(),
+            Some((800.0, 600.0)),
+        )
+        .expect("an editor");
+        let finger = |state: ElementState| WindowEvent::PointerButton {
+            device_id: None,
+            state,
+            position: PhysicalPosition::new(10.0, 10.0),
+            primary: true,
+            button: ButtonSource::Touch {
+                finger_id: FingerId::from_raw(0),
+                force: None,
+            },
+            is_macos_activation_click: false,
+        };
+        let tap = Pointer::Tap {
+            at: Target::PastEnd,
+            line: 0,
+            x: 0.0,
+        };
+        let now = || {
+            let d = ed.doc();
+            (d.source.clone(), d.caret)
+        };
+        document.vdom.runtime().in_scope(ScopeId::ROOT, || {
+            // A finger, so the editor hears taps; then a throw, and a finger
+            // landing on the glide.
+            ed.doc().select_range(0, 0);
+            ed.window_event(&finger(ElementState::Pressed));
+            ed.window_event(&finger(ElementState::Released));
+            ed.start_glide(5.0);
+            ed.window_event(&finger(ElementState::Pressed));
+            ed.window_event(&finger(ElementState::Released));
+            let before = now();
+            ed.pointer(tap);
+            assert_eq!(now(), before);
+            // The next tap there is one: to the end.
+            ed.pointer(tap);
+            assert_ne!(now(), before);
+        });
+    }
+
     /// A press on the pages is the editor's own: placed at the byte the
     /// page found, and a second on the same line selects the word, by the
     /// editor's counting.

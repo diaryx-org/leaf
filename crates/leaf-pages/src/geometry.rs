@@ -15,7 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 
-use leaf_core::Doc;
+use leaf_core::{CellSpan, Doc};
 use twig_export::pdf::Glyph;
 
 /// Space around the pages and between them, in CSS pixels.
@@ -136,15 +136,24 @@ pub struct PageBox {
     pub height: f64,
 }
 
+/// A table cell, by where its text begins and its table's source does,
+/// and its row and column in the table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CellId {
+    start: usize,
+    table: usize,
+    row: usize,
+    col: usize,
+}
+
 /// A glyph on a line: its left and its advance, in points, the bytes of the
-/// source it was set from, and the table cell it is in, by where the cell's
-/// text begins.
+/// source it was set from, and the table cell it is in.
 #[derive(Clone, Debug)]
 struct Placed {
     x: f64,
     w: f64,
     src: Range<usize>,
-    cell: Option<usize>,
+    cell: Option<CellId>,
 }
 
 impl Placed {
@@ -194,7 +203,11 @@ impl Line {
                 .iter()
                 .map(|g| Placed {
                     src: to(g.src.start)..to(g.src.end),
-                    cell: g.cell.map(&to),
+                    cell: g.cell.map(|c| CellId {
+                        start: to(c.start),
+                        table: to(c.table),
+                        ..c
+                    }),
                     ..g.clone()
                 })
                 .collect(),
@@ -225,24 +238,11 @@ impl Line {
     /// Typst pads a cell's text, so the gap's last stretch before a cell's
     /// text, up to the padding, is that cell's; the rest is the cell before.
     fn run_at(&self, x: f64) -> &[Placed] {
-        let mut runs = self.runs().peekable();
-        let mut last: &[Placed] = &[];
-        while let Some(run) = runs.next() {
-            let right = run.last().map_or(x, Placed::right);
-            let Some(next) = runs.peek() else {
-                return run;
-            };
-            if x <= right {
-                return run;
-            }
-            let left = next.first().map_or(x, |g| g.x);
-            let pad = ((left - right) / 2.0).min(3.0 * self.space());
-            if x < left - pad {
-                return run;
-            }
-            last = run;
-        }
-        last
+        let runs: Vec<&[Placed]> = self.runs().collect();
+        let spans: Vec<(f64, f64)> = runs.iter().map(|r| span_of(r)).collect();
+        runs.get(pick(&spans, x, self.space()))
+            .copied()
+            .unwrap_or_default()
     }
 
     /// The byte nearest a point `x` along the line: the nearest edge of a
@@ -253,6 +253,31 @@ impl Line {
     fn offset_at(&self, x: f64) -> usize {
         nearest_edge(self.run_at(x), x).unwrap_or_else(|| self.last())
     }
+}
+
+/// The left of the first of `glyphs` and the right of the last.
+fn span_of(glyphs: &[Placed]) -> (f64, f64) {
+    let left = glyphs.first().map_or(0.0, |g| g.x);
+    (left, glyphs.last().map_or(left, Placed::right))
+}
+
+/// Which of `spans`, left to right across a line or a table, a point `x`
+/// is in: the one it is over, else, in the gap between two, the one whose
+/// cell it is in. Typst pads a cell's text, so the gap's last stretch before
+/// a span, up to the padding (three of a line's spaces, `space`), is that
+/// span's cell; the rest is the cell before.
+fn pick(spans: &[(f64, f64)], x: f64, space: f64) -> usize {
+    for (i, w) in spans.windows(2).enumerate() {
+        let (right, left) = (w[0].1, w[1].0);
+        if x <= right {
+            return i;
+        }
+        let pad = ((left - right) / 2.0).min(3.0 * space);
+        if x < left - pad {
+            return i;
+        }
+    }
+    spans.len().saturating_sub(1)
 }
 
 /// The byte of the nearest edge of `glyphs` to a point `x` across them.
@@ -269,36 +294,31 @@ fn nearest_edge(glyphs: &[Placed], x: f64) -> Option<usize> {
     best.map(|(_, at)| at)
 }
 
-/// The cell, of `cells` in source order, a glyph set from `src` is in, by
-/// where the cell's text begins: an empty cell's stand-in, set at its home,
-/// is in it.
-fn cell_of(cells: &[Range<usize>], src: &Range<usize>) -> Option<usize> {
+/// The cell, of `cells` in source order, a glyph set from `src` is in: an
+/// empty cell's stand-in, set at its home, is in it.
+fn cell_of(cells: &[CellSpan], src: &Range<usize>) -> Option<CellId> {
     let i = cells
-        .partition_point(|c| c.start <= src.start)
+        .partition_point(|c| c.text.start <= src.start)
         .checked_sub(1)?;
     let c = &cells[i];
-    (src.start < c.end || c.start == src.start).then_some(c.start)
+    (src.start < c.text.end || c.text.start == src.start).then_some(CellId {
+        start: c.text.start,
+        table: c.table,
+        row: c.row,
+        col: c.col,
+    })
 }
 
 /// A table cell's text on a page, all its lines: the box its glyphs fill,
-/// in the page's points, which a press near it lands in.
+/// in the page's points, which tells a table's columns apart.
 #[derive(Clone, Debug)]
 struct CellBox {
-    cell: usize,
+    cell: CellId,
     page: usize,
     left: f64,
     right: f64,
     top: f64,
     bottom: f64,
-}
-
-impl CellBox {
-    /// How far a point is from the box: none inside it.
-    fn distance(&self, x: f64, y: f64) -> f64 {
-        let dx = (self.left - x).max(x - self.right).max(0.0);
-        let dy = (self.top - y).max(y - self.bottom).max(0.0);
-        dx.hypot(dy)
-    }
 }
 
 /// The pages' glyphs as lines, in reading order: what a caret is placed,
@@ -316,7 +336,7 @@ pub struct Geometry {
 impl Geometry {
     /// The lines of pages `heights` points tall, whose glyphs are `glyphs`,
     /// a document whose table cells' text is `cells` (`Doc::table_cells`).
-    pub fn new(pages: &[(f64, Vec<Glyph>)], cells: &[Range<usize>]) -> Geometry {
+    pub fn new(pages: &[(f64, Vec<Glyph>)], cells: &[CellSpan]) -> Geometry {
         let mut lines = Vec::new();
         let mut tops = Vec::with_capacity(pages.len());
         let mut top = 0.0;
@@ -341,7 +361,7 @@ impl Geometry {
                 };
                 let Some(cell) = first.cell else { continue };
                 let (top, bottom) = (l.baseline - l.ascent, l.baseline + l.descent);
-                match at.get(&(cell, l.page)) {
+                match at.get(&(cell.start, l.page)) {
                     Some(&i) => {
                         let b = &mut cells[i];
                         b.left = b.left.min(first.x);
@@ -350,7 +370,7 @@ impl Geometry {
                         b.bottom = b.bottom.max(bottom);
                     }
                     None => {
-                        at.insert((cell, l.page), cells.len());
+                        at.insert((cell.start, l.page), cells.len());
                         cells.push(CellBox {
                             cell,
                             page: l.page,
@@ -371,7 +391,7 @@ impl Geometry {
     /// first's baseline. Sorted, not searched for, so a tall reflowed page
     /// of thousands of lines is no slower than a sheet. Each glyph knows the
     /// table cell it is in, of the document's `cells`.
-    pub fn lines_of(page: usize, glyphs: &[Glyph], dy: f64, cells: &[Range<usize>]) -> Vec<Line> {
+    pub fn lines_of(page: usize, glyphs: &[Glyph], dy: f64, cells: &[CellSpan]) -> Vec<Line> {
         let mut down: Vec<&Glyph> = glyphs.iter().filter(|g| g.source.is_some()).collect();
         down.sort_by(|a, b| a.baseline.total_cmp(&b.baseline));
         // Each line, and the glyphs on it as they are found.
@@ -547,23 +567,51 @@ impl Geometry {
             line.last()
         } else if i == 0 && y < line.baseline - line.ascent {
             line.first()
-        } else if line.run_at(x).first().is_some_and(|g| g.cell.is_some()) {
-            return self.hit_cell(page, x, y).or(Some((i, line.offset_at(x))));
+        } else if let Some(cell) = line.run_at(x).first().and_then(|g| g.cell) {
+            return self
+                .hit_cell(page, x, y, cell, line.space())
+                .or(Some((i, line.offset_at(x))));
         } else {
             line.offset_at(x)
         };
         Some((i, at))
     }
 
-    /// A press in a table: the cell nearest it on `page`, and the byte on
-    /// that cell's line nearest it.
-    fn hit_cell(&self, page: usize, x: f64, y: f64) -> Option<(usize, usize)> {
-        let cell = self
-            .cells
-            .iter()
-            .filter(|c| c.page == page)
-            .min_by(|a, b| a.distance(x, y).total_cmp(&b.distance(x, y)))?
-            .cell;
+    /// A press in a table, on a line of `cell`'s row: the column it is in,
+    /// by the text of that column's cells in every row of the table on
+    /// `page`, as [`pick`] tells a line's cells apart; then that row's cell
+    /// there, and the byte on that cell's line nearest the press. Never a
+    /// cell of another table, or of another row.
+    fn hit_cell(
+        &self,
+        page: usize,
+        x: f64,
+        y: f64,
+        cell: CellId,
+        space: f64,
+    ) -> Option<(usize, usize)> {
+        let table = || {
+            self.cells
+                .iter()
+                .filter(move |b| b.page == page && b.cell.table == cell.table)
+        };
+        let mut cols: Vec<(usize, f64, f64)> = Vec::new();
+        for b in table() {
+            match cols.iter_mut().find(|c| c.0 == b.cell.col) {
+                Some(c) => {
+                    c.1 = c.1.min(b.left);
+                    c.2 = c.2.max(b.right);
+                }
+                None => cols.push((b.cell.col, b.left, b.right)),
+            }
+        }
+        cols.sort_by_key(|c| c.0);
+        let spans: Vec<(f64, f64)> = cols.iter().map(|c| (c.1, c.2)).collect();
+        let col = cols.get(pick(&spans, x, space))?.0;
+        // A row short of that column keeps the cell pressed.
+        let target = table()
+            .find(|b| b.cell.row == cell.row && b.cell.col == col)
+            .map_or(cell, |b| b.cell);
         let (i, run) = self
             .lines
             .iter()
@@ -572,7 +620,7 @@ impl Geometry {
             .filter_map(|(i, l)| {
                 let run = l
                     .runs()
-                    .find(|r| r.first().is_some_and(|g| g.cell == Some(cell)))?;
+                    .find(|r| r.first().is_some_and(|g| g.cell == Some(target)))?;
                 Some((i, run))
             })
             .min_by(|a, b| {
@@ -764,6 +812,60 @@ mod tests {
         assert_eq!(g.hit(0, 14.0, 18.0), Some((0, 4)), "after b");
         assert_eq!(g.hit(0, 55.0, 18.0), Some((0, 9)), "before c");
         assert_eq!(g.hit(0, 6.0, 18.0), Some((0, 3)), "between a and b");
+    }
+
+    /// A glyph of one point's height and five across, from `src`, on
+    /// `baseline` at `x`.
+    fn at(x: f64, baseline: f64, src: std::ops::Range<usize>) -> Glyph {
+        Glyph {
+            x,
+            baseline,
+            width: 5.0,
+            ascent: 8.0,
+            descent: 2.0,
+            text: "a".into(),
+            source: Some(src),
+        }
+    }
+
+    fn cell(text: std::ops::Range<usize>, table: usize, row: usize, col: usize) -> CellSpan {
+        CellSpan {
+            text,
+            table,
+            row,
+            col,
+        }
+    }
+
+    /// A press under a short cell's text, in a row its neighbour wraps
+    /// tall, stays in its table even with another table's text nearer.
+    #[test]
+    fn a_press_in_a_table_stays_in_it() {
+        let mut glyphs = vec![at(10.0, 20.0, 0..1)];
+        for (i, b) in [20.0, 40.0, 60.0, 80.0, 100.0].into_iter().enumerate() {
+            glyphs.push(at(60.0, b, 2 + i..3 + i));
+        }
+        glyphs.push(at(10.0, 130.0, 20..21));
+        let cells = [
+            cell(0..1, 0, 0, 0),
+            cell(2..7, 0, 0, 1),
+            cell(20..21, 19, 0, 0),
+        ];
+        let g = Geometry::new(&[(200.0, glyphs)], &cells);
+        assert_eq!(g.hit(0, 12.0, 90.0).map(|h| h.1), Some(0));
+        // In the wrapping cell's column, its own text.
+        assert_eq!(g.hit(0, 62.0, 90.0).map(|h| h.1), Some(6));
+    }
+
+    /// A press in the blank of a wide cell, short of the next cell's
+    /// padding, is in the wide cell, by the rule a line's own runs go by.
+    #[test]
+    fn a_press_in_a_wide_cells_blank_is_in_it() {
+        let glyphs = vec![at(10.0, 20.0, 0..1), at(200.0, 20.0, 5..6)];
+        let cells = [cell(0..1, 0, 0, 0), cell(5..6, 0, 0, 1)];
+        let g = Geometry::new(&[(100.0, glyphs)], &cells);
+        assert_eq!(g.hit(0, 150.0, 20.0).map(|h| h.1), Some(1));
+        assert_eq!(g.hit(0, 198.0, 20.0).map(|h| h.1), Some(5));
     }
 
     /// A press below the last page, or between two, lands on the nearest.

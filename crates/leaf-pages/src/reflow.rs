@@ -27,7 +27,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
-use leaf_core::{Format, TopBlock, TopKind};
+use leaf_core::{CellSpan, Format, TopBlock, TopKind};
 use twig_export::pdf::Glyph;
 
 use crate::geometry::{Geometry, Line, Sheet};
@@ -146,7 +146,7 @@ pub fn lay_out(
     blocks: &[TopBlock],
     hole: Option<usize>,
     holes: &[usize],
-    cells: &[Range<usize>],
+    cells: &[CellSpan],
     how: &How,
     known: &HashSet<u128>,
 ) -> Result<Reflowed, String> {
@@ -551,7 +551,7 @@ fn set_chunk(
     chunk: &Chunk,
     source: &str,
     holes: &[usize],
-    cells: &[Range<usize>],
+    cells: &[CellSpan],
     how: &How,
     known: &HashSet<u128>,
 ) -> Result<Set, String> {
