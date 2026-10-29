@@ -86,6 +86,10 @@ struct Set {
     tiles: Vec<twig_export::tiles::Tile>,
     layout: Arc<twig_export::pdf::Layout>,
     lines: Vec<Line>,
+    /// Where each of the chunk's segments was in the document when it was
+    /// set: a chunk kept and used again after an edit above it has the
+    /// same text somewhere else, and its lines are moved there.
+    globals: Vec<Range<usize>>,
     /// Where its context block, and its last own block, begin: the top of
     /// each one's piece, and the first baseline of its text if it has text.
     context_top: Option<(f64, Option<f64>)>,
@@ -222,7 +226,7 @@ pub fn lay_out(
     let mut sent = HashSet::new();
     let mut bottom = 0.0;
     let mut height = 0.0;
-    for (k, ..) in keyed.iter().filter(|(_, c, _)| !c.notes) {
+    for (k, chunk, _) in keyed.iter().filter(|(_, c, _)| !c.notes) {
         let entry = kept.sets.get_mut(k).expect("every chunk set");
         entry.1 = now;
         let set = Arc::clone(&entry.0);
@@ -234,13 +238,13 @@ pub fn lay_out(
                 _ => py + p.last_top.0 - ctx.0,
             };
         }
-        place(&set, y, known, &mut sent, &mut pieces, &mut lines);
+        place(&set, chunk, y, known, &mut sent, &mut pieces, &mut lines);
         bottom = y + set.content_bottom;
         height = y + set.height;
         prev = Some((y, set));
     }
     // The notes, under the text, as the one page sets them.
-    if let Some((k, ..)) = keyed.iter().find(|(_, c, _)| c.notes) {
+    if let Some((k, chunk, _)) = keyed.iter().find(|(_, c, _)| c.notes) {
         let entry = kept.sets.get_mut(k).expect("the notes set");
         entry.1 = now;
         let set = Arc::clone(&entry.0);
@@ -252,7 +256,7 @@ pub fn lay_out(
         if first.is_finite() {
             let gap = f64::from(how.ty.size) * 2.0;
             let y = bottom + gap - first;
-            place(&set, y, known, &mut sent, &mut pieces, &mut lines);
+            place(&set, chunk, y, known, &mut sent, &mut pieces, &mut lines);
             let margin = (height - bottom).max(0.0);
             height = y + set.content_bottom + margin;
         }
@@ -277,11 +281,13 @@ pub fn lay_out(
     })
 }
 
-/// A chunk's pieces and lines, `y` points down the page: a picture sent
-/// for each key the window has not got and is not sent already, the one
-/// made when the chunk was set or, if the window had it then, made now.
+/// A chunk's pieces and lines, `y` points down the page and at the bytes
+/// of the document `chunk` is at now: a picture sent for each key the
+/// window has not got and is not sent already, the one made when the chunk
+/// was set or, if the window had it then, made now.
 fn place(
     set: &Set,
+    chunk: &Chunk,
     y: f64,
     known: &HashSet<u128>,
     sent: &mut HashSet<u128>,
@@ -297,7 +303,21 @@ fn place(
             ..p.clone()
         });
     }
-    lines.extend(set.lines.iter().map(|l| l.shifted(y)));
+    let now: Vec<Range<usize>> = chunk.segments.iter().map(|s| s.global.clone()).collect();
+    if now == set.globals {
+        lines.extend(set.lines.iter().map(|l| l.shifted(y)));
+        return;
+    }
+    // A byte as set, in the segment it was set from, where that segment is
+    // now.
+    let moved = |at: usize| {
+        set.globals
+            .iter()
+            .zip(&now)
+            .find(|(then, _)| then.start <= at && at <= then.end)
+            .map_or(at, |(then, now)| at - then.start + now.start)
+    };
+    lines.extend(set.lines.iter().map(|l| l.moved(y, &moved)));
 }
 
 /// The document's blocks, and the stand-in's line as a block of its own,
@@ -689,6 +709,7 @@ fn set_chunk(
         tiles: drawn,
         layout: Arc::new(layout),
         lines: Geometry::lines_of(0, &glyphs, 0.0),
+        globals: chunk.segments.iter().map(|s| s.global.clone()).collect(),
         context_top,
         last_top,
         content_bottom,
@@ -936,5 +957,41 @@ mod tests {
         };
         assert!(top("A label") < room.top);
         assert!(top("Below") > room.top + room.height);
+    }
+
+    /// A chunk kept after an edit above it is the same text further on:
+    /// its caret is drawn at its own bytes there, not those it had.
+    #[test]
+    fn a_chunk_kept_below_an_edit_is_where_its_text_is_now() {
+        let src = document(80);
+        let _ = lay_out(&src, &blocks(&src), None, &how(), &HashSet::new()).unwrap();
+        let edited = src.replacen("Paragraph 0,", "Paragraph 0, made longer,", 1);
+        let out = lay_out(&edited, &blocks(&edited), None, &how(), &HashSet::new()).unwrap();
+        let left = |w: &str| {
+            let at = edited.find(w).unwrap();
+            out.geometry.caret_box(at, &edited).unwrap().x
+        };
+        // Each paragraph starts at the text's left edge.
+        assert!((left("Paragraph 79,") - left("Paragraph 1,")).abs() < 0.01);
+        assert!((left("Paragraph 40,") - left("Paragraph 1,")).abs() < 0.01);
+    }
+
+    /// Bytes that are no picture Typst draws (a broken file, a BMP) are
+    /// the picture's alt text, not an error over the whole document.
+    #[test]
+    fn a_picture_typst_cannot_draw_is_its_alt() {
+        use crate::typeset::{Found, Supply};
+        let src = "![not really](bad.png)\n\nAfter\n";
+        let mut supply = Supply::default();
+        supply
+            .pictures
+            .insert("bad.png".into(), Found::Bytes(b"BM not a png"[..].into()));
+        let out = lay_out(src, &blocks(src), None, &supplied(supply), &HashSet::new())
+            .expect("the document sets");
+        assert!(
+            out.geometry
+                .caret_box(src.find("not really").unwrap(), src)
+                .is_some()
+        );
     }
 }

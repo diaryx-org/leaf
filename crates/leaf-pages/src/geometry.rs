@@ -165,6 +165,24 @@ impl Line {
         }
     }
 
+    /// This line `dy` points further down its page, each glyph's bytes
+    /// moved where `at` says the first of them is now.
+    pub fn moved(&self, dy: f64, at: &dyn Fn(usize) -> usize) -> Line {
+        let glyphs: Vec<_> = self
+            .glyphs
+            .iter()
+            .map(|(x, w, r)| {
+                let start = at(r.start);
+                (*x, *w, start..start + r.len())
+            })
+            .collect();
+        Line {
+            baseline: self.baseline + dy,
+            glyphs: glyphs.into(),
+            ..self.clone()
+        }
+    }
+
     fn space(&self) -> f64 {
         self.space.unwrap_or(0.22 * (self.ascent + self.descent))
     }

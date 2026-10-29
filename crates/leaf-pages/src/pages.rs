@@ -897,24 +897,58 @@ pub fn gather(
 
 /// Where a picture a host loaded itself is, by the URL it draws it from: in
 /// hand, from a `data:` URL; a file, from a `file:` one. Typst reads no web
-/// address.
+/// address. A `data:` URL is decoded once while the host gives it: the same
+/// bytes in the same hand keep every chunk of the reflowed view that holds
+/// them as it was set ([`Supply::pictures_key`]).
 fn found_at(url: &str) -> Found {
-    if let Some(data) = url.strip_prefix("data:") {
-        let Some((meta, body)) = data.split_once(',') else {
-            return Found::Missing;
+    thread_local! {
+        static DECODED: RefCell<Vec<(String, Found)>> = const { RefCell::new(Vec::new()) };
+    }
+    if !url.starts_with("data:") {
+        return match leaf_dioxus::media_path(url, None) {
+            Some(path) if url.starts_with("file:") || url.starts_with('/') => Found::File(path),
+            _ => Found::Missing,
         };
-        let bytes = if meta.ends_with(";base64") {
-            let clean: String = body.chars().filter(|c| !c.is_whitespace()).collect();
-            base64::engine::general_purpose::STANDARD.decode(clean).ok()
+    }
+    if let Some(found) =
+        DECODED.with_borrow(|d| d.iter().find(|(u, _)| u == url).map(|(_, f)| f.clone()))
+    {
+        return found;
+    }
+    let found = decode_data_url(url)
+        .filter(|b| crate::typeset::settable(b))
+        .map_or(Found::Missing, |b| Found::Bytes(b.into()));
+    DECODED.with_borrow_mut(|d| {
+        // A few pictures a document, not every one a session has seen.
+        if d.len() >= 32 {
+            d.remove(0);
+        }
+        d.push((url.to_owned(), found.clone()));
+    });
+    found
+}
+
+/// A `data:` URL's bytes: base64, or percent-encoded.
+fn decode_data_url(url: &str) -> Option<Vec<u8>> {
+    let (meta, body) = url.strip_prefix("data:")?.split_once(',')?;
+    if meta.ends_with(";base64") {
+        let clean: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        return base64::engine::general_purpose::STANDARD.decode(clean).ok();
+    }
+    let b = body.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = body.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
         } else {
-            Some(body.as_bytes().to_vec())
-        };
-        return bytes.map_or(Found::Missing, |b| Found::Bytes(b.into()));
+            out.push(b[i]);
+            i += 1;
+        }
     }
-    match leaf_dioxus::media_path(url, None) {
-        Some(path) if url.starts_with("file:") || url.starts_with('/') => Found::File(path),
-        _ => Found::Missing,
-    }
+    Some(out)
 }
 
 /// What stands in for the text of a line that has none, where the caret
@@ -1150,6 +1184,8 @@ mod tests {
         assert_eq!(g.line_edge(9, true), Some(14));
     }
 
+    const BOX: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2"></svg>"#;
+
     /// What the host found: the pictures as it reads them, and room under
     /// each directive it draws, at three quarters of a point a pixel; none
     /// for one it does not.
@@ -1159,7 +1195,10 @@ mod tests {
         impl leaf_dioxus::Host for H {
             fn picture(&self, _doc: &Doc, dest: &str) -> Option<leaf_dioxus::Picture> {
                 (dest == "web.png").then(|| leaf_dioxus::Picture {
-                    url: "data:image/png;base64,AAEC".into(),
+                    url: format!(
+                        "data:image/svg+xml;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(BOX)
+                    ),
                     size: (1.0, 1.0),
                 })
             }
@@ -1172,7 +1211,7 @@ mod tests {
         let (supply, asked) = gather(&mut d, &H, false);
         assert_eq!(
             supply.pictures["web.png"],
-            Found::Bytes(vec![0, 1, 2].into())
+            Found::Bytes(BOX.as_bytes().into())
         );
         assert_eq!(
             supply.pictures["/abs/b.png"],
@@ -1185,5 +1224,27 @@ mod tests {
         assert_eq!(asked.len(), 1);
         assert_eq!(asked[0].0, at..at + "::card[Hi]".len());
         assert_eq!(asked[0].1.label, "Hi");
+    }
+
+    /// A host's `data:` picture, percent-encoded or base64, is its bytes,
+    /// in the same hand each time it is given; one that is no picture Typst
+    /// draws is none.
+    #[test]
+    fn a_hosts_data_url_is_decoded_once() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2"></svg>"#;
+        let encoded: String = svg
+            .bytes()
+            .map(|b| match b {
+                b'<' | b'>' | b'"' | b' ' | b'/' | b'=' | b':' | b'.' => format!("%{b:02X}"),
+                _ => (b as char).to_string(),
+            })
+            .collect();
+        let url = format!("data:image/svg+xml,{encoded}");
+        let (Found::Bytes(a), Found::Bytes(b)) = (found_at(&url), found_at(&url)) else {
+            panic!("a picture");
+        };
+        assert_eq!(&*a, svg.as_bytes());
+        assert!(Arc::ptr_eq(&a, &b), "decoded once");
+        assert_eq!(found_at("data:image/png;base64,AAEC"), Found::Missing);
     }
 }

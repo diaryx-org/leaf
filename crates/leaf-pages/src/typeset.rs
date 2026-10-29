@@ -148,8 +148,8 @@ impl twig_export::Hooks for Supplied<'_> {
         };
         match found {
             Found::File(p) => read(&p).map_or(Picture::Missing, Picture::Bytes),
-            Found::Bytes(b) => Picture::Bytes(b),
-            Found::Missing => Picture::Missing,
+            Found::Bytes(b) if settable(&b) => Picture::Bytes(b),
+            Found::Bytes(_) | Found::Missing => Picture::Missing,
         }
     }
 
@@ -159,7 +159,21 @@ impl twig_export::Hooks for Supplied<'_> {
     }
 }
 
-/// The file at `path`, read once while it is unchanged.
+/// Whether `bytes` are a picture Typst draws: a PNG, JPEG, GIF or WebP
+/// whose header reads, or an SVG. Typst refuses any other as an error that
+/// fails the whole document, where a picture it cannot draw is to be its
+/// alt text.
+pub fn settable(bytes: &[u8]) -> bool {
+    let raster = bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+        || bytes.starts_with(b"GIF8")
+        || (bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"));
+    let text = !raster && bytes.iter().take(512).all(|&b| b != 0);
+    (raster || text) && leaf_dioxus::picture_size(bytes).is_some()
+}
+
+/// The file at `path`, read once while it is unchanged, if it is a picture
+/// Typst draws ([`settable`]).
 fn read(path: &Path) -> Option<Arc<[u8]>> {
     type Read = HashMap<PathBuf, (std::time::SystemTime, u64, Arc<[u8]>)>;
     static READ: OnceLock<Mutex<Read>> = OnceLock::new();
@@ -171,7 +185,7 @@ fn read(path: &Path) -> Option<Arc<[u8]>> {
     {
         return Some(Arc::clone(b));
     }
-    let bytes: Arc<[u8]> = std::fs::read(path).ok()?.into();
+    let bytes: Arc<[u8]> = std::fs::read(path).ok().filter(|b| settable(b))?.into();
     read.lock()
         .ok()?
         .insert(path.to_path_buf(), (stamp.0, stamp.1, Arc::clone(&bytes)));
