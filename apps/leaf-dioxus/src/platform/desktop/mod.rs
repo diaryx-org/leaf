@@ -138,6 +138,29 @@ pub fn open_panel() {
     );
 }
 
+/// Insert ▸ Image…: the system's open dialog for one picture, from
+/// `folder`; `then` the picture chosen, on the handler's turn, if `page` is
+/// still open. Nothing if the dialog is cancelled.
+pub fn pick_picture(page: &Page, folder: Option<PathBuf>, then: fn(&Page, PathBuf)) {
+    let id = page.window.id();
+    spawn_dialog(
+        move || {
+            let mut d = rfd::AsyncFileDialog::new()
+                .set_title("Insert Image")
+                .add_filter("Images", crate::insert::PICTURES);
+            if let Some(f) = folder {
+                d = d.set_directory(f);
+            }
+            async move { d.pick_file().await.map(|h| h.path().to_path_buf()) }
+        },
+        move |path| {
+            if let (Some(path), Some(page)) = (path, app::page(id)) {
+                then(&page, path);
+            }
+        },
+    );
+}
+
 /// The system's save dialog, suggesting `name` in `folder` for a file of
 /// `kind` (its name and extensions); `then` the path chosen, on the
 /// handler's turn. Nothing if the dialog is cancelled.

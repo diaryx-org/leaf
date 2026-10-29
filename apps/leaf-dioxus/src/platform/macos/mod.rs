@@ -299,6 +299,56 @@ pub fn new_document(format: Format) {
     }
 }
 
+/// Insert ▸ Image…: an open sheet on `page`'s window for one picture,
+/// from `folder`; `then` the picture chosen, on the handler's turn, if the
+/// page is still open. Nothing if the sheet is cancelled.
+pub fn pick_picture(
+    page: &crate::page::Page,
+    folder: Option<std::path::PathBuf>,
+    then: fn(&crate::page::Page, std::path::PathBuf),
+) {
+    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::{NSArray, NSURL};
+    let id = page.window.id();
+    let Some(window) = ns_window(&*page.window) else {
+        return;
+    };
+    later(move || {
+        let panel = NSOpenPanel::openPanel(mtm());
+        let types: Vec<_> = crate::insert::PICTURES
+            .iter()
+            .map(|e| NSString::from_str(e))
+            .collect();
+        // `allowedContentTypes` would want UniformTypeIdentifiers; the
+        // extensions say the same.
+        #[allow(deprecated)]
+        panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&types)));
+        panel.setCanChooseFiles(true);
+        panel.setCanChooseDirectories(false);
+        panel.setAllowsMultipleSelection(false);
+        if let Some(f) = folder {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(&f.to_string_lossy()));
+            panel.setDirectoryURL(Some(&url));
+        }
+        let chosen = panel.clone();
+        let done = block2::RcBlock::new(move |response| {
+            if response != NSModalResponseOK {
+                return;
+            }
+            let Some(path) = chosen.URL().and_then(|u| u.path()) else {
+                return;
+            };
+            let path = std::path::PathBuf::from(path.to_string());
+            crate::app::on_turn(move || {
+                if let Some(page) = crate::app::page(id) {
+                    then(&page, path);
+                }
+            });
+        });
+        panel.beginSheetModalForWindow_completionHandler(&window, &done);
+    });
+}
+
 /// File ▸ Open…: the document controller's Open panel. The menu bar's Open
 /// is the system's own item; this is for the commands that name it.
 pub fn open_panel() {
