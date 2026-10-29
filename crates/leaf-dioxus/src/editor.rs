@@ -893,6 +893,12 @@ impl Editor {
         }
     }
 
+    /// Whoever embeds the editor: what draws a view of a directive, and
+    /// finds a picture, wherever the document is drawn.
+    pub fn host(&self) -> Rc<dyn Host> {
+        Rc::clone(&self.st.host)
+    }
+
     /// The document, as the editor and any host that shares it hold it.
     pub fn shared_doc(&self) -> Rc<RefCell<Doc>> {
         self.st.doc.clone()

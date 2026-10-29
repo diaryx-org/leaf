@@ -26,7 +26,7 @@ use std::time::Duration;
 use base64::Engine;
 use leaf_core::Format;
 use leaf_pages::pdf::{Paper, Sheet, Type};
-use leaf_pages::typeset::{Job, Laid, Tiled};
+use leaf_pages::typeset::{Found, Job, Laid, Supply, Tiled};
 use serde_json::{Value, json};
 use twig_export::pdf::{Glyph, Page};
 
@@ -247,7 +247,56 @@ fn job_json(job: &Job) -> Value {
             Sheet::Paper(p) => json!({ "paper": [p.width, p.height, p.margin] }),
             Sheet::Reflow { width } => json!({ "reflow": width }),
         },
+        "supply": supply_json(&job.supply),
     })
+}
+
+/// What the host found, on the wire: each picture's file, its bytes, or
+/// none; each room by where its directive starts.
+fn supply_json(supply: &Supply) -> Value {
+    let pictures: serde_json::Map<String, Value> = supply
+        .pictures
+        .iter()
+        .map(|(dest, found)| {
+            let v = match found {
+                Found::File(p) => json!({ "file": p.to_string_lossy() }),
+                Found::Bytes(b) => {
+                    json!({ "bytes": base64::engine::general_purpose::STANDARD.encode(b) })
+                }
+                Found::Missing => Value::Null,
+            };
+            (dest.clone(), v)
+        })
+        .collect();
+    let rooms: Vec<Value> = supply.rooms.iter().map(|(at, h)| json!([at, h])).collect();
+    json!({ "pictures": pictures, "rooms": rooms })
+}
+
+fn supply_of(v: &Value) -> Supply {
+    let pictures = v["pictures"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(dest, found)| {
+            let found = if let Some(p) = found["file"].as_str() {
+                Found::File(PathBuf::from(p))
+            } else if let Some(b) = found["bytes"].as_str()
+                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b)
+            {
+                Found::Bytes(bytes.into())
+            } else {
+                Found::Missing
+            };
+            (dest.clone(), found)
+        })
+        .collect();
+    let rooms = v["rooms"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some((r[0].as_u64()? as usize, r[1].as_f64()? as f32)))
+        .collect();
+    Supply { pictures, rooms }
 }
 
 fn job_of(v: &Value) -> Result<Job, String> {
@@ -276,6 +325,7 @@ fn job_of(v: &Value) -> Result<Job, String> {
             dark: v["dark"].as_bool().unwrap_or_default(),
         },
         sheet,
+        supply: std::sync::Arc::new(supply_of(&v["supply"])),
     })
 }
 
@@ -406,8 +456,18 @@ mod tests {
                 dark: true,
             },
             sheet: Sheet::Reflow { width: 500.0 },
+            supply: std::sync::Arc::new(Supply {
+                pictures: [
+                    ("a.png".to_owned(), Found::File("/a/a.png".into())),
+                    ("b.png".to_owned(), Found::Bytes(vec![1, 2, 3].into())),
+                    ("c.png".to_owned(), Found::Missing),
+                ]
+                .into(),
+                rooms: [(7, 30.0)].into(),
+            }),
         };
         let back = job_of(&job_json(&job)).unwrap();
+        assert_eq!(back.supply, job.supply);
         assert_eq!(back.source, job.source);
         assert_eq!(back.format, job.format);
         assert_eq!(back.path, job.path);

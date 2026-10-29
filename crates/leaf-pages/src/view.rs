@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
-use leaf_dioxus::{Pointer, Target, press_mode};
+use leaf_dioxus::{Directive, Pointer, Target, press_mode};
 
 use crate::Pages;
 use crate::geometry::{Geometry, PAD, PageBox, Piece, Sheet, Spread};
@@ -55,6 +55,9 @@ pub struct PagesView {
     /// What is drawn on them: the view draws those near the screen.
     pub pieces: Vec<Piece>,
     pub geometry: Rc<Geometry>,
+    /// The host's views of its directives, each over the room the pages
+    /// left for it.
+    pub cards: Vec<Card>,
     /// Why the document as it stands would not set, over the pages it last
     /// set as.
     pub error: Option<String>,
@@ -64,6 +67,14 @@ pub struct PagesView {
     /// pages laid out at the view's width ([`Spread`]) are the content at
     /// zoom 1.
     pub scroll: unit::scroll::Scroll,
+}
+
+/// A view the host draws of a directive ([`leaf_dioxus::Host::draw_directive`]),
+/// where the pages left room for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Card {
+    pub at: PageBox,
+    pub directive: Directive,
 }
 
 impl PagesView {
@@ -135,6 +146,8 @@ pub const CSS: &str = "
 .pages .sheet { position: absolute; display: block; background: white;
                 box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3); }
 .pages .piece { position: absolute; display: block; }
+.pages .card { position: absolute; overflow: hidden; }
+.pages .card > div { transform-origin: 0 0; }
 .pages .caret { position: absolute; width: 1.5px; background: #1d4ed8; }
 .pages .selected { position: absolute; background: rgba(37, 99, 235, 0.25); }
 .pages .note { position: absolute; left: 16px; right: 16px; top: 8px; z-index: 1;
@@ -240,6 +253,14 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
         (x * z, y * z, w * z, h * z)
     };
     let caret = v.caret.map(|b| at(&b));
+    // The host draws a card at the editor's scale, a CSS pixel to three
+    // quarters of a point; on the pages it is scaled as they are.
+    let card_scale = s * z * 0.75;
+    let cards: Vec<_> = v
+        .cards
+        .iter()
+        .map(|c| (at(&c.at), c.directive.clone()))
+        .collect();
     let selection: Vec<_> = v.selection.iter().map(at).collect();
     let (ox, oy) = (v.scroll.x, v.scroll.y);
     let (total_w, total_h) = (width * z, spread.height * z);
@@ -286,7 +307,7 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
         }
         Some((Target::Offset(at), line))
     };
-    let (press, drag) = (pages.clone(), pages.clone());
+    let (press, drag, host) = (pages.clone(), pages.clone(), pages.clone());
     rsx! {
         div { class: if v.reflow { "pages reflow" } else { "pages" }, role: "region",
             aria_label: if v.reflow { "Document" } else if v.editing { "Pages" } else { "PDF preview" },
@@ -368,6 +389,18 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
                 for (k, x, y, w, _, url) in shown {
                     img { key: "i{k}", class: "piece", src: "{url}", alt: "",
                         style: "left: {x}px; top: {y}px; width: {w}px",
+                    }
+                }
+                // Over the room the pages left: the host's to press in, not
+                // the text's.
+                for (i, ((x, y, w, h), directive)) in cards.into_iter().enumerate() {
+                    div { key: "c{i}", class: "card",
+                        style: "left: {x}px; top: {y}px; width: {w}px; height: {h}px",
+                        onmousedown: move |e: MouseEvent| e.stop_propagation(),
+                        onclick: move |e: MouseEvent| e.stop_propagation(),
+                        div { style: "width: {w / card_scale}px; height: {h / card_scale}px; transform: scale({card_scale})",
+                            {host.draw(&directive)}
+                        }
                     }
                 }
                 for (i, (x, y, w, h)) in selection.into_iter().enumerate() {

@@ -192,25 +192,29 @@ impl Line {
         }
     }
 
-    /// This line `dy` points further down its page, each byte of the source
-    /// it names moved to `to(byte)`: a part of the document set earlier,
-    /// whose text has moved since.
-    pub fn moved(&self, dy: f64, to: impl Fn(usize) -> usize) -> Line {
-        Line {
-            baseline: self.baseline + dy,
-            glyphs: self
-                .glyphs
-                .iter()
-                .map(|g| Placed {
-                    src: to(g.src.start)..to(g.src.end),
+    /// This line `dy` points further down its page, each glyph's bytes
+    /// moved where `at` says the first of them is now, and the cell each is
+    /// in with them.
+    pub fn moved(&self, dy: f64, at: &dyn Fn(usize) -> usize) -> Line {
+        let glyphs: Vec<_> = self
+            .glyphs
+            .iter()
+            .map(|g| {
+                let start = at(g.src.start);
+                Placed {
+                    src: start..start + g.src.len(),
                     cell: g.cell.map(|c| CellId {
-                        start: to(c.start),
-                        table: to(c.table),
+                        start: at(c.start),
+                        table: at(c.table),
                         ..c
                     }),
                     ..g.clone()
-                })
-                .collect(),
+                }
+            })
+            .collect();
+        Line {
+            baseline: self.baseline + dy,
+            glyphs: glyphs.into(),
             ..self.clone()
         }
     }
@@ -549,12 +553,27 @@ impl Geometry {
         boxes
     }
 
+    /// The box of the object set from `span` (a picture, a host's room:
+    /// twig-export's object glyph), if it is on the pages.
+    pub fn object(&self, span: Range<usize>) -> Option<PageBox> {
+        self.lines.iter().find_map(|l| {
+            let g = l.glyphs.iter().find(|g| g.src == span)?;
+            Some(PageBox {
+                page: l.page,
+                x: g.x,
+                top: l.baseline - l.ascent,
+                width: g.w,
+                height: l.ascent + l.descent,
+            })
+        })
+    }
+
     /// The line a press at (`x`, `y`) on `page`, in its points, lands on,
     /// and the byte: the line whose glyphs' height it is within, else the
     /// nearest. Below the document's last line is its end, and above its
     /// first line its start, wherever across. A press in a table lands in
-    /// the cell whose text it is nearest, on that cell's nearest line: in a
-    /// row whose cells wrap to more lines than another's, a press under the
+    /// its row's cell in the column it is in ([`Self::hit_cell`]): in a row
+    /// whose cells wrap to more lines than another's, a press under the
     /// shorter cell's text is in that cell, not the one beside it.
     pub fn hit(&self, page: usize, x: f64, y: f64) -> Option<(usize, usize)> {
         let (i, line) = self

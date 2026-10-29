@@ -708,6 +708,7 @@ impl Page {
         match c {
             Command::Link => crate::context::prompt_link(self),
             Command::InstallTemplate => crate::templates::prompt_install(self),
+            Command::InsertImage => crate::insert::image(self),
             Command::ExportPdf => platform::print::export(self),
             Command::PageView => {
                 if let Some(p) = self.pages() {

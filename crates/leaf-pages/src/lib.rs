@@ -50,9 +50,9 @@ mod view;
 mod bench;
 
 pub use geometry::{Geometry, PageBox, PageLines, Piece, Sheet, Spread};
-pub use pages::{Mode, Pages, STAND_IN, data_url};
+pub use pages::{Mode, Pages, STAND_IN, data_url, gather};
 pub use templates::{Entry, Template};
-pub use view::{CSS, PagesPane, PagesView, ZOOM_STEP, ZOOMS};
+pub use view::{CSS, Card, PagesPane, PagesView, ZOOM_STEP, ZOOMS};
 
 use leaf_dioxus::{Editor, Pointer};
 
