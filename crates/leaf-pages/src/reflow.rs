@@ -75,7 +75,16 @@ struct Chunk {
 /// A chunk as set: its pieces and lines, down its own page, and where its
 /// first and last own blocks begin.
 struct Set {
+    /// Its pieces, each with the picture made when it was set if the window
+    /// asking had none of its key.
     pieces: Vec<Tiled>,
+    /// What each piece is drawn from, and the layout it is in: a chunk kept
+    /// is used again by a window that no longer has the picture of a piece
+    /// it had when the chunk was set (an edit undone, the stand-in moved
+    /// off a line and back, a width gone back to), and the picture is made
+    /// then.
+    tiles: Vec<twig_export::tiles::Tile>,
+    layout: Arc<twig_export::pdf::Layout>,
     lines: Vec<Line>,
     /// Where its context block, and its last own block, begin: the top of
     /// each one's piece, and the first baseline of its text if it has text.
@@ -207,6 +216,8 @@ pub fn lay_out(
     let mut lines = Vec::new();
     let mut y = 0.0;
     let mut prev: Option<(f64, Arc<Set>)> = None;
+    // The keys whose pictures are on their way, once each.
+    let mut sent = HashSet::new();
     let mut bottom = 0.0;
     let mut height = 0.0;
     for (k, ..) in keyed.iter().filter(|(_, c, _)| !c.notes) {
@@ -221,7 +232,7 @@ pub fn lay_out(
                 _ => py + p.last_top.0 - ctx.0,
             };
         }
-        place(&set, y, known, &mut pieces, &mut lines);
+        place(&set, y, known, &mut sent, &mut pieces, &mut lines);
         bottom = y + set.content_bottom;
         height = y + set.height;
         prev = Some((y, set));
@@ -239,7 +250,7 @@ pub fn lay_out(
         if first.is_finite() {
             let gap = f64::from(how.ty.size) * 2.0;
             let y = bottom + gap - first;
-            place(&set, y, known, &mut pieces, &mut lines);
+            place(&set, y, known, &mut sent, &mut pieces, &mut lines);
             let margin = (height - bottom).max(0.0);
             height = y + set.content_bottom + margin;
         }
@@ -264,17 +275,23 @@ pub fn lay_out(
     })
 }
 
-/// A chunk's pieces and lines, `y` points down the page: pictures sent only
-/// for keys the window has not got.
-fn place(set: &Set, y: f64, known: &HashSet<u128>, pieces: &mut Vec<Tiled>, lines: &mut Vec<Line>) {
-    for p in &set.pieces {
+/// A chunk's pieces and lines, `y` points down the page: a picture sent
+/// for each key the window has not got and is not sent already, the one
+/// made when the chunk was set or, if the window had it then, made now.
+fn place(
+    set: &Set,
+    y: f64,
+    known: &HashSet<u128>,
+    sent: &mut HashSet<u128>,
+    pieces: &mut Vec<Tiled>,
+    lines: &mut Vec<Line>,
+) {
+    for (p, t) in set.pieces.iter().zip(&set.tiles) {
+        let svg = (!known.contains(&p.key) && sent.insert(p.key))
+            .then(|| p.svg.clone().unwrap_or_else(|| set.layout.tile_svg(t)));
         pieces.push(Tiled {
             top: p.top + y,
-            svg: if known.contains(&p.key) {
-                None
-            } else {
-                p.svg.clone()
-            },
+            svg,
             ..p.clone()
         });
     }
@@ -582,6 +599,7 @@ fn set_chunk(
     let mut last_top: f64 = 0.0;
     let mut content_bottom: f64 = 0.0;
     let mut pieces = Vec::new();
+    let mut drawn = Vec::new();
     let mut made = HashSet::new();
     // A piece's role, by the glyphs it draws: a footnote's note is drawn in
     // the notes' area, a piece whose block is where the note is called, but
@@ -625,6 +643,7 @@ fn set_chunk(
             key: t.key,
             svg: (!known.contains(&t.key) && made.insert(t.key)).then(|| layout.tile_svg(t)),
         });
+        drawn.push(t.clone());
     }
     let height = page.as_ref().map_or(0.0, |p| p.height);
     let glyphs: Vec<Glyph> = page
@@ -651,6 +670,8 @@ fn set_chunk(
     let last_top = (last_top, last_line);
     Ok(Set {
         pieces,
+        tiles: drawn,
+        layout: Arc::new(layout),
         lines: Geometry::lines_of(0, &glyphs, 0.0),
         context_top,
         last_top,
@@ -791,5 +812,33 @@ mod tests {
         let second = lay_out(&edited, &b, None, &how(), &known).unwrap();
         let drawn = second.pieces.iter().filter(|p| p.svg.is_some()).count();
         assert_eq!(drawn, 1, "one piece drawn anew");
+    }
+
+    /// A chunk kept from an earlier setting, used again once the window has
+    /// let go of a picture it had when the chunk was set, sends that picture
+    /// again: an edit in one block, then one in the next, undone, draws
+    /// every block.
+    #[test]
+    fn a_chunk_used_again_sends_the_pictures_the_window_let_go() {
+        let src = "Undone first, a block of its own.\n\nUndone second, the block below it.\n";
+        let step = |src: &str, known: &HashSet<u128>| {
+            let out = lay_out(src, &blocks(src), None, &how(), known).unwrap();
+            let missing: Vec<u128> = out
+                .pieces
+                .iter()
+                .filter(|p| p.svg.is_none() && !known.contains(&p.key))
+                .map(|p| p.key)
+                .collect();
+            assert!(missing.is_empty(), "{src:?}: no picture for {missing:x?}");
+            out.pieces.iter().map(|p| p.key).collect::<HashSet<u128>>()
+        };
+        let known = step(src, &HashSet::new());
+        let first = src.replace("first,", "first, edited,");
+        let known = step(&first, &known);
+        let both = first.replace("second,", "second, edited,");
+        let known = step(&both, &known);
+        // Undone: the chunk set for `first`, whose second block's picture
+        // the window had then, and has not now.
+        step(&first, &known);
     }
 }
