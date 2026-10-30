@@ -107,6 +107,11 @@ blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
 stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
 debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
 accesskit_xplat = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+# The SVG renderer blitz-paint draws an SVG <img> with, from the fork
+# (patches/anyrender_svg/PATCH.md there): an SVG's raster image decoded once,
+# not on every frame, and turned by its EXIF orientation. Each piece of the
+# Reflow and Pages views is an SVG holding its pictures.
+anyrender_svg = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
 # winit's macOS backend, at the version dioxus-native pins, patched (its
 # PATCH.md, in the Blitz fork's patches/): its text input client answered no
 # questions about the text around the caret, so macOS's press-and-hold
