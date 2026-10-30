@@ -270,23 +270,33 @@ impl Pages {
                 now.bottom,
                 now.area_top,
                 now.floor,
+                now.under,
                 now.editing,
                 now.reflow,
-            ) != (left, pane, bottom, area.top, floor, mode.edits(), reflow)
-            {
+            ) != (
+                left,
+                pane,
+                bottom,
+                area.top,
+                floor,
+                area.under,
+                mode.edits(),
+                reflow,
+            ) {
                 let mut v = v.write();
                 v.left = left;
                 v.width = pane;
                 v.bottom = bottom;
                 v.area_top = area.top;
                 v.floor = floor;
+                v.under = area.under;
                 v.editing = mode.edits();
                 v.reflow = reflow;
                 if reflow {
                     v.scroll.zoom = 1.0;
                 }
             }
-            if v.peek().scroll.view != (pane, v.peek().height()) {
+            if !v.peek().fitted() {
                 v.write().fit();
             }
         });

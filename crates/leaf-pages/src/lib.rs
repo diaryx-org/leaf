@@ -64,6 +64,11 @@ pub struct Area {
     pub top: f64,
     pub width: f64,
     pub height: f64,
+    /// How far up from the area's bottom the host's own bars float over it
+    /// (a phone's dock of glass): the pages are drawn on under them, and
+    /// scroll far enough that their last line comes clear of them, and the
+    /// scroll bars stop above them.
+    pub under: f64,
 }
 
 /// What the pages are set in, as the host's display choices say.
