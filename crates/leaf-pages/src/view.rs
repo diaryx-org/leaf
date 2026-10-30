@@ -45,6 +45,9 @@ pub struct PagesView {
     /// How far down from the area's top the view starts: the editor's
     /// find bar, while it is open over the page view.
     pub inset: f64,
+    /// How far up from the view's bottom the host's bars float over it
+    /// ([`crate::Area::under`]).
+    pub under: f64,
     /// Whether it is the page view, which is the editor's place, rather than
     /// the preview beside it.
     pub editing: bool,
@@ -101,6 +104,7 @@ impl PagesView {
         let s = &mut self.scroll;
         s.view = (self.width, height);
         s.content = (self.width, spread.height);
+        s.slack = self.under;
         s.zooms = ZOOMS;
         s.zoom = s.zoom.clamp(ZOOMS.0, ZOOMS.1);
         s.clamp();
@@ -120,7 +124,20 @@ impl PagesView {
     pub fn reveal(&mut self, b: PageBox) {
         let rect = self.content_box(&b);
         let margin = 3.0 * rect.3 * self.scroll.zoom;
-        self.scroll.reveal(rect, margin);
+        // In the part of the view the host's bars leave clear.
+        let mut clear = self.scroll;
+        clear.view.1 = (clear.view.1 - self.under).max(0.0);
+        clear.reveal(rect, margin);
+        (self.scroll.x, self.scroll.y) = (clear.x, clear.y);
+    }
+
+    /// The scroll as the scroll bars draw it: the view down to the host's
+    /// bars, which the pages run on under.
+    pub fn bar_scroll(&self) -> unit::scroll::Scroll {
+        let mut s = self.scroll;
+        s.view.1 = (s.view.1 - self.under).max(0.0);
+        s.slack = (s.slack - self.under).max(0.0);
+        s
     }
 }
 
@@ -263,6 +280,8 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
         .collect();
     let selection: Vec<_> = v.selection.iter().map(at).collect();
     let (ox, oy) = (v.scroll.x, v.scroll.y);
+    // The scroll bars stop above the host's bars over the view's foot.
+    let bar = v.bar_scroll();
     let (total_w, total_h) = (width * z, spread.height * z);
     let screen = v.scroll.view.1.max(1.0);
     let (from, to) = (oy - screen, oy + 2.0 * screen);
@@ -357,7 +376,7 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
             }
             // Down the right edge, and along the bottom once the pages are
             // zoomed wider than the view.
-            unit::ScrollBar { axis: unit::Axis::Vertical, scroll: v.scroll,
+            unit::ScrollBar { axis: unit::Axis::Vertical, scroll: bar,
                 label: "Pages".to_string(),
                 onscroll: move |y| {
                     let mut v = view.write();
@@ -365,7 +384,8 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
                     v.scroll.clamp();
                 },
             }
-            unit::ScrollBar { axis: unit::Axis::Horizontal, scroll: v.scroll,
+            unit::ScrollBar { axis: unit::Axis::Horizontal, scroll: bar,
+                at: (v.under > 0.0).then(|| (0.0, bar.view.1 - unit::components::scrollbar::BAR)),
                 label: "Pages across".to_string(),
                 onscroll: move |x| {
                     let mut v = view.write();
@@ -486,5 +506,44 @@ mod tests {
         let z = v.scroll.zoom;
         assert!((0.0..=640.0).contains(&vx), "{vx}");
         assert!(vy >= 0.0 && vy + h * z <= 500.0, "{vy}");
+    }
+
+    /// Under a host's bars over the view's foot, the pages scroll on until
+    /// their end is above the bars, a caret is brought into view above them,
+    /// and the scroll bar stops at them, at the same place for the same
+    /// scroll.
+    #[test]
+    fn the_pages_scroll_clear_of_the_hosts_bars() {
+        let sheet = Sheet {
+            width: 600.0,
+            height: 800.0,
+        };
+        let mut v = PagesView {
+            width: 640.0,
+            sheets: vec![sheet.clone(), sheet],
+            under: 80.0,
+            ..PagesView::default()
+        };
+        v.floor = 500.0;
+        v.fit();
+        let end = v.spread().height * v.scroll.zoom;
+        let (_, (_, last)) = v.scroll.range();
+        assert_eq!(last + 500.0 - 80.0, end);
+        let caret = PageBox {
+            page: 1,
+            x: 300.0,
+            top: 700.0,
+            width: 0.0,
+            height: 12.0,
+        };
+        v.reveal(caret);
+        let (x, y, _, h) = v.content_box(&caret);
+        let (_, vy) = v.scroll.to_view(x, y);
+        assert!(vy + h * v.scroll.zoom <= 500.0 - 80.0, "{vy}");
+        let bar = v.bar_scroll();
+        assert_eq!(bar.view.1, 420.0);
+        assert_eq!(bar.range(), v.scroll.range());
+        let thumb = bar.thumb(unit::Axis::Vertical).unwrap();
+        assert!(thumb.0 + thumb.1 <= 420.0, "{thumb:?}");
     }
 }

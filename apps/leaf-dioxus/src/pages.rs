@@ -52,6 +52,7 @@ impl leaf_pages::Host for Desk {
             top,
             width,
             height: height - top,
+            under: 0.0,
         }
     }
 
