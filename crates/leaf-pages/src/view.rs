@@ -96,6 +96,13 @@ impl PagesView {
         Spread::of(&self.sheets, self.width, self.reflow)
     }
 
+    /// Whether the scroll is up to date with the view's size and the host's
+    /// bars over it: a bar shown or hidden over an area of the same size
+    /// changes how far the pages scroll.
+    pub fn fitted(&self) -> bool {
+        self.scroll.view == (self.width, self.height()) && self.scroll.slack == self.under
+    }
+
     /// Bring the scroll up to date with the view's size and the pages', and
     /// keep it within them.
     pub fn fit(&mut self) {
@@ -124,11 +131,12 @@ impl PagesView {
     pub fn reveal(&mut self, b: PageBox) {
         let rect = self.content_box(&b);
         let margin = 3.0 * rect.3 * self.scroll.zoom;
-        // In the part of the view the host's bars leave clear.
-        let mut clear = self.scroll;
-        clear.view.1 = (clear.view.1 - self.under).max(0.0);
+        // In the part of the view the host's bars leave clear, over the
+        // same range.
+        let mut clear = self.bar_scroll();
         clear.reveal(rect, margin);
         (self.scroll.x, self.scroll.y) = (clear.x, clear.y);
+        self.scroll.clamp();
     }
 
     /// The scroll as the scroll bars draw it: the view down to the host's
@@ -545,5 +553,58 @@ mod tests {
         assert_eq!(bar.range(), v.scroll.range());
         let thumb = bar.thumb(unit::Axis::Vertical).unwrap();
         assert!(thumb.0 + thumb.1 <= 420.0, "{thumb:?}");
+
+        // A caret on the last line is brought up clear of the bars, and the
+        // scroll stays within its range, the bars' inset counted once:
+        // nothing left for the next fit to pull it back by.
+        let last_line = PageBox {
+            page: 1,
+            x: 300.0,
+            top: 800.0 - 12.0,
+            width: 0.0,
+            height: 12.0,
+        };
+        v.reveal(last_line);
+        let ((_, _), (_, most)) = v.scroll.range();
+        assert!(v.scroll.y <= most, "{} past {most}", v.scroll.y);
+        let (x, y, _, h) = v.content_box(&last_line);
+        let (_, vy) = v.scroll.to_view(x, y);
+        assert!(vy + h * v.scroll.zoom <= 500.0 - 80.0, "{vy}");
+        let before = v.scroll.y;
+        v.fit();
+        assert_eq!(v.scroll.y, before);
+    }
+
+    /// A bar shown or hidden over the view, its size the same, leaves the
+    /// scroll out of date until it is fitted again: then the pages scroll as
+    /// far as the bar asks, and no further once it is gone.
+    #[test]
+    fn a_bar_over_the_view_changes_how_far_it_scrolls() {
+        let sheet = Sheet {
+            width: 600.0,
+            height: 800.0,
+        };
+        let mut v = PagesView {
+            width: 640.0,
+            sheets: vec![sheet],
+            ..PagesView::default()
+        };
+        v.floor = 500.0;
+        v.fit();
+        assert!(v.fitted());
+        let (_, (_, bare)) = v.scroll.range();
+        v.under = 80.0;
+        assert!(!v.fitted());
+        v.fit();
+        assert!(v.fitted());
+        let (_, (_, barred)) = v.scroll.range();
+        assert_eq!(barred, bare + 80.0);
+        v.scroll.y = barred;
+        v.under = 0.0;
+        assert!(!v.fitted());
+        v.fit();
+        let (_, (_, after)) = v.scroll.range();
+        assert_eq!(after, bare);
+        assert_eq!(v.scroll.y, bare);
     }
 }

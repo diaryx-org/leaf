@@ -296,7 +296,7 @@ impl Pages {
                     v.scroll.zoom = 1.0;
                 }
             }
-            if v.peek().scroll.view != (pane, v.peek().height()) {
+            if !v.peek().fitted() {
                 v.write().fit();
             }
         });
