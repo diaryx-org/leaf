@@ -393,7 +393,7 @@ pub fn PagesPane(props: PagesPaneProps) -> Element {
                 },
             }
             unit::ScrollBar { axis: unit::Axis::Horizontal, scroll: bar,
-                at: (v.under > 0.0).then(|| (0.0, bar.view.1 - unit::components::scrollbar::BAR)),
+                at: (v.under > 0.0).then_some((0.0, bar.view.1 - unit::components::scrollbar::BAR)),
                 label: "Pages across".to_string(),
                 onscroll: move |x| {
                     let mut v = view.write();

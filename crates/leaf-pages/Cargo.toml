@@ -48,6 +48,13 @@ twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "mai
 # The pieces' pictures, as `data:` URLs for Blitz to draw (`pages.rs`), and
 # read back in order (`net.rs`).
 base64 = "0.22"
+# A document's pictures as the views set them (`shown.rs`): a large one
+# decoded, turned upright and scaled down once, and written again as a JPEG
+# or a PNG with its density; the density read where Typst reads it, from the
+# EXIF. The versions Typst (through twig-export) takes already.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+png = "0.18"
+kamadak-exif = "0.6"
 # A network provider's interface, for the in-order loader (`net.rs`): the
 # version dioxus-native's Blitz uses.
 blitz-traits = "=0.3.0-beta.4"

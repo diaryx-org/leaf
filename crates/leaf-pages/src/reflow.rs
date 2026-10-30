@@ -602,7 +602,7 @@ fn set_chunk(
     cfg.document.raw_preamble = Some(preamble);
     let tree = leaf_core::parse_tree(&text, how.format).map_err(|e| e.to_string())?;
     let global = |at: usize| to_global(at).map(|(g, ..)| g);
-    let hooks = how.supply.hooks(Some(&how.root), &global);
+    let hooks = how.supply.hooks(Some(&how.root), &global, true);
     let words =
         twig_export::render_words_with(tree, &text, &cfg, &hooks).map_err(|e| format!("{e:#}"))?;
     let layout = crate::typeset::here_words(&words, &how.root)?;
@@ -959,6 +959,61 @@ mod tests {
         assert!(top("Above") < pic.top);
         assert!(top("gone away") > pic.top + pic.height);
         assert!(top("Below") > top("gone away"));
+    }
+
+    /// A photo from a phone's camera, held upright, is set upright, in its
+    /// piece as the copy a screen draws: no longer than `shown::LONGEST`,
+    /// and with no orientation left to turn it by again.
+    #[test]
+    fn a_phones_photo_is_set_upright_and_scaled_down() {
+        use crate::typeset::{Found, Supply};
+        use base64::Engine;
+        use image::ImageDecoder;
+        let src = "Above\n\n![a photo](photo.jpg)\n\nBelow\n";
+        let photo = crate::shown::tests::jpeg_turned(4032, 3024, 6);
+        let mut supply = Supply::default();
+        supply
+            .pictures
+            .insert("photo.jpg".into(), Found::Bytes(photo.into()));
+        let out = lay_out(
+            src,
+            &blocks(src),
+            None,
+            &[],
+            &[],
+            &supplied(supply),
+            &HashSet::new(),
+        )
+        .unwrap();
+        let start = src.find("![a photo]").unwrap();
+        let end = start + "![a photo](photo.jpg)".len();
+        let pic = out.geometry.object(start..end).expect("the photo is set");
+        assert!(
+            (pic.height / pic.width - 4.0 / 3.0).abs() < 0.01,
+            "upright, three by four: {pic:?}"
+        );
+        let jpeg = out
+            .pieces
+            .iter()
+            .filter_map(|t| t.svg.as_deref())
+            .find_map(|svg| {
+                let at = svg.find("data:image/jpeg;base64,")? + "data:image/jpeg;base64,".len();
+                let len = svg[at..].find('"')?;
+                base64::engine::general_purpose::STANDARD
+                    .decode(&svg[at..at + len])
+                    .ok()
+            })
+            .expect("a piece draws the photo");
+        let mut decoder = image::ImageReader::new(std::io::Cursor::new(&jpeg))
+            .with_guessed_format()
+            .unwrap()
+            .into_decoder()
+            .unwrap();
+        assert_eq!(decoder.dimensions(), (1536, 2048));
+        assert_eq!(
+            decoder.orientation().unwrap(),
+            image::metadata::Orientation::NoTransforms
+        );
     }
 
     /// The room a host asks for under a directive is left there, the

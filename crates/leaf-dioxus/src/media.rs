@@ -184,27 +184,45 @@ fn measure(path: &Path) -> Option<(f32, f32)> {
     if svg {
         return svg_size(&std::fs::read(path).ok()?);
     }
-    let (w, h) = image::ImageReader::open(path)
+    let reader = image::ImageReader::open(path)
         .ok()?
         .with_guessed_format()
-        .ok()?
-        .into_dimensions()
         .ok()?;
-    Some((w as f32, h as f32))
+    upright_size(reader)
+}
+
+/// A raster picture's size as it is drawn: turned as its EXIF orientation
+/// says, as Blitz draws it, so a phone's portrait photo is portrait.
+fn upright_size<R: std::io::BufRead + std::io::Seek>(
+    reader: image::ImageReader<R>,
+) -> Option<(f32, f32)> {
+    use image::ImageDecoder;
+    use image::metadata::Orientation;
+    let mut decoder = reader.into_decoder().ok()?;
+    let (w, h) = decoder.dimensions();
+    let turned = matches!(
+        decoder.orientation(),
+        Ok(Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH)
+    );
+    Some(if turned {
+        (h as f32, w as f32)
+    } else {
+        (w as f32, h as f32)
+    })
 }
 
 /// The natural size of the picture in `bytes`, in any format the editor
 /// draws, SVG included: for a host that loads a picture itself
 /// ([`Host::picture`](crate::Host::picture)) and has no file to name.
 pub fn picture_size(bytes: &[u8]) -> Option<(f32, f32)> {
-    let raster = image::ImageReader::new(std::io::Cursor::new(bytes))
+    image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()
-        .and_then(|r| r.into_dimensions().ok());
-    match raster {
-        Some((w, h)) => Some((w as f32, h as f32)),
-        None => svg_size(bytes),
-    }
+        .and_then(upright_size)
+        .or_else(|| svg_size(bytes))
 }
 
 fn svg_size(data: &[u8]) -> Option<(f32, f32)> {
@@ -625,6 +643,33 @@ mod tests {
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"></svg>"#;
         assert_eq!(picture_size(svg), Some((64.0, 48.0)));
         assert_eq!(picture_size(b"not a picture"), None);
+    }
+
+    /// A phone's camera held upright writes its sensor's 32 by 16 and an
+    /// EXIF orientation of 6, a quarter turn: the picture is 16 by 32.
+    #[test]
+    fn a_phones_portrait_photo_is_measured_upright() {
+        let mut jpeg = Vec::new();
+        image::RgbImage::new(32, 16)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        // APP1: "Exif", a little-endian TIFF header, and one IFD of one
+        // entry, the orientation (0x0112), a SHORT, 6.
+        let app1 = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let mut photo = vec![0xFF, 0xD8, 0xFF, 0xE1];
+        photo.extend_from_slice(&(app1.len() as u16 + 2).to_be_bytes());
+        photo.extend_from_slice(app1);
+        photo.extend_from_slice(&jpeg[2..]);
+        assert_eq!(picture_size(&photo), Some((16.0, 32.0)));
+        let dir = std::env::temp_dir().join(format!("agent-leaf-photo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("photo.jpg");
+        std::fs::write(&file, &photo).unwrap();
+        assert_eq!(measure(&file), Some((16.0, 32.0)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
