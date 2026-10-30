@@ -102,16 +102,20 @@ pub enum Found {
 impl Supply {
     /// The host's answers as twig-export asks for them, for a document in
     /// the folder `dir`, whose bytes as set are at `global` in the
-    /// document's (a chunk's, a source with a stand-in in it).
+    /// document's (a chunk's, a source with a stand-in in it). Set to be
+    /// `shown` in a window, its pictures are the copies a screen draws
+    /// ([`crate::shown`]); else, for a PDF, the originals.
     pub fn hooks<'a>(
         &'a self,
         dir: Option<&'a Path>,
         global: &'a dyn Fn(usize) -> Option<usize>,
+        shown: bool,
     ) -> impl twig_export::Hooks + 'a {
         Supplied {
             supply: self,
             dir,
             global,
+            shown,
         }
     }
 
@@ -134,6 +138,7 @@ struct Supplied<'a> {
     supply: &'a Supply,
     dir: Option<&'a Path>,
     global: &'a dyn Fn(usize) -> Option<usize>,
+    shown: bool,
 }
 
 impl twig_export::Hooks for Supplied<'_> {
@@ -146,10 +151,15 @@ impl twig_export::Hooks for Supplied<'_> {
                 None => Found::Missing,
             },
         };
-        match found {
-            Found::File(p) => read(&p).map_or(Picture::Missing, Picture::Bytes),
-            Found::Bytes(b) if settable(&b) => Picture::Bytes(b),
-            Found::Bytes(_) | Found::Missing => Picture::Missing,
+        let bytes = match found {
+            Found::File(p) => read(&p),
+            Found::Bytes(b) if settable(&b) => Some(b),
+            Found::Bytes(_) | Found::Missing => None,
+        };
+        match bytes {
+            Some(b) if self.shown => Picture::Bytes(crate::shown::shown(&b)),
+            Some(b) => Picture::Bytes(b),
+            None => Picture::Missing,
         }
     }
 
@@ -210,12 +220,12 @@ pub fn pdf(job: &Job) -> Result<Vec<u8>, String> {
 
 /// `job` laid out in this process, whatever its template.
 pub fn layout_here(job: &Job, known: &HashSet<u128>) -> Result<Laid, String> {
-    here(job).map(|l| laid(&l, known))
+    here(job, true).map(|l| laid(&l, known))
 }
 
 /// `job` as a PDF, set in this process, whatever its template.
 pub fn pdf_here(job: &Job) -> Result<Vec<u8>, String> {
-    here(job)?.pdf().map_err(|e| format!("{e:#}"))
+    here(job, false)?.pdf().map_err(|e| format!("{e:#}"))
 }
 
 /// Check, in this process, that the template `key` sets a sample in each
@@ -249,13 +259,14 @@ fn typesetter() -> &'static Typesetter {
     })
 }
 
-/// `job` laid out in this process.
-pub fn here(job: &Job) -> Result<Layout, String> {
+/// `job` laid out in this process, to be `shown` in a window or, if not,
+/// for a PDF ([`Supply::hooks`]).
+pub fn here(job: &Job, shown: bool) -> Result<Layout, String> {
     let tree = leaf_core::parse_tree(&job.source, job.format).map_err(|e| e.to_string())?;
     let cfg = crate::pdf::config(&job.ty, job.sheet);
     let hooks = job
         .supply
-        .hooks(job.path.as_deref().and_then(Path::parent), &Some);
+        .hooks(job.path.as_deref().and_then(Path::parent), &Some, shown);
     let words = twig_export::render_words_with(tree, &job.source, &cfg, &hooks)
         .map_err(|e| format!("{e:#}"))?;
     here_words(&words, root(job.path.as_deref()))

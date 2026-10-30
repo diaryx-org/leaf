@@ -20,7 +20,8 @@
 //!   [`reflow`]: the reflowed view set a chunk at a time; [`pdf`] and
 //!   [`typeset`]: the document set on paper or reflowed, as a PDF or as
 //!   pieces; [`templates`]: what it is set in; [`net`]: the pieces' pictures
-//!   loaded in order.
+//!   loaded in order; [`shown`]: a document's pictures, scaled down and
+//!   upright, as the views set them.
 //!
 //! A host mounts it so:
 //!
@@ -42,6 +43,7 @@ pub mod net;
 mod pages;
 pub mod pdf;
 pub mod reflow;
+pub mod shown;
 pub mod templates;
 pub mod typeset;
 mod view;
