@@ -114,6 +114,10 @@ pub struct Differs {
 /// rasterisers' smoothing of the same edge comes to.
 const EDGE: u8 = 96;
 
+/// How far a channel of a blended edge pixel may stray past the colours it
+/// lies between: rounding, and a JPEG's own noise.
+const BLEND: u8 = 8;
+
 /// Where `a` and `b`, the same size, differ: a pixel of one that is far
 /// from every pixel of the other at and around it. Two rasterisers may put
 /// the edge of a picture or a rule on neighbouring pixels; a line set a
@@ -125,14 +129,32 @@ pub fn differ(a: &Drawn, b: &Drawn) -> Differs {
         [d.rgba[i], d.rgba[i + 1], d.rgba[i + 2]]
     };
     let near = |p: [u8; 3], q: [u8; 3]| p.iter().zip(&q).all(|(x, y)| x.abs_diff(*y) <= EDGE);
+    // A pixel is alone when no pixel of the other at and around it is near
+    // it, and it is no blend of them either: an edge one rasteriser covers
+    // a part of a pixel and the other the whole of it (a picture set at a
+    // fraction of a pixel) is a mix of the colours on either side.
     let alone = |one: &Drawn, other: &Drawn, x: i64, y: i64| {
         let p = at(one, x, y);
-        !(-1..=1).any(|dy| {
-            (-1..=1).any(|dx| {
+        let (mut lo, mut hi) = ([u8::MAX; 3], [u8::MIN; 3]);
+        for dy in -1..=1 {
+            for dx in -1..=1 {
                 let (nx, ny) = (x + dx, y + dy);
-                (0..w).contains(&nx) && (0..h).contains(&ny) && near(p, at(other, nx, ny))
-            })
-        })
+                if !((0..w).contains(&nx) && (0..h).contains(&ny)) {
+                    continue;
+                }
+                let q = at(other, nx, ny);
+                if near(p, q) {
+                    return false;
+                }
+                for c in 0..3 {
+                    lo[c] = lo[c].min(q[c]);
+                    hi[c] = hi[c].max(q[c]);
+                }
+            }
+        }
+        let between = (0..3)
+            .all(|c| lo[c].saturating_sub(BLEND) <= p[c] && p[c] <= hi[c].saturating_add(BLEND));
+        !between
     };
     let mut d = Differs::default();
     let mut bx = (i64::MAX, i64::MAX, 0, 0);
@@ -291,7 +313,11 @@ pub fn documents() -> Vec<(&'static str, String)> {
 /// A folder holding the documents' pictures: a small PNG, and a JPEG
 /// larger than the views draw ([`crate::shown::LONGEST`]).
 pub fn pictures() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("leaf-parity-{}", std::process::id()));
+    // A folder of its own for each call: tests run side by side, and one
+    // writing the pictures while another reads them reads half a picture.
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("leaf-parity-{}-{call}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let small = image::RgbImage::from_fn(120, 80, |x, y| {
         image::Rgb([(x * 2) as u8, (y * 3) as u8, 160])

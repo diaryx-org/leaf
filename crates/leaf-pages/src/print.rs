@@ -47,34 +47,65 @@ pub fn on_paper(choices: &Choices) -> (Type, Paper) {
 /// (through `host`; without one, beside the document), and the room the page
 /// view leaves under each card the host draws, so that every line and every
 /// page break falls where it falls on the screen. In each room, the card as
-/// the host prints it ([`leaf_dioxus::Host::print_directive`]), as wide as
-/// the text and as tall as the room.
+/// the host prints it ([`leaf_dioxus::Host::print_directive`]), as wide and
+/// as tall as the room is set.
 pub fn job(d: &mut Doc, host: Option<&dyn leaf_dioxus::Host>, choices: &Choices) -> Job {
     let (ty, paper) = on_paper(choices);
-    let supply = match host {
-        Some(host) => {
-            let (mut supply, asked) = crate::gather(d, host, ty.dark);
-            let width = paper.width - 2.0 * paper.margin;
-            for (at, directive) in asked {
-                let Some(&height) = supply.rooms.get(&at.start) else {
-                    continue;
-                };
-                if let Some(card) = host.print_directive(d, &directive, width, height) {
-                    supply.drawings.insert(at.start, card);
-                }
-            }
-            supply
-        }
-        None => Supply::default(),
+    let (supply, asked) = match host {
+        Some(host) => crate::gather(d, host, ty.dark),
+        None => (Supply::default(), Vec::new()),
     };
-    Job {
+    let mut job = Job {
         source: d.source.clone(),
         format: d.format,
         path: Some(d.path.clone()),
         ty,
         sheet: Sheet::Paper(paper),
         supply: Arc::new(supply),
+    };
+    let Some(host) = host.filter(|_| !asked.is_empty()) else {
+        return job;
+    };
+    // A room is as wide as the block it is under: narrower in a list or a
+    // quote than the page's text. Set once to find each room's width, so
+    // the host draws its card at the size the page view draws it.
+    let widths = room_widths(&job);
+    let mut supply = (*job.supply).clone();
+    for (at, directive) in asked {
+        let Some(&height) = supply.rooms.get(&at.start) else {
+            continue;
+        };
+        let width = widths
+            .get(&at.start)
+            .copied()
+            .unwrap_or(paper.width - 2.0 * paper.margin);
+        if let Some(card) = host.print_directive(d, &directive, width, height) {
+            supply.drawings.insert(at.start, card);
+        }
     }
+    job.supply = Arc::new(supply);
+    job
+}
+
+/// The width each room in `job` is set at, in points, by the byte of the
+/// source its directive starts at: its object's on the page. Empty if the
+/// document will not set.
+fn room_widths(job: &Job) -> std::collections::HashMap<usize, f32> {
+    let Ok(laid) = crate::typeset::layout(job, &Default::default()) else {
+        return Default::default();
+    };
+    laid.pages
+        .iter()
+        .flat_map(|p| &p.glyphs)
+        .filter(|g| g.text == twig_export::pdf::OBJECT)
+        .filter_map(|g| {
+            let at = g.source.as_ref()?.start;
+            job.supply
+                .rooms
+                .contains_key(&at)
+                .then_some((at, g.width as f32))
+        })
+        .collect()
 }
 
 /// The document `d` as a PDF, set as the page view sets it ([`job`]).
@@ -129,9 +160,17 @@ mod tests {
     }
 
     /// A host that draws a card 66 pixels tall under every `::page`, and
-    /// prints `card` in it.
+    /// prints `card` in it, keeping the size each card was asked at.
     struct Carding {
         card: Option<&'static str>,
+        asked: std::cell::RefCell<Vec<(f32, f32)>>,
+    }
+
+    fn carding(card: Option<&'static str>) -> Carding {
+        Carding {
+            card,
+            asked: Default::default(),
+        }
     }
 
     impl leaf_dioxus::Host for Carding {
@@ -146,7 +185,7 @@ mod tests {
             width: f32,
             height: f32,
         ) -> Option<Arc<[u8]>> {
-            assert_eq!((width, height), (595.0 - 144.0, 49.5));
+            self.asked.borrow_mut().push((width, height));
             self.card.map(|c| Arc::from(c.as_bytes()))
         }
     }
@@ -158,8 +197,23 @@ mod tests {
         const CARD: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="451pt" height="49.5pt"><rect width="451" height="49.5" fill="none" stroke="black"/></svg>"#;
         let source = "Before.\n\n::page{src=\"Other.md\"}\n\nAfter.\n";
         let mut d = Doc::from_source(source.into(), leaf_core::Format::Markdown).unwrap();
-        let blank = job(&mut d, Some(&Carding { card: None }), &choices(16.0));
-        let carded = job(&mut d, Some(&Carding { card: Some(CARD) }), &choices(16.0));
+        let blank = job(&mut d, Some(&carding(None)), &choices(16.0));
+        let host = carding(Some(CARD));
+        let carded = job(&mut d, Some(&host), &choices(16.0));
+        let asked = host.asked.borrow().clone();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].1, 49.5);
+        let laid = crate::typeset::layout(&carded, &Default::default()).unwrap();
+        let room = laid
+            .pages
+            .iter()
+            .flat_map(|p| &p.glyphs)
+            .find(|g| g.text == twig_export::pdf::OBJECT)
+            .unwrap();
+        assert!(
+            (asked[0].0 - room.width as f32).abs() < 0.01,
+            "as wide as its room: {asked:?} {room:?}"
+        );
         assert_eq!(blank.supply.rooms, carded.supply.rooms);
         assert_eq!(
             blank.supply.rooms.values().copied().collect::<Vec<_>>(),
@@ -172,6 +226,38 @@ mod tests {
             crate::typeset::pdf(&carded).unwrap(),
         );
         assert_ne!(blank, carded, "the card is drawn");
+    }
+
+    /// A card under a directive in a quote is drawn as wide as the room
+    /// there, narrower than the page's text, as the page view draws it.
+    #[test]
+    fn a_card_is_as_wide_as_its_room() {
+        let width = |source: &str| {
+            let mut d = Doc::from_source(source.into(), leaf_core::Format::Markdown).unwrap();
+            let host = carding(None);
+            let job = job(&mut d, Some(&host), &choices(16.0));
+            let asked = host.asked.borrow().clone();
+            (job, asked)
+        };
+        let (_, plain) = width("::page{src=\"Other.md\"}\n");
+        let (job, asked) = width("> Quoted.\n>\n> ::page{src=\"Other.md\"}\n\nAfter.\n");
+        assert_eq!(job.supply.rooms.len(), 1, "a room in the quote");
+        assert_eq!(asked.len(), 1);
+        let laid = crate::typeset::layout(&job, &Default::default()).unwrap();
+        let object = laid
+            .pages
+            .iter()
+            .flat_map(|p| &p.glyphs)
+            .find(|g| g.text == twig_export::pdf::OBJECT)
+            .unwrap();
+        assert!(
+            asked[0].0 < plain[0].0 - 1.0,
+            "narrower: {asked:?} {plain:?}"
+        );
+        assert!(
+            (asked[0].0 - object.width as f32).abs() < 0.01,
+            "{asked:?} {object:?}"
+        );
     }
 
     #[test]
