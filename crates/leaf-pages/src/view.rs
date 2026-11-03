@@ -54,6 +54,9 @@ pub struct PagesView {
     /// Whether the page is reflowed to the view: drawn at its true size, on
     /// the editor's own ground, with no desk round it.
     pub reflow: bool,
+    /// Reflowed, the page's width, centred in the view
+    /// ([`crate::Area::column`]).
+    pub column: Option<f64>,
     pub sheets: Vec<Sheet>,
     /// What is drawn on them: the view draws those near the screen.
     pub pieces: Vec<Piece>,
@@ -89,6 +92,15 @@ impl PagesView {
     /// The view's top in the window: the area's, under the find bar.
     pub fn top(&self) -> f64 {
         self.area_top + self.inset
+    }
+
+    /// How wide the reflowed page is set: the column, no wider than the
+    /// view.
+    pub fn page_width(&self) -> f64 {
+        match self.column {
+            Some(c) if c > 0.0 => c.min(self.width),
+            _ => self.width,
+        }
     }
 
     /// The pages placed down the view.

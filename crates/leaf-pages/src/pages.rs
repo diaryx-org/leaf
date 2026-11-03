@@ -273,6 +273,7 @@ impl Pages {
                 now.under,
                 now.editing,
                 now.reflow,
+                now.column,
             ) != (
                 left,
                 pane,
@@ -282,6 +283,7 @@ impl Pages {
                 area.under,
                 mode.edits(),
                 reflow,
+                area.column,
             ) {
                 let mut v = v.write();
                 v.left = left;
@@ -292,6 +294,7 @@ impl Pages {
                 v.under = area.under;
                 v.editing = mode.edits();
                 v.reflow = reflow;
+                v.column = area.column;
                 if reflow {
                     v.scroll.zoom = 1.0;
                 }
@@ -397,9 +400,9 @@ impl Pages {
             dark: false,
         };
         let (ty, sheet) = if self.mode() == Mode::Reflow {
-            // The view's width, in points; the reader's size at the window's
+            // The page's width, in points; the reader's size at the window's
             // zoom, as the editor's; light ink in a dark window.
-            let width = self.peek(|v| v.width);
+            let width = self.peek(|v| v.page_width());
             if width <= 0.0 {
                 return;
             }

@@ -71,6 +71,10 @@ pub struct Area {
     /// scroll far enough that their last line comes clear of them, and the
     /// scroll bars stop above them.
     pub under: f64,
+    /// Reflowed, how wide the page is set, centred in the area: a column
+    /// narrower than the window, whose scroll bar is still at the area's
+    /// right edge. None, or wider than the area, is the area's own width.
+    pub column: Option<f64>,
 }
 
 /// What the pages are set in, as the host's display choices say.

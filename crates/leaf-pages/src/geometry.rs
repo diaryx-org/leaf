@@ -57,20 +57,23 @@ pub struct Spread {
 }
 
 impl Spread {
-    /// Reflowed, the one page is the view's own width, drawn at its true
-    /// size (a point is 4/3 of a CSS pixel) from the view's top left.
+    /// Reflowed, the one page is drawn at its true size (a point is 4/3 of
+    /// a CSS pixel) from the view's top, centred across it: as wide as the
+    /// view, or as the column it was set to inside it.
     pub fn of(sheets: &[Sheet], width: f64, reflow: bool) -> Spread {
         if reflow {
             let scale = 4.0 / 3.0;
             let mut tops = Vec::with_capacity(sheets.len());
+            let mut lefts = Vec::with_capacity(sheets.len());
             let mut y = 0.0;
             for s in sheets {
                 tops.push(y);
+                lefts.push(((width - s.width * scale) / 2.0).max(0.0).round());
                 y += s.height * scale;
             }
             return Spread {
                 scale,
-                lefts: vec![0.0; sheets.len()],
+                lefts,
                 tops,
                 height: y,
             };
@@ -911,6 +914,23 @@ mod tests {
             reflowed.nearest(&sheets[..1], 10.0, 9999.0).unwrap().2,
             100.0
         );
+    }
+
+    /// Reflowed to a column narrower than the view, the page is centred in
+    /// it, and a press lands on the page where it is drawn.
+    #[test]
+    fn a_reflowed_column_is_centred_in_the_view() {
+        let sheets = vec![Sheet {
+            width: 300.0,
+            height: 600.0,
+        }];
+        // 300 points is 400 CSS pixels, in a view 1000 wide.
+        let spread = Spread::of(&sheets, 1000.0, true);
+        assert_eq!(spread.lefts, vec![300.0]);
+        let (_, px, _) = spread.nearest(&sheets, 300.0 + 40.0, 10.0).unwrap();
+        assert_eq!(px, 30.0);
+        // As wide as the view, it starts at its left.
+        assert_eq!(Spread::of(&sheets, 400.0, true).lefts, vec![0.0]);
     }
 
     /// Through an edit, a byte before it is where it was, one after it is
