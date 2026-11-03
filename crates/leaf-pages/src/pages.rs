@@ -27,7 +27,7 @@ use twig_export::pdf::Glyph;
 
 use crate::Host;
 use crate::geometry::{Geometry, PageLines, Piece, Sheet};
-use crate::pdf::{Paper, Type};
+use crate::pdf::Type;
 use crate::typeset::{Found, Supply};
 use crate::view::{Card, PagesView, ZOOM_STEP};
 
@@ -162,6 +162,19 @@ impl Pages {
         }
         let n = self.peek(|v| v.sheets.len());
         (n > 0).then_some(n)
+    }
+
+    /// The document as a PDF, set as the page view sets it, in the host's
+    /// choices now, whatever view is shown ([`crate::print`]): what a
+    /// host's Export as PDF and Print write. `Err` without an editor, while
+    /// it has the document borrowed, or if Typst will not set it.
+    pub fn print(&self) -> Result<Vec<u8>, String> {
+        let choices = self.host.choices();
+        let host = self.host.editor().map(|ed| ed.host());
+        let job = self
+            .with_doc(|d| crate::print::job(d, host.as_deref(), &choices))
+            .ok_or("the document is busy")?;
+        crate::typeset::pdf(&job)
     }
 
     /// The pane's view, as it is made.
@@ -394,11 +407,9 @@ impl Pages {
             return;
         }
         let choices = self.host.choices();
-        let paged = Type {
-            template: choices.template.clone(),
-            size: choices.size * 0.75,
-            dark: false,
-        };
+        // On paper as Export as PDF sets it (`print.rs`), the one place
+        // both are told.
+        let (paged, paper) = crate::print::on_paper(&choices);
         let (ty, sheet) = if self.mode() == Mode::Reflow {
             // The page's width, in points; the reader's size at the window's
             // zoom, as the editor's; light ink in a dark window.
@@ -418,12 +429,6 @@ impl Pages {
                 },
             )
         } else {
-            let (width, height) = choices.paper;
-            let paper = Paper {
-                width,
-                height,
-                margin: 72.0,
-            };
             (paged, crate::pdf::Sheet::Paper(paper))
         };
         // Reflowed, in a built-in template, a chunk at a time (`reflow.rs`):
@@ -795,17 +800,27 @@ fn set(
     }
     // Set with the stand-in, a room is asked for by where its directive is
     // in that source.
-    let supply = match s.hole {
-        Some(h) => Arc::new(Supply {
+    // Every stand-in before it moves it: the caret's, and each empty
+    // table cell's.
+    let supply = if holes.is_empty() {
+        Arc::clone(&s.supply)
+    } else {
+        let moved = |at: usize| at + STAND_IN.len() * holes.iter().filter(|&&h| h <= at).count();
+        Arc::new(Supply {
             pictures: s.supply.pictures.clone(),
             rooms: s
                 .supply
                 .rooms
                 .iter()
-                .map(|(&at, &room)| (if at >= h { at + STAND_IN.len() } else { at }, room))
+                .map(|(&at, &room)| (moved(at), room))
                 .collect(),
-        }),
-        None => Arc::clone(&s.supply),
+            drawings: s
+                .supply
+                .drawings
+                .iter()
+                .map(|(&at, d)| (moved(at), d.clone()))
+                .collect(),
+        })
     };
     let layout = crate::pdf::layout(
         &set_from,
@@ -1431,6 +1446,48 @@ mod tests {
         assert_eq!(asked.len(), 1);
         assert_eq!(asked[0].0, at..at + "::card[Hi]".len());
         assert_eq!(asked[0].1.label, "Hi");
+    }
+
+    /// A room is left after a table with an empty cell, as before it: the
+    /// cell's stand-in moves the directive's bytes, and its room with them.
+    #[test]
+    fn a_room_after_an_empty_cell_is_left() {
+        let src = "| a | b |\n|---|---|\n| c |   |\n\n::card[Hi]\n\nAfter.\n";
+        let mut d = Doc::from_source(src.to_owned(), Format::Markdown).unwrap();
+        let cells = d.table_cells();
+        assert!(cells.iter().any(|c| c.text.is_empty()), "an empty cell");
+        let at = src.find("::card").unwrap();
+        let after = src.find("After").unwrap();
+        let below = |rooms: &[(usize, f32)]| {
+            let setting = Setting {
+                revision: 0,
+                hole: None,
+                format: Format::Markdown,
+                path: PathBuf::from("/tmp/page.md"),
+                ty: Type {
+                    template: crate::Template::default(),
+                    size: 12.0,
+                    dark: false,
+                },
+                sheet: crate::pdf::Sheet::Paper(crate::pdf::Paper {
+                    width: 612.0,
+                    height: 792.0,
+                    margin: 72.0,
+                }),
+                supply: Arc::new(Supply {
+                    rooms: rooms.iter().copied().collect(),
+                    ..Supply::default()
+                }),
+            };
+            let (_, set) = set(src.to_owned(), &setting, None, &cells, &HashSet::new());
+            set.expect("pages")
+                .geometry
+                .caret_box(after, src)
+                .expect("After")
+                .top
+        };
+        let (without, with) = (below(&[]), below(&[(at, 100.0)]));
+        assert!(with - without > 90.0, "{without} then {with}");
     }
 
     /// A host's `data:` picture, percent-encoded or base64, is its bytes,

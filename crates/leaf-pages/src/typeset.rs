@@ -86,6 +86,10 @@ pub struct Supply {
     /// The room to leave under each directive the host draws, in points,
     /// by the byte of the source the directive starts at.
     pub rooms: BTreeMap<usize, f32>,
+    /// What to draw in a room, by the same byte, where the host draws its
+    /// card on paper ([`leaf_dioxus::Host::print_directive`]): a picture's
+    /// file. Only a PDF asks: on the screen the host draws in the room.
+    pub drawings: BTreeMap<usize, Arc<[u8]>>,
 }
 
 /// Where a picture is.
@@ -166,6 +170,11 @@ impl twig_export::Hooks for Supplied<'_> {
     fn room(&self, at: usize) -> Option<f64> {
         let at = (self.global)(at)?;
         self.supply.rooms.get(&at).map(|&h| f64::from(h))
+    }
+
+    fn room_drawing(&self, at: usize) -> Option<Arc<[u8]>> {
+        let at = (self.global)(at)?;
+        self.supply.drawings.get(&at).cloned()
     }
 }
 
