@@ -800,23 +800,27 @@ fn set(
     }
     // Set with the stand-in, a room is asked for by where its directive is
     // in that source.
-    let supply = match s.hole {
-        Some(h) => Arc::new(Supply {
+    // Every stand-in before it moves it: the caret's, and each empty
+    // table cell's.
+    let supply = if holes.is_empty() {
+        Arc::clone(&s.supply)
+    } else {
+        let moved = |at: usize| at + STAND_IN.len() * holes.iter().filter(|&&h| h <= at).count();
+        Arc::new(Supply {
             pictures: s.supply.pictures.clone(),
             rooms: s
                 .supply
                 .rooms
                 .iter()
-                .map(|(&at, &room)| (if at >= h { at + STAND_IN.len() } else { at }, room))
+                .map(|(&at, &room)| (moved(at), room))
                 .collect(),
             drawings: s
                 .supply
                 .drawings
                 .iter()
-                .map(|(&at, d)| (if at >= h { at + STAND_IN.len() } else { at }, d.clone()))
+                .map(|(&at, d)| (moved(at), d.clone()))
                 .collect(),
-        }),
-        None => Arc::clone(&s.supply),
+        })
     };
     let layout = crate::pdf::layout(
         &set_from,
@@ -1442,6 +1446,48 @@ mod tests {
         assert_eq!(asked.len(), 1);
         assert_eq!(asked[0].0, at..at + "::card[Hi]".len());
         assert_eq!(asked[0].1.label, "Hi");
+    }
+
+    /// A room is left after a table with an empty cell, as before it: the
+    /// cell's stand-in moves the directive's bytes, and its room with them.
+    #[test]
+    fn a_room_after_an_empty_cell_is_left() {
+        let src = "| a | b |\n|---|---|\n| c |   |\n\n::card[Hi]\n\nAfter.\n";
+        let mut d = Doc::from_source(src.to_owned(), Format::Markdown).unwrap();
+        let cells = d.table_cells();
+        assert!(cells.iter().any(|c| c.text.is_empty()), "an empty cell");
+        let at = src.find("::card").unwrap();
+        let after = src.find("After").unwrap();
+        let below = |rooms: &[(usize, f32)]| {
+            let setting = Setting {
+                revision: 0,
+                hole: None,
+                format: Format::Markdown,
+                path: PathBuf::from("/tmp/page.md"),
+                ty: Type {
+                    template: crate::Template::default(),
+                    size: 12.0,
+                    dark: false,
+                },
+                sheet: crate::pdf::Sheet::Paper(crate::pdf::Paper {
+                    width: 612.0,
+                    height: 792.0,
+                    margin: 72.0,
+                }),
+                supply: Arc::new(Supply {
+                    rooms: rooms.iter().copied().collect(),
+                    ..Supply::default()
+                }),
+            };
+            let (_, set) = set(src.to_owned(), &setting, None, &cells, &HashSet::new());
+            set.expect("pages")
+                .geometry
+                .caret_box(after, src)
+                .expect("After")
+                .top
+        };
+        let (without, with) = (below(&[]), below(&[(at, 100.0)]));
+        assert!(with - without > 90.0, "{without} then {with}");
     }
 
     /// A host's `data:` picture, percent-encoded or base64, is its bytes,
