@@ -61,3 +61,10 @@ blitz-traits = "=0.3.0-beta.4"
 # A setting runs on tokio's blocking pool, and a throw's frames on its
 # timer: the runtime dioxus-native starts and enters.
 tokio = { version = "1", default-features = false, features = ["rt", "time"] }
+
+[dev-dependencies]
+# The page view and the PDF drawn side by side (`parity.rs`): a piece's SVG
+# as Blitz reads it (usvg, the version blitz-paint parses with), and a PDF's
+# pages, in pure Rust, so the test needs nothing of the system's.
+resvg = { version = "0.48", default-features = false, features = ["raster-images", "text"] }
+hayro = "0.7"

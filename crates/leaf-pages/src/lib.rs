@@ -42,6 +42,7 @@ pub mod geometry;
 pub mod net;
 mod pages;
 pub mod pdf;
+pub mod print;
 pub mod reflow;
 pub mod shown;
 pub mod templates;
@@ -50,6 +51,8 @@ mod view;
 
 #[cfg(test)]
 mod bench;
+#[cfg(test)]
+mod parity;
 
 pub use geometry::{Geometry, PageBox, PageLines, Piece, Sheet, Spread};
 pub use pages::{Mode, Pages, STAND_IN, data_url, gather};

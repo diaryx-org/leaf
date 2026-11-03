@@ -27,7 +27,7 @@ use twig_export::pdf::Glyph;
 
 use crate::Host;
 use crate::geometry::{Geometry, PageLines, Piece, Sheet};
-use crate::pdf::{Paper, Type};
+use crate::pdf::Type;
 use crate::typeset::{Found, Supply};
 use crate::view::{Card, PagesView, ZOOM_STEP};
 
@@ -162,6 +162,19 @@ impl Pages {
         }
         let n = self.peek(|v| v.sheets.len());
         (n > 0).then_some(n)
+    }
+
+    /// The document as a PDF, set as the page view sets it, in the host's
+    /// choices now, whatever view is shown ([`crate::print`]): what a
+    /// host's Export as PDF and Print write. `Err` without an editor, while
+    /// it has the document borrowed, or if Typst will not set it.
+    pub fn print(&self) -> Result<Vec<u8>, String> {
+        let choices = self.host.choices();
+        let host = self.host.editor().map(|ed| ed.host());
+        let job = self
+            .with_doc(|d| crate::print::job(d, host.as_deref(), &choices))
+            .ok_or("the document is busy")?;
+        crate::typeset::pdf(&job)
     }
 
     /// The pane's view, as it is made.
@@ -394,11 +407,9 @@ impl Pages {
             return;
         }
         let choices = self.host.choices();
-        let paged = Type {
-            template: choices.template.clone(),
-            size: choices.size * 0.75,
-            dark: false,
-        };
+        // On paper as Export as PDF sets it (`print.rs`), the one place
+        // both are told.
+        let (paged, paper) = crate::print::on_paper(&choices);
         let (ty, sheet) = if self.mode() == Mode::Reflow {
             // The page's width, in points; the reader's size at the window's
             // zoom, as the editor's; light ink in a dark window.
@@ -418,12 +429,6 @@ impl Pages {
                 },
             )
         } else {
-            let (width, height) = choices.paper;
-            let paper = Paper {
-                width,
-                height,
-                margin: 72.0,
-            };
             (paged, crate::pdf::Sheet::Paper(paper))
         };
         // Reflowed, in a built-in template, a chunk at a time (`reflow.rs`):
