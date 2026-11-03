@@ -22,15 +22,16 @@ use crate::typeset::{Job, Supply};
 pub const MARGIN: f32 = 72.0;
 
 /// What the page view sets a document in, as the host's `choices` say: its
-/// template, its body size (a CSS pixel printed at three quarters of a
-/// point, as a browser prints: 16 pixels is 12 points), dark ink never,
-/// since a sheet is paper; on the choices' paper at an inch's margin.
+/// template, its body size on paper (`paper_size`, else `size`: a CSS pixel
+/// printed at three quarters of a point, as a browser prints: 16 pixels is
+/// 12 points), dark ink never, since a sheet is paper; on the choices'
+/// paper at an inch's margin.
 pub fn on_paper(choices: &Choices) -> (Type, Paper) {
     let (width, height) = choices.paper;
     (
         Type {
             template: choices.template.clone(),
-            size: choices.size * 0.75,
+            size: choices.paper_size.unwrap_or(choices.size) * 0.75,
             dark: false,
         },
         Paper {
@@ -45,11 +46,25 @@ pub fn on_paper(choices: &Choices) -> (Type, Paper) {
 /// as the editor holds it, its pictures where the editor finds them
 /// (through `host`; without one, beside the document), and the room the page
 /// view leaves under each card the host draws, so that every line and every
-/// page break falls where it falls on the screen.
+/// page break falls where it falls on the screen. In each room, the card as
+/// the host prints it ([`leaf_dioxus::Host::print_directive`]), as wide as
+/// the text and as tall as the room.
 pub fn job(d: &mut Doc, host: Option<&dyn leaf_dioxus::Host>, choices: &Choices) -> Job {
     let (ty, paper) = on_paper(choices);
     let supply = match host {
-        Some(host) => crate::gather(d, host, ty.dark).0,
+        Some(host) => {
+            let (mut supply, asked) = crate::gather(d, host, ty.dark);
+            let width = paper.width - 2.0 * paper.margin;
+            for (at, directive) in asked {
+                let Some(&height) = supply.rooms.get(&at.start) else {
+                    continue;
+                };
+                if let Some(card) = host.print_directive(d, &directive, width, height) {
+                    supply.drawings.insert(at.start, card);
+                }
+            }
+            supply
+        }
         None => Supply::default(),
     };
     Job {
@@ -82,6 +97,7 @@ mod tests {
             size,
             zoom: 1.5,
             paper: (595.0, 842.0),
+            paper_size: None,
         }
     }
 
@@ -101,6 +117,63 @@ mod tests {
 
     /// The editor's source is what prints, as the page view sets it: not
     /// the file's, front matter and all.
+    /// Paper is set at its own size where the choices name one, whatever
+    /// the reflowed view's.
+    #[test]
+    fn paper_has_a_size_of_its_own() {
+        let c = Choices {
+            paper_size: Some(16.0),
+            ..choices(18.0)
+        };
+        assert_eq!(on_paper(&c).0.size, 12.0);
+    }
+
+    /// A host that draws a card 66 pixels tall under every `::page`, and
+    /// prints `card` in it.
+    struct Carding {
+        card: Option<&'static str>,
+    }
+
+    impl leaf_dioxus::Host for Carding {
+        fn directive_height(&self, _doc: &Doc, d: &leaf_dioxus::Directive) -> Option<f32> {
+            (d.name == "page").then_some(66.0)
+        }
+
+        fn print_directive(
+            &self,
+            _doc: &Doc,
+            _d: &leaf_dioxus::Directive,
+            width: f32,
+            height: f32,
+        ) -> Option<Arc<[u8]>> {
+            assert_eq!((width, height), (595.0 - 144.0, 49.5));
+            self.card.map(|c| Arc::from(c.as_bytes()))
+        }
+    }
+
+    /// The card a host prints is drawn in the room it leaves under the
+    /// directive, which is the room the page view leaves there.
+    #[test]
+    fn a_card_is_printed_in_its_room() {
+        const CARD: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="451pt" height="49.5pt"><rect width="451" height="49.5" fill="none" stroke="black"/></svg>"#;
+        let source = "Before.\n\n::page{src=\"Other.md\"}\n\nAfter.\n";
+        let mut d = Doc::from_source(source.into(), leaf_core::Format::Markdown).unwrap();
+        let blank = job(&mut d, Some(&Carding { card: None }), &choices(16.0));
+        let carded = job(&mut d, Some(&Carding { card: Some(CARD) }), &choices(16.0));
+        assert_eq!(blank.supply.rooms, carded.supply.rooms);
+        assert_eq!(
+            blank.supply.rooms.values().copied().collect::<Vec<_>>(),
+            [49.5]
+        );
+        assert!(blank.supply.drawings.is_empty());
+        assert_eq!(carded.supply.drawings.len(), 1);
+        let (blank, carded) = (
+            crate::typeset::pdf(&blank).unwrap(),
+            crate::typeset::pdf(&carded).unwrap(),
+        );
+        assert_ne!(blank, carded, "the card is drawn");
+    }
+
     #[test]
     fn what_prints_is_the_editors_source() {
         let mut d = Doc::from_source("Words.\n".into(), leaf_core::Format::Markdown).unwrap();

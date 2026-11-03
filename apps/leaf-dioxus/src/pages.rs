@@ -79,6 +79,7 @@ impl leaf_pages::Host for Desk {
                 .and_then(|p| p.shell().map(|s| s.zoom.get()))
                 .unwrap_or(1.0),
             paper: settings.paper.size(),
+            paper_size: None,
         }
     }
 

@@ -252,7 +252,7 @@ fn job_json(job: &Job) -> Value {
 }
 
 /// What the host found, on the wire: each picture's file, its bytes, or
-/// none; each room by where its directive starts.
+/// none; each room, and what is drawn in it, by where its directive starts.
 fn supply_json(supply: &Supply) -> Value {
     let pictures: serde_json::Map<String, Value> = supply
         .pictures
@@ -269,7 +269,12 @@ fn supply_json(supply: &Supply) -> Value {
         })
         .collect();
     let rooms: Vec<Value> = supply.rooms.iter().map(|(at, h)| json!([at, h])).collect();
-    json!({ "pictures": pictures, "rooms": rooms })
+    let drawings: Vec<Value> = supply
+        .drawings
+        .iter()
+        .map(|(at, d)| json!([at, base64::engine::general_purpose::STANDARD.encode(d)]))
+        .collect();
+    json!({ "pictures": pictures, "rooms": rooms, "drawings": drawings })
 }
 
 fn supply_of(v: &Value) -> Supply {
@@ -296,7 +301,22 @@ fn supply_of(v: &Value) -> Supply {
         .flatten()
         .filter_map(|r| Some((r[0].as_u64()? as usize, r[1].as_f64()? as f32)))
         .collect();
-    Supply { pictures, rooms }
+    let drawings = v["drawings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(d[1].as_str()?)
+                .ok()?;
+            Some((d[0].as_u64()? as usize, bytes.into()))
+        })
+        .collect();
+    Supply {
+        pictures,
+        rooms,
+        drawings,
+    }
 }
 
 fn job_of(v: &Value) -> Result<Job, String> {
@@ -464,6 +484,7 @@ mod tests {
                 ]
                 .into(),
                 rooms: [(7, 30.0)].into(),
+                drawings: [(7, std::sync::Arc::from(&b"<svg/>"[..]))].into(),
             }),
         };
         let back = job_of(&job_json(&job)).unwrap();

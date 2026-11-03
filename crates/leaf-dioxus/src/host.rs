@@ -226,6 +226,21 @@ pub trait Host {
         let _ = directive;
         rsx! {}
     }
+
+    /// The card under a directive's label as it prints, where no markup
+    /// draws it: a picture's file (an SVG, a PNG…) `width` by `height`
+    /// points, fitted to the room [`directive_height`](Self::directive_height)
+    /// leaves on paper. `None` (the default) leaves the room blank on paper.
+    fn print_directive(
+        &self,
+        doc: &Doc,
+        directive: &Directive,
+        width: f32,
+        height: f32,
+    ) -> Option<std::sync::Arc<[u8]>> {
+        let _ = (doc, directive, width, height);
+        None
+    }
 }
 
 /// Do a clipboard gesture. Answers whether the document changed, so the

@@ -313,6 +313,7 @@ pub fn choices() -> crate::Choices {
         size: 16.0,
         zoom: 1.0,
         paper: (612.0, 792.0),
+        paper_size: None,
     }
 }
 

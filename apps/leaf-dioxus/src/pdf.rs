@@ -30,6 +30,7 @@ fn choices_of(settings: &crate::settings::Settings, size: (f32, f32)) -> leaf_pa
         size: settings.size.px(),
         zoom: 1.0,
         paper: size,
+        paper_size: None,
     }
 }
 

@@ -809,6 +809,12 @@ fn set(
                 .iter()
                 .map(|(&at, &room)| (if at >= h { at + STAND_IN.len() } else { at }, room))
                 .collect(),
+            drawings: s
+                .supply
+                .drawings
+                .iter()
+                .map(|(&at, d)| (if at >= h { at + STAND_IN.len() } else { at }, d.clone()))
+                .collect(),
         }),
         None => Arc::clone(&s.supply),
     };
