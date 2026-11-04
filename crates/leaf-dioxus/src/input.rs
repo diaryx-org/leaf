@@ -360,6 +360,11 @@ fn command(doc: &mut Doc, key: &Key, code: Code, shift: bool, alt: bool) -> Acti
             doc.redo();
             Action::Handled
         }
+        // Off the Mac, Ctrl+Y is redo too. A Mac's text views have no ⌘Y.
+        ("y", false, false) if !mac_keys() => {
+            doc.redo();
+            Action::Handled
+        }
         // Marks.
         ("b", false, false) => done(doc.toggle(InlineKind::Strong)),
         ("i", false, false) => done(doc.toggle(InlineKind::Emph)),
@@ -518,6 +523,21 @@ mod tests {
         assert!(!d.source.contains("three"), "{:?}", d.source);
         press(&mut d, Key::Named(NamedKey::Home), Code::Home, ctrl);
         assert_eq!(d.caret, 0, "the document's start");
+    }
+
+    /// Off the Mac, Ctrl+Y redoes, beside Ctrl+Shift+Z.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_y_redoes_off_the_mac() {
+        let mut d = doc("one\n");
+        d.place_caret(3, false);
+        d.insert("x");
+        let edited = d.source.clone();
+        press(&mut d, ch("z"), Code::KeyZ, Modifiers::CONTROL);
+        assert_eq!(d.source, "one\n");
+        let action = press(&mut d, ch("y"), Code::KeyY, Modifiers::CONTROL);
+        assert_eq!(action, Action::Handled);
+        assert_eq!(d.source, edited);
     }
 
     /// Off the Mac, Ctrl is the command key: the styles are Ctrl+Alt and a
