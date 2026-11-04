@@ -3,7 +3,7 @@ title: What Linux and Windows do not do yet
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 status: open
 created: 2026-10-26
-updated: 2026-10-27
+updated: 2026-11-04
 ---
 # What Linux and Windows do not do yet
 
@@ -21,8 +21,6 @@ compiles the same module, untried. Still to do:
 - **Close's question has two answers.** Discard or Cancel; there is no
   Save in it, since unit's dialog has two buttons.
 - **No Print.** Export as PDF, then print from the viewer.
-- **A quote's wrapped lines drawn twice as tall** now and then:
-  [A quote's bar breaks a line Blitz was told not to wrap](/docs/tasks/a-quotes-bar-breaks-a-line-blitz-was-told-not-to-wrap.md).
 - **No spelling checker and no Look Up.**
 
 Since then (2026-10-27): the document reads and saves through leaf-core's
