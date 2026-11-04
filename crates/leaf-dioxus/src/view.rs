@@ -73,6 +73,10 @@ body {{ position: relative; }}
 .leaf .row, .leaf .line {{ min-height: {leading}em; }}
 .leaf .qbar {{ display: inline-block; width: {quote}px; vertical-align: top; box-sizing: border-box;
                border-left: 3px solid currentColor; }}
+.leaf .line {{ display: flex; }}
+.leaf .bars {{ display: flex; flex: none; }}
+.leaf .bars .qbar {{ flex: none; }}
+.leaf .flow {{ flex: 1 0 auto; }}
 .leaf .ghost {{ color: transparent; background: none; }}
 .leaf .ime {{ text-decoration: underline; text-decoration-color: var(--leaf-accent); }}
 .leaf .miss {{ text-decoration: underline wavy; text-decoration-color: var(--leaf-misspelled); }}

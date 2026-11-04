@@ -208,12 +208,7 @@ mod tests {
         });
     }
 
-    // Off the Mac, in the face the default falls back to, a quoted line
-    // fits only with its trailing space hanging, and parley breaks it after
-    // the bar: docs/tasks/a-quotes-bar-breaks-a-line-blitz-was-told-not-to-
-    // wrap.md.
     #[test]
-    #[cfg(target_os = "macos")]
     fn a_quotes_bars_meet_down_its_lines_and_rows() {
         // A heading, a paragraph that wraps, a table and a nested quote, all
         // in one quote, between two paragraphs outside it.
@@ -272,6 +267,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_line_takes_its_bar_on_a_later_frame_and_gives_it_back() {
+        let look = Look::default();
+        let (indent, line) = (look.ty.quote_indent(), look.ty.line());
+        let (mut document, ed, _) =
+            offscreen("A line.\n", Format::Markdown, look, None).expect("an editor");
+        // Each `.line`'s text's left edge and height, and each bar's left edge.
+        let measure = |document: &DioxusDocument| {
+            let inner = document.inner.borrow();
+            let left = |id| inner.get_node(id).unwrap().absolute_position(0.0, 0.0).x;
+            let flow = inner.query_selector_all(".flow").unwrap();
+            let bars = inner.query_selector_all(".qbar").unwrap();
+            let lines = inner.query_selector_all(".line").unwrap();
+            let tall = |id| inner.get_node(id).unwrap().final_layout().size.height;
+            (
+                left(flow[0]),
+                tall(lines[0]),
+                bars.into_iter().map(left).collect::<Vec<f32>>(),
+            )
+        };
+        let (plain, ..) = measure(&document);
+        let column = {
+            let inner = document.inner.borrow();
+            let lines = inner.query_selector_all(".line").unwrap();
+            inner
+                .get_node(lines[0])
+                .unwrap()
+                .absolute_position(0.0, 0.0)
+                .x
+        };
+        assert!((plain - column).abs() < 0.5, "text at {plain}, in {column}");
+        let mut change = |edit: &dyn Fn()| {
+            document.vdom.in_scope(ScopeId::ROOT, || {
+                edit();
+                ed.refresh();
+            });
+            blitz_dom::Document::poll(&mut document, Some(Context::from_waker(Waker::noop())));
+            document.inner.borrow_mut().resolve(0.0);
+            measure(&document)
+        };
+        let (text, tall, bars) = change(&|| ed.doc().edit(0, 0, "> "));
+        assert_eq!(bars.len(), 1, "{bars:?}");
+        assert!((bars[0] - plain).abs() < 0.5, "a bar at {}", bars[0]);
+        assert!((text - plain - indent).abs() < 0.5, "text at {text}");
+        assert!((tall - line).abs() < 0.5, "a line {tall} tall");
+        let (text, tall, bars) = change(&|| ed.doc().edit(0, 2, ""));
+        assert!(bars.is_empty(), "{bars:?}");
+        assert!((text - plain).abs() < 0.5, "text at {text}");
+        assert!((tall - line).abs() < 0.5, "a line {tall} tall");
     }
 
     #[test]

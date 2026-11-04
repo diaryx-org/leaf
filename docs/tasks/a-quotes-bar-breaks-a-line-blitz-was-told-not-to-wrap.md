@@ -1,10 +1,22 @@
 ---
 title: A quote's bar breaks a line Blitz was told not to wrap
 part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
-updated: 2026-10-27
+status: done
+updated: 2026-11-04
 ---
 # A quote's bar breaks a line Blitz was told not to wrap
+
+**Done (2026-11-04).** In leaf, the third way below, by flex rather than
+absolute placing: a line's leading bars stand in a `.bars` box beside the
+`.flow` box that holds its text, so no text layout begins with a box.
+Every line has both boxes and is a flex line, quoted or not, because Blitz
+panics on a node whose `display` changes (`resolve.rs`, "layout_parent of …
+does not point at its layout container") and a line gains a bar when a `>`
+is typed. `a_quotes_bars_meet_down_its_lines_and_rows` runs on Linux again,
+and `a_line_takes_its_bar_on_a_later_frame_and_gives_it_back` holds the
+change of shape. parley's own lag is still there, and is still worth
+reporting upstream; a bar after other text stays inline, where it is not
+the first thing in a layout.
 
 **Where.** parley 0.12.0's line breaker (`layout/line_break.rs`), which
 Blitz lays each of the editor's lines out with; the quote gutter's

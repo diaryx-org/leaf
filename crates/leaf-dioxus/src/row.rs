@@ -246,6 +246,20 @@ pub fn Line(
             }
         }
     });
+    // A quote's bars stand beside the line's text and not in it. parley reads
+    // a box that opens a layout as wrappable, whatever `white-space` says, so
+    // a line that overflows by less than its trailing space would break after
+    // the bar. Every line has both boxes and is a flex line, quoted or not:
+    // Blitz's layout panics on a node whose `display` changes, and a line
+    // gains a bar when a `>` is typed.
+    let mut text = segs;
+    let bars: Vec<Seg> = {
+        let n = text
+            .iter()
+            .take_while(|s| matches!(s, Seg::Bar(..)))
+            .count();
+        text.drain(..n).collect()
+    };
     rsx! {
         // A wrapped list item's lines hang under its text by padding, not by
         // a spacer child: a child that is only sometimes there is a Dioxus
@@ -274,8 +288,15 @@ pub fn Line(
                 let x = (e.client_coordinates().x - origin) as f32;
                 (tap.0)(Pointer::Tap { at, line, x });
             },
-            for seg in segs {
-                {seg.render()}
+            span { class: "bars",
+                for seg in bars {
+                    {seg.render()}
+                }
+            }
+            span { class: "flow",
+                for seg in text {
+                    {seg.render()}
+                }
             }
         }
     }
