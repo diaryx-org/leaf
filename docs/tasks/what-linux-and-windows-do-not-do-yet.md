@@ -3,7 +3,7 @@ title: What Linux and Windows do not do yet
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 status: open
 created: 2026-10-26
-updated: 2026-10-27
+updated: 2026-11-04
 ---
 # What Linux and Windows do not do yet
 
@@ -41,11 +41,10 @@ Dioxus path does not:
 - **The app.** Done (above): the Open dialog, the guard before a window
   with unsaved changes closes, and the check for a change on disk when the
   window is activated.
-- **Key conventions.** Ctrl+Y redoes, and the keys follow the CUA map
-  (`archive/crates/leaf-gpui/src/lib.rs`, near line 378). Off Apple the editor
-  takes Ctrl as ⌘ (`input.rs`, `CMD`), so Ctrl+←/→ goes to the line's edge
-  rather than by word, Ctrl+Backspace deletes to the line's start, and there
-  is no Ctrl+Home/End or Ctrl+Y. Android has the same divergence.
+- **Key conventions.** Done (2026-11-04): off a Mac's keys, Ctrl+Y redoes
+  beside Ctrl+Shift+Z, Ctrl+←/→ goes by word, Ctrl+Backspace and Ctrl+Delete
+  delete a word, and Ctrl+Home/End goes to the document's ends (`input.rs`,
+  `command`).
 - **The input method.** gpui's `EntityInputHandler` (marked text,
   `bounds_for_range`). The editor takes winit's `Ime` events; they are not
   checked on Wayland, X11 or Windows.
