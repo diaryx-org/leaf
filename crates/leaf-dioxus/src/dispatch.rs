@@ -61,7 +61,7 @@ impl Editor {
         if !typed {
             self.ensure_map();
         }
-        let t = std::time::Instant::now();
+        let t = crate::clock::Instant::now();
         let action = apply_key(&mut st.doc.borrow_mut(), &key, code, mods);
         trace(|| {
             format!(
