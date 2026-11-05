@@ -437,6 +437,7 @@ impl Doc {
                     self.coalesce_last_undo();
                 }
                 self.caret = change.new.end;
+                self.literal_len = Some(change.new.end - change.new.start);
                 self.anchor = None;
                 self.goal_col = None;
                 self.clear_pending();

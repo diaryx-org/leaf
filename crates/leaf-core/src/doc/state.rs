@@ -167,6 +167,8 @@ impl Doc {
             last_edit_kind: None,
             pending_marks: InlineMarks::empty(),
             pending_at: None,
+            composing: None,
+            literal_len: None,
             goal_col: None,
             vmap: VisualMap::default(),
             smap: SourceMap::default(),

@@ -517,12 +517,19 @@ impl Doc {
                 ins_at = ins_at.max(span.end);
             }
         }
+        let before = self.source.len();
         if !self.splice_exact(ins_at, ins_at, text, EditKind::Other) {
             return;
         }
-        // The plain splice inserted exactly `text` at `ins_at`; that byte range
-        // is the content every added mark wraps.
-        let (mut cs, mut ce) = (ins_at, ins_at + text.len());
+        // The plain splice inserted exactly `text` at `ins_at`; that byte range,
+        // less the whitespace at its edges, is the content every added mark
+        // wraps. A mark cannot close against a space, so one typed last stands
+        // past the delimiters, and the caret past it.
+        let trail = text.len() - text.trim_end().len();
+        let (mut cs, mut ce) = (
+            ins_at + text.len() - text.trim_start().len(),
+            ins_at + text.len() - trail,
+        );
         for kind in marks.iter() {
             if !base_set.contains(kind) {
                 let (ncs, nce) = self.wrap_span(cs, ce, kind);
@@ -530,7 +537,8 @@ impl Doc {
                 ce = nce;
             }
         }
-        self.caret = ce.min(self.source.len());
+        let past = ins_at + self.source.len() - before;
+        self.caret = if trail == 0 { ce } else { past }.min(self.source.len());
         self.anchor = None;
         self.last_edit_kind = None;
         // Realised: the marks are in the document now, and the caret sits inside
@@ -900,8 +908,135 @@ impl Doc {
     ///
     /// Pair with [`end_composition`](Self::end_composition), or the *next*
     /// composition folds into this one.
+    ///
+    /// A splice, so what it writes is source. Text the input method composed
+    /// is typed text and goes through
+    /// [`insert_composing`](Self::insert_composing); this is for what a
+    /// composition does around that, as taking out the letter a press-and-hold
+    /// offers accents for.
     pub fn edit_composing(&mut self, start: usize, end: usize, text: &str) {
         self.splice(start, end, text, EditKind::Compose);
+    }
+
+    /// One step of an IME composition as typed text: [`insert`](Self::insert)'s
+    /// semantics, landing as a step of the open composition. Returns the range
+    /// the text landed in, which is the next step's `marked`: not the delimiters
+    /// of a mark it took, and with any escape it was written with. Empty `text`
+    /// withdraws what the composition wrote and writes nothing; empty too when
+    /// nothing landed.
+    ///
+    /// [`edit_composing`](Self::edit_composing) is a splice, and a splice is
+    /// not typing: an armed Bold would not take the word, and where typing is
+    /// literal ([`MarkupMode::None`]) a composed `*` would open a mark.
+    ///
+    /// Each step puts the document back as the composition found it, caret and
+    /// armed marks included, and types `text` there, so the word lands as if
+    /// typed once, whatever typing it does: wrap it in a mark, step past a run
+    /// a mark was turned off in, carry on a run behind the caret. Taking out
+    /// only the last step's text cannot do that, since what a step writes is
+    /// not always a range: the delimiters are around it, and close before a
+    /// trailing space. A composition given up leaves a Bold armed as it found it.
+    ///
+    /// `marked` matters only when the document moved since the last step, by
+    /// an [`edit_composing`](Self::edit_composing) or another device's edit:
+    /// putting it back would undo that, so the composition starts again from
+    /// here, taking out `marked` first. `None`, as for a first step, writes at
+    /// the caret over any selection.
+    pub fn insert_composing(
+        &mut self,
+        marked: Option<(usize, usize)>,
+        text: &str,
+    ) -> (usize, usize) {
+        if self.read_only {
+            return (self.caret, self.caret);
+        }
+        let continues = self.last_edit_kind == Some(EditKind::Compose);
+        // Writing a mark is several edits, and a composition one step, so the
+        // group folds them whichever road `insert` took.
+        self.begin_undo_group();
+        let found = self
+            .composing
+            .take()
+            .filter(|c| c.revision == self.revision);
+        let mut found = match found {
+            Some(found) => {
+                self.restore_composing(&found);
+                found
+            }
+            None => {
+                if let Some((start, end)) = marked {
+                    self.splice(start, end, "", EditKind::Compose);
+                }
+                Composing {
+                    source: self.source.clone(),
+                    caret: self.caret,
+                    anchor: self.anchor,
+                    pending_marks: self.pending_marks,
+                    pending_at: self.pending_at,
+                    revision: self.revision,
+                }
+            }
+        };
+        let revision = self.revision;
+        self.literal_len = None;
+        if !text.is_empty() {
+            self.insert(text);
+        }
+        let landed = self.revision != revision;
+        found.revision = self.revision;
+        self.composing = Some(found);
+        let wrote_a_step = self.undo_group.is_some_and(|g| g.has_step);
+        self.end_undo_group();
+        if continues && wrote_a_step {
+            self.coalesce_last_undo();
+        }
+        if continues || wrote_a_step {
+            self.last_edit_kind = Some(EditKind::Compose);
+        }
+        if !landed {
+            return (self.caret, self.caret);
+        }
+        let mut start = self
+            .caret
+            .saturating_sub(self.literal_len.take().unwrap_or(text.len()));
+        while !self.source.is_char_boundary(start) {
+            start -= 1;
+        }
+        (start, self.caret)
+    }
+
+    /// Put the document back as a composition found it, replacing only the
+    /// bytes between what the two have in common at each end.
+    fn restore_composing(&mut self, found: &Composing) {
+        let (now, then) = (self.source.as_bytes(), found.source.as_bytes());
+        let mut head = now.iter().zip(then).take_while(|(a, b)| a == b).count();
+        while !self.source.is_char_boundary(head) || !found.source.is_char_boundary(head) {
+            head -= 1;
+        }
+        let room = now.len().min(then.len()) - head;
+        let mut tail = now
+            .iter()
+            .rev()
+            .zip(then.iter().rev())
+            .take(room)
+            .take_while(|(a, b)| a == b)
+            .count();
+        while !self.source.is_char_boundary(now.len() - tail)
+            || !found.source.is_char_boundary(then.len() - tail)
+        {
+            tail -= 1;
+        }
+        let end = now.len() - tail;
+        let was = found.source[head..then.len() - tail].to_owned();
+        if head < end || !was.is_empty() {
+            self.splice_exact(head, end, &was, EditKind::Compose);
+        }
+        self.caret = found.caret;
+        self.anchor = found.anchor;
+        self.pending_marks = found.pending_marks;
+        self.pending_at = found.pending_at;
+        self.goal_col = None;
+        self.record_caret();
     }
 
     /// Close the open composition run, so the next one is its own undo step.
@@ -911,6 +1046,7 @@ impl Doc {
     /// began (some IMEs unmark unprompted) would otherwise split the run of
     /// typing around it into two undo steps for no reason the user can see.
     pub fn end_composition(&mut self) {
+        self.composing = None;
         if self.last_edit_kind == Some(EditKind::Compose) {
             self.last_edit_kind = None;
         }

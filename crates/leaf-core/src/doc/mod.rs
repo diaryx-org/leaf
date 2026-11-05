@@ -280,6 +280,22 @@ enum EditKind {
     Other,
 }
 
+/// The document as an IME composition found it, for each step of the composition
+/// to start from — see [`Doc::insert_composing`].
+struct Composing {
+    /// The source before the composition's first step.
+    source: String,
+    /// Where the caret and the selection stood.
+    caret: usize,
+    anchor: Option<usize>,
+    /// The sticky marks armed there, which a step spends and the next needs.
+    pending_marks: InlineMarks,
+    pending_at: Option<usize>,
+    /// The revision the last step left. Anything else means something other
+    /// than the composition moved the document, and this no longer describes it.
+    revision: u64,
+}
+
 /// Which side of the caret a delete looks for an in-cell `<br>` break to swallow
 /// whole — see [`Doc::cell_break_at`]. `Backward` is Backspace (a break ending at
 /// the caret), `Forward` is Delete (one starting at it).
@@ -713,6 +729,12 @@ pub struct Doc {
     /// any motion or edit ([`move_to`](Self::move_to), a splice, a click) drops
     /// it, so a toggled-but-never-typed format doesn't leak onto text elsewhere.
     pending_at: Option<usize>,
+    /// The document as the open composition found it — see [`Composing`].
+    composing: Option<Composing>,
+    /// How many bytes the last [`insert_literal_at`](Self::insert_literal_at)
+    /// wrote, escapes included, for [`Doc::insert_composing`] to say where its
+    /// text landed. Every other way typed text lands writes it as it came.
+    literal_len: Option<usize>,
     /// The source as of the last open/save — `dirty` is `source != clean_source`,
     /// so undoing back to the saved state correctly clears the modified flag.
     clean_source: String,
