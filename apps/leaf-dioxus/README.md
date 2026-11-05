@@ -222,19 +222,21 @@ sends its IME events to the focused node, so the editor allows IME on the
 window itself and reads `WindowEvent::Ime` beside the keys.
 
 The marked text is written into the document as it is composed, through
-core's `edit_composing`, each step replacing the last one's provisional
+core's `insert_composing`, each step replacing the last one's provisional
 bytes, and `end_composition` on commit — so a whole composition is one undo
-step, as in the Swift editor. It is underlined by a `composing` mark the
+step, as in the Swift editor, written as typing writes it: an armed Bold takes
+it, and a `*` stays a `*` where typing is literal. It is underlined by a `composing` mark the
 bridge's `Marks` now carries beside the selection, and the input
 method is told where the caret is so its candidate window opens beside it.
 
 One core finding: moving the caret — even to where it already is — ends an
 edit run, so placing it at the input method's cursor after each step made
 every step its own undo. The editor *draws* the caret at that cursor
-instead and leaves core's where `edit_composing` put it.
+instead and leaves core's where `insert_composing` put it.
 
 Unit-tested (a dead key, a kana composition folding into one undo, a
-withdrawn composition, a composition over a selection). In the app on macOS,
+withdrawn composition, a composition over a selection, an armed Bold and a
+literal `*` through a composition). In the app on macOS,
 dead keys work (⌥E E → é, ⌥U O → ö), and so does Japanese (romaji → kana →
 漢字, undone in one step).
 

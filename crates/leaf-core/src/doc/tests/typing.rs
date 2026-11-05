@@ -46,6 +46,104 @@ fn a_composition_run_undoes_as_one_step() {
     assert_eq!(d.status.as_deref(), None, "the run was a single step");
 }
 
+#[test]
+fn a_composing_insert_takes_an_armed_mark_and_says_where_its_text_is() {
+    let mut d = wysiwyg_doc("compose-bold", "x \n");
+    d.place_caret(2, false);
+    d.toggle(InlineKind::Strong);
+    let first = d.insert_composing(None, "か");
+    assert_eq!(d.source, "x **か**\n");
+    assert_eq!(first, (4, 4 + "か".len()));
+    let second = d.insert_composing(Some(first), "感じ");
+    assert_eq!(d.source, "x **感じ**\n");
+    assert_eq!(second, (4, 4 + "感じ".len()));
+    d.end_composition();
+}
+
+#[test]
+fn a_composing_insert_in_source_view_writes_the_delimiters_once() {
+    let mut d = doc_with("compose-source", "x \n");
+    d.place_caret(2, false);
+    d.toggle(InlineKind::Strong);
+    let marked = d.insert_composing(None, "か");
+    let marked = d.insert_composing(Some(marked), "かん");
+    assert_eq!(d.source, "x **かん**\n");
+    d.insert_composing(Some(marked), "");
+    assert_eq!(d.source, "x \n", "the delimiters go with the composition");
+    d.insert_composing(None, "感");
+    d.end_composition();
+    assert_eq!(d.source, "x **感**\n");
+}
+
+#[test]
+fn a_composing_insert_ending_in_a_space_keeps_the_mark_off_it() {
+    let mut d = wysiwyg_doc("compose-space", "x \n");
+    d.place_caret(2, false);
+    d.toggle(InlineKind::Strong);
+    let marked = d.insert_composing(None, "a ");
+    assert_eq!(d.source, "x **a** \n");
+    let marked = d.insert_composing(Some(marked), "ab ");
+    assert_eq!(d.source, "x **ab** \n");
+    d.insert_composing(Some(marked), "");
+    assert_eq!(d.source, "x \n");
+    d.insert_composing(None, "abc ");
+    d.end_composition();
+    assert_eq!(d.source, "x **abc** \n");
+    assert_eq!(d.caret, d.source.len() - 1, "past the space it typed");
+}
+
+#[test]
+fn a_composition_starts_again_from_a_document_that_moved_under_it() {
+    let mut d = wysiwyg_doc("compose-moved", "x y\n");
+    d.place_caret(1, false);
+    let marked = d.insert_composing(None, "か");
+    assert!(d.replace_source("xか y!\n"));
+    let marked = d.insert_composing(Some(marked), "感");
+    assert_eq!(d.source, "x感 y!\n", "the edit that came in stands");
+    d.insert_composing(Some(marked), "");
+    d.end_composition();
+    assert_eq!(d.source, "x y!\n");
+}
+
+#[test]
+fn a_composing_insert_escapes_what_typing_would() {
+    let mut d = wysiwyg_doc("compose-literal", "x \n");
+    d.place_caret(2, false);
+    let landed = d.insert_composing(None, "*a*");
+    assert_eq!(d.source, "x \\*a\\*\n");
+    assert_eq!(landed, (2, 7));
+    let landed = d.insert_composing(Some(landed), "*b");
+    assert_eq!(d.source, "x \\*b\n");
+    assert_eq!(landed, (2, 5));
+}
+
+#[test]
+fn a_composing_insert_is_a_step_of_the_composition_and_of_nothing_else() {
+    let mut d = doc_with("compose-steps", "\n");
+    d.caret = 0;
+    d.insert("a");
+    d.toggle(InlineKind::Strong);
+    let steps = d.undo_steps;
+    let marked = d.insert_composing(None, "か");
+    let marked = d.insert_composing(Some(marked), "かん");
+    d.insert_composing(Some(marked), "感");
+    d.end_composition();
+    assert_eq!(d.undo_steps, steps + 1, "one step, for the whole word");
+    d.insert("b");
+    d.undo();
+    d.undo();
+    assert_eq!(d.source, "a\n", "the typing before it is not in that step");
+}
+
+#[test]
+fn a_refused_composing_insert_lands_nowhere() {
+    let mut d = doc_with("compose-read-only", "x\n");
+    d.place_caret(1, false);
+    d.set_read_only(true);
+    assert_eq!(d.insert_composing(None, "か"), (1, 1));
+    assert_eq!(d.source, "x\n");
+}
+
 /// A Replace All the way a host does one: every match, last to first so
 /// the offsets still to go stay put, each a selection replaced by an
 /// insert, inside one undo group. `select_range` rather than the host's

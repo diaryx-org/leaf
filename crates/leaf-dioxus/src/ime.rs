@@ -15,19 +15,22 @@
 //! and reads `WindowEvent::Ime` beside the keys.
 //!
 //! The marked text is written into the document as it is composed — core's
-//! `edit_composing`, each step replacing the last one's provisional bytes, so
-//! the run folds into one undo — exactly as the Swift editor writes it with
-//! `replaceRange`. That puts it in the frame like any other text, wrapped and
-//! hit-tested with the rest, and underlined by the `composing` mark.
+//! `insert_composing`, each step replacing the last one's provisional bytes,
+//! so the run folds into one undo, and written as typing writes it, so an
+//! armed Bold takes it and a `*` stays a `*` where typing is literal. That
+//! puts it in the frame like any other text, wrapped and hit-tested with the
+//! rest, and underlined by the `composing` mark.
 
 use leaf_core::Doc;
 
 /// The open composition, if any.
 #[derive(Default, Debug)]
 pub struct Composer {
-    /// The marked text in the source: where it starts and how many bytes.
+    /// The marked text in the source: where it starts and how many bytes,
+    /// which are more than the input method sent where core escaped some.
     marked: Option<(usize, usize)>,
-    /// Where the input method's cursor is within the marked text, in bytes.
+    /// Where the input method's cursor is within the marked text, in bytes of
+    /// the source.
     cursor: usize,
     /// Whether a composition run is open in core's undo history — still true
     /// after the marked text is cleared, which winit does just before a
@@ -46,7 +49,7 @@ impl Composer {
     ///
     /// Drawn, not placed. Moving core's caret — even to where it already is
     /// — ends the edit run, so every step of a composition would be its own
-    /// undo; core's caret stays where `edit_composing` left it, at the marked
+    /// undo; core's caret stays where `insert_composing` left it, at the marked
     /// text's end, and the frame is told where the input method's cursor is.
     pub fn caret(&self) -> Option<usize> {
         self.marked.map(|(s, _)| s + self.cursor)
@@ -56,26 +59,27 @@ impl Composer {
     /// input method withdrew it, or is about to commit.
     pub fn preedit(&mut self, doc: &mut Doc, text: &str, cursor: Option<(usize, usize)>) {
         if text.is_empty() {
-            if let Some((s, len)) = self.marked.take() {
-                doc.edit_composing(s, s + len, "");
+            if let Some(marked) = self.marked() {
+                self.marked = None;
+                doc.insert_composing(Some(marked), "");
             }
             return;
         }
-        let (start, end) = self.target(doc);
-        doc.edit_composing(start, end, text);
-        self.marked = Some((start, text.len()));
+        let (start, end) = doc.insert_composing(self.marked(), text);
+        self.marked = (start < end).then_some((start, end - start));
         self.open = true;
         // The end of the input method's cursor range, which is where typing
         // the next character of the reading lands; see `caret`.
-        self.cursor = cursor.map_or(text.len(), |(_, b)| b.min(text.len()));
+        let at = cursor.map_or(text.len(), |(_, b)| b.min(text.len()));
+        self.cursor = written_offset(&doc.source[start..end], text, at);
     }
 
     /// The input method settled on `text`: it replaces the marked text, or
     /// the selection, as the last step of the composition's undo run.
     pub fn commit(&mut self, doc: &mut Doc, text: &str) {
-        let (start, end) = self.target(doc);
+        let marked = self.marked();
         self.marked = None;
-        doc.edit_composing(start, end, text);
+        doc.insert_composing(marked, text);
         doc.end_composition();
         self.open = false;
     }
@@ -109,15 +113,20 @@ impl Composer {
             self.open = true;
         }
     }
+}
 
-    /// What the next step replaces: the marked text, or else the selection,
-    /// or else nothing at the caret.
-    fn target(&self, doc: &Doc) -> (usize, usize) {
-        match self.marked {
-            Some((s, len)) => (s, s + len),
-            None => doc.selection().unwrap_or((doc.caret, doc.caret)),
+/// Where `at`, a byte offset into the `text` the input method sent, falls in
+/// what the document wrote for it: past each escape core put in front of it.
+fn written_offset(written: &str, text: &str, at: usize) -> usize {
+    let (written, text) = (written.as_bytes(), text.as_bytes());
+    let (mut w, mut t) = (0, 0);
+    while t < at && w < written.len() {
+        if written[w] == text[t] {
+            t += 1;
         }
+        w += 1;
     }
+    w
 }
 
 /// The text around the caret for the input method — the caret's source
@@ -151,7 +160,7 @@ pub fn surrounding(doc: &Doc, composer: &Composer) -> Option<(String, usize, usi
 
 #[cfg(test)]
 mod tests {
-    use leaf_core::Format;
+    use leaf_core::{Format, InlineKind};
 
     use super::*;
 
@@ -230,6 +239,101 @@ mod tests {
         // The accent undoes back to the letter that was held.
         d.undo();
         assert_eq!(d.source, "cafe\n");
+    }
+
+    /// What winit does for every word: each reading in turn, the preedit
+    /// cleared, the commit.
+    fn compose(d: &mut Doc, c: &mut Composer, readings: &[&str], commit: &str) {
+        for reading in readings {
+            c.preedit(d, reading, None);
+        }
+        c.preedit(d, "", None);
+        c.commit(d, commit);
+    }
+
+    #[test]
+    fn an_armed_bold_takes_the_whole_composition() {
+        let mut d = doc("x \n");
+        d.place_caret(2, false);
+        d.toggle(InlineKind::Strong);
+        let mut c = Composer::default();
+        compose(&mut d, &mut c, &["か", "かん"], "感");
+        assert_eq!(d.source, "x **感**\n");
+        // Inside the run, so the next character carries on the bold.
+        d.insert("じ");
+        assert_eq!(d.source, "x **感じ**\n");
+    }
+
+    #[test]
+    fn a_composition_is_bold_while_it_is_composed() {
+        let mut d = doc("x \n");
+        d.place_caret(2, false);
+        d.toggle(InlineKind::Strong);
+        let mut c = Composer::default();
+        c.preedit(&mut d, "か", None);
+        c.preedit(&mut d, "かん", None);
+        assert_eq!(d.source, "x **かん**\n");
+        // The marked text is what was composed, and not its delimiters.
+        assert_eq!(c.marked(), Some((4, 4 + "かん".len())));
+    }
+
+    #[test]
+    fn a_withdrawn_composition_leaves_the_bold_armed() {
+        let mut d = doc("x \n");
+        d.place_caret(2, false);
+        d.toggle(InlineKind::Strong);
+        let mut c = Composer::default();
+        c.preedit(&mut d, "か", None);
+        c.preedit(&mut d, "", None);
+        c.settle(&mut d);
+        assert_eq!(d.source, "x \n");
+        d.insert("y");
+        assert_eq!(d.source, "x **y**\n");
+    }
+
+    /// Bold turned off at the end of a run: the composition lands past it,
+    /// and the empty preedit before the commit must not bring it back in.
+    #[test]
+    fn a_composition_past_a_bold_turned_off_stays_out_of_it() {
+        let mut d = doc("**b**\n");
+        d.place_caret(3, false);
+        d.toggle(InlineKind::Strong);
+        let mut c = Composer::default();
+        compose(&mut d, &mut c, &["か"], "感");
+        assert_eq!(d.source, "**b**感\n");
+    }
+
+    #[test]
+    fn a_composed_star_stays_a_star_where_typing_is_literal() {
+        let mut d = doc("x \n");
+        d.place_caret(2, false);
+        let mut c = Composer::default();
+        c.preedit(&mut d, "*a", Some((1, 1)));
+        assert_eq!(d.source, "x \\*a\n");
+        // Marked as written, escape and all, with the input method's cursor
+        // past the star it counted.
+        assert_eq!(c.marked(), Some((2, 5)));
+        assert_eq!(c.caret(), Some(4));
+        c.preedit(&mut d, "*ab*", None);
+        c.preedit(&mut d, "", None);
+        c.commit(&mut d, "*ab*");
+        assert_eq!(d.source, "x \\*ab\\*\n");
+        d.undo();
+        assert_eq!(d.source, "x \n");
+    }
+
+    #[test]
+    fn a_bold_composition_is_one_undo_step() {
+        let mut d = doc("x\n");
+        d.place_caret(1, false);
+        d.insert(" ");
+        d.toggle(InlineKind::Strong);
+        let mut c = Composer::default();
+        compose(&mut d, &mut c, &["か", "かん"], "感");
+        assert_eq!(d.source, "x **感**\n");
+        d.undo();
+        assert_eq!(d.source, "x \n");
+        assert_eq!(d.caret, 2);
     }
 
     #[test]
