@@ -3,8 +3,8 @@
 //! editor's own instrument for the input path, which is where Blitz and a
 //! browser differ most.
 
+use crate::clock::Instant;
 use std::sync::OnceLock;
-use std::time::Instant;
 
 pub fn trace(line: impl FnOnce() -> String) {
     thread_local! {
